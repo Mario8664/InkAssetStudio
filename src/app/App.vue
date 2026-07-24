@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import {
+  createDefaultInkNormalOutsetSettings,
   createInkCuboidShape,
   createInkPlaneShape,
   createInkSphereShape,
@@ -22,6 +23,7 @@ import {
   renameInkGroup,
   updateInkReference,
   updateInkShape,
+  updateInkShapeAuthor,
   type InkStudioWorkFile,
 } from '../domain/workspace/workspace';
 import { WorkspaceStore, type WorkspaceSnapshot } from '../domain/workspace/WorkspaceStore';
@@ -55,6 +57,10 @@ const document = computed(() => snapshot.value?.document ?? null);
 const activeReference = computed(() => document.value ? getInkReference(document.value, session.activeReferenceId) : null);
 const activeGroup = computed(() => document.value ? getInkSourceByReference(document.value, session.activeReferenceId) : null);
 const activeShape = computed(() => activeGroup.value?.shapes.find((shape) => shape.id === session.activeShapeId) ?? null);
+const activeNormalOutset = computed(() => {
+  const shape = activeShape.value;
+  return shape && shape.kind !== 'plane' ? shape.normalOutset ?? createDefaultInkNormalOutsetSettings() : null;
+});
 const isDirty = computed(() => !!snapshot.value && snapshot.value.revision > snapshot.value.savedRevision);
 const isUnexported = computed(() => !!snapshot.value && snapshot.value.revision > snapshot.value.exportedRevision);
 const saveLabel = computed(() => isDirty.value ? 'Saving…' : isUnexported.value ? 'Saved locally · not exported' : 'Saved locally');
@@ -306,6 +312,38 @@ function setShapeRadius(event: Event): void {
   store?.transact('Resize Ink Sphere', (value) => updateInkShape(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'sphere' ? { ...current, radius: next } : current));
 }
 
+function setNormalOutsetEnabled(event: Event): void {
+  const enabled = (event.target as HTMLInputElement).checked;
+  updateActiveNormalOutset('Toggle Ink normal outset', undefined, (current) => ({ ...current, enabled }));
+}
+
+function setNormalOutsetColor(event: Event): void {
+  const color = (event.target as HTMLInputElement).value.toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(color)) return;
+  updateActiveNormalOutset('Set Ink normal outset colour', 'normal-outset:color', (current) => ({ ...current, color }));
+}
+
+function setNormalOutsetDistance(event: Event): void {
+  const fallback = activeNormalOutset.value?.distance ?? createDefaultInkNormalOutsetSettings().distance;
+  const distance = Math.min(1, Math.max(0.001, finiteInput(event, fallback)));
+  updateActiveNormalOutset('Set Ink normal outset distance', 'normal-outset:distance', (current) => ({ ...current, distance }));
+}
+
+function updateActiveNormalOutset(
+  label: string,
+  coalescedKey: string | undefined,
+  update: (current: ReturnType<typeof createDefaultInkNormalOutsetSettings>) => ReturnType<typeof createDefaultInkNormalOutsetSettings>,
+): void {
+  const shape = activeShape.value;
+  const referenceId = session.activeReferenceId;
+  if (!store || !shape || shape.kind === 'plane' || !referenceId) return;
+  const apply = (value: InkStudioWorkFile) => updateInkShapeAuthor(value, referenceId, shape.id, (current) => current.kind === 'plane'
+    ? current
+    : { ...current, normalOutset: update(current.normalOutset ?? createDefaultInkNormalOutsetSettings()) });
+  if (coalescedKey) store.transactCoalesced(`${coalescedKey}:${shape.id}`, label, apply);
+  else store.transact(label, apply);
+}
+
 function updateLighting(path: string, raw: string | number): void {
   store?.transactCoalesced(`preview-lighting:${path}`, 'Set preview lighting', (value) => {
     const lighting = structuredClone(value.previewLighting);
@@ -539,6 +577,18 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
             <label>Size</label><div class="vector-row"><label>X<input type="number" min="0.05" step="0.1" :value="activeShape.size.x" @change="setShapeSize('x', $event)" /></label><label>Y<input type="number" min="0.05" step="0.1" :value="activeShape.size.y" @change="setShapeSize('y', $event)" /></label><label>Z<input type="number" min="0.05" step="0.1" :value="activeShape.size.z" @change="setShapeSize('z', $event)" /></label></div>
           </template>
           <template v-else-if="activeShape.kind === 'sphere'"><label>Radius</label><input type="number" min="0.05" step="0.1" :value="activeShape.radius" @change="setShapeRadius" /></template>
+          <fieldset v-if="activeNormalOutset" class="normal-outset-settings">
+            <legend>Normal Outset</legend>
+            <label class="checkbox-label"><input :checked="activeNormalOutset.enabled" type="checkbox" @change="setNormalOutsetEnabled" /> Enabled</label>
+            <template v-if="activeNormalOutset.enabled">
+              <label>Shell Color <input :value="activeNormalOutset.color" type="color" @input="setNormalOutsetColor" /></label>
+              <label>Shell Outset
+                <input :value="activeNormalOutset.distance" type="range" min="0.001" max="1" step="0.001" @input="setNormalOutsetDistance" />
+                <output>{{ activeNormalOutset.distance.toFixed(3) }}</output>
+              </label>
+            </template>
+            <p class="note">Uses averaged Cuboid corner normals or radial Sphere normals. The shell does not enter Ink hard shadows.</p>
+          </fieldset>
           <p class="note">Shape transforms use source-local coordinates. Ribbon width remains in world units.</p>
         </section>
       </template>

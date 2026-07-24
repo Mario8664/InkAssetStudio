@@ -90,6 +90,10 @@ output { color: var(--accent); font-variant-numeric: tabular-nums; }
 .vector-row label { grid-template-columns: 12px minmax(0, 1fr); align-items: center; gap: 2px; font-size: 9px; }
 .vector-row input { min-width: 0; padding: 4px; font-size: 11px; }
 .shape-inspector { background: #1a1d1f55; }
+.normal-outset-settings { display: grid; gap: 8px; margin: 4px 0 0; padding: 9px; border: 1px solid #41484b; border-radius: 8px; }
+.normal-outset-settings legend { padding: 0 5px; color: var(--accent); font-size: 11px; }
+.normal-outset-settings .checkbox-label { display: flex; align-items: center; gap: 7px; }
+.normal-outset-settings input[type="range"] { width: 100%; }
 .pico-palette { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
 .pico-palette button { min-width: 0; min-height: 24px; padding: 0; border: 2px solid #111; }
 .pico-palette button.active { border-color: #fff; box-shadow: 0 0 0 1px var(--accent); }

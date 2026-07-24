@@ -8,6 +8,7 @@ import {
   WebGLRenderTarget,
   type DirectionalLight,
   type Material,
+  type Object3D,
   type Scene,
   type Texture,
   type WebGLRenderer,
@@ -40,7 +41,7 @@ export class InkHardShadowMap {
 
   markDirty(): void { this.dirty = true; }
 
-  /** Renders all regular shadow casters into a nearest-sampled Ink-only map. */
+  /** Renders only approved Mesh casters into a nearest-sampled Ink-only map. */
   renderIfNeeded(force = false): void {
     if (this.disabled || (!force && !this.dirty)) return;
     this.scene.updateMatrixWorld(true);
@@ -61,26 +62,39 @@ export class InkHardShadowMap {
     const target = this.target;
     if (!target) return;
     const casterStates = new Map<Mesh, ShadowCasterState>();
+    const suppressedRenderableStates = new Map<Object3D, boolean>();
     this.scene.traverse((object) => {
-      if (!(object instanceof Mesh)) return;
-      const inkDepthMaterial = object.userData.inkHardShadowDepthMaterial as Material | undefined;
-      const isCaster = object.castShadow || inkDepthMaterial !== undefined;
-      casterStates.set(object, { visible: object.visible, material: object.material });
-      object.visible = object.visible && isCaster;
-      if (inkDepthMaterial) object.material = inkDepthMaterial;
-      else if (isCaster) object.material = this.depthMaterial;
+      if (object instanceof Mesh) {
+        const inkDepthMaterial = object.userData.inkHardShadowDepthMaterial as Material | undefined;
+        const isCaster = object.castShadow || inkDepthMaterial !== undefined;
+        casterStates.set(object, { visible: object.visible, material: object.material });
+        object.visible = object.visible && isCaster;
+        if (inkDepthMaterial) object.material = inkDepthMaterial;
+        else if (isCaster) object.material = this.depthMaterial;
+        return;
+      }
+
+      // Packed depth lives in colour channels, so depthWrite=false does not
+      // prevent Line/Points/Sprite helpers from corrupting the sampled map.
+      if (hasRendererMaterial(object)) {
+        suppressedRenderableStates.set(object, object.visible);
+        object.visible = false;
+      }
     });
     const previousTarget = this.renderer.getRenderTarget();
     const previousAutoClear = this.renderer.autoClear;
     const previousShadowEnabled = this.renderer.shadowMap.enabled;
     const previousClearColor = this.renderer.getClearColor(new Color());
     const previousClearAlpha = this.renderer.getClearAlpha();
+    const previousBackground = this.scene.background;
     try {
       this.renderer.setRenderTarget(target);
       this.renderer.autoClear = true;
       this.renderer.shadowMap.enabled = false;
       // RGBA depth's clear value must be exactly 1.0 rather than the scene
-      // background colour, which otherwise becomes a false depth occluder.
+      // background colour, which otherwise force-clears the target again from
+      // WebGLBackground.render and becomes a false depth occluder.
+      this.scene.background = null;
       this.renderer.setClearColor(0xffffff, 1);
       this.renderer.clear(true, true, false);
       this.renderer.render(this.scene, camera);
@@ -92,10 +106,12 @@ export class InkHardShadowMap {
       this.renderer.autoClear = previousAutoClear;
       this.renderer.setRenderTarget(previousTarget);
       this.renderer.setClearColor(previousClearColor, previousClearAlpha);
+      this.scene.background = previousBackground;
       casterStates.forEach((state, mesh) => {
         mesh.visible = state.visible;
         mesh.material = state.material;
       });
+      suppressedRenderableStates.forEach((visible, object) => { object.visible = visible; });
     }
   }
 
@@ -123,4 +139,9 @@ export class InkHardShadowMap {
     this.height = height;
     this.lighting.hardShadowMap.value = this.target.texture as Texture;
   }
+}
+
+/** Mesh is handled separately so it can be tested as an approved caster. */
+export function hasRendererMaterial(object: Object3D): boolean {
+  return 'material' in object;
 }

@@ -128,11 +128,14 @@ export function normalizeStudioDocument(value: unknown): WorkspaceValidationResu
     if (counts.strokePoints > MAX_STROKE_POINTS_PER_GROUP || counts.fillBlocks > MAX_FILL_BLOCKS_PER_GROUP) {
       return invalid(`Ink source ${raw.assetId} exceeds the editable-content safety limits.`);
     }
+    // Imported and IndexedDB-restored files are untrusted at this boundary.
+    // Rebuild every derived Ribbon/Fill payload from authoritative author data
+    // even when the persisted hashes look current.
     const group: InkGroupData = withCompiledInkGroup({
       ...upgraded,
       id: raw.assetId,
       anchorPosition: { x: 0, y: 0, z: 0 },
-    });
+    }, null);
     assetIds.add(raw.assetId);
     embeddedAssets.push({ assetId: raw.assetId, group });
   }

@@ -12,6 +12,7 @@ const context = await browser.newContext({
   acceptDownloads: true,
 });
 const page = await context.newPage();
+const baseUrl = process.env.INK_STUDIO_BASE_URL ?? 'http://127.0.0.1:4430/';
 const errors = [];
 page.on('console', (message) => {
   if (message.type() === 'error') errors.push(`console: ${message.text()}`);
@@ -74,7 +75,7 @@ async function layoutSummary(label) {
 }
 
 try {
-  await page.goto('http://127.0.0.1:4430/', { waitUntil: 'networkidle' });
+  await page.goto(baseUrl, { waitUntil: 'networkidle' });
   await waitUntilReady();
 
   await page.locator('.round-button[title="New Group"]').click();
@@ -95,6 +96,19 @@ try {
   if (!(await pressure.textContent())?.includes('On')) throw new Error('Pressure On toggle did not update.');
 
   await page.getByRole('button', { name: 'Shape' }).click();
+  await page.getByRole('button', { name: '+ Box', exact: true }).click();
+  const normalOutset = page.locator('.normal-outset-settings');
+  if (!await normalOutset.isVisible()) throw new Error('Cuboid Normal Outset controls are not visible.');
+  await normalOutset.getByLabel('Enabled').check();
+  await normalOutset.getByLabel('Shell Color').evaluate((input) => {
+    input.value = '#5a3e16';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await normalOutset.getByLabel('Shell Outset').evaluate((input) => {
+    input.value = '0.08';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelector('.normal-outset-settings output')?.textContent === '0.080');
   await page.waitForTimeout(100);
   await page.screenshot({ path: 'studio-shape-preview.png', fullPage: true });
   await page.getByRole('button', { name: 'Draw' }).click();
@@ -167,10 +181,15 @@ try {
   const groups = exported.ink?.embeddedAssets ?? [];
   const strokePoints = groups.flatMap((asset) => asset.group.shapes).flatMap((shape) => shape.strokes).flatMap((stroke) => stroke.points);
   const fillBlocks = groups.flatMap((asset) => asset.group.shapes).flatMap((shape) => shape.fill.surfaces).flatMap((surface) => surface.blocks);
+  const normalOutsets = groups.flatMap((asset) => asset.group.shapes).filter((shape) => shape.normalOutset?.enabled);
   if (groups.length !== 2) throw new Error(`Expected 2 exported Groups, received ${groups.length}.`);
   if (strokePoints.length < 2) throw new Error('The browser drawing gesture did not produce editable outline points.');
   if (!strokePoints.every((point) => point.pressure === 1)) throw new Error('Pressure Off did not persist pressure: 1 for new points.');
   if (fillBlocks.length < 1) throw new Error('The browser Fill Paint gesture did not produce sparse editable Fill blocks.');
+  if (normalOutsets.length !== 1 || normalOutsets[0].normalOutset.color !== '#5a3e16' || normalOutsets[0].normalOutset.distance !== 0.08) {
+    throw new Error('Normal Outset author settings were not exported exactly.');
+  }
+  if (exported.sourceCompatibility?.paintingInkCompiledFormatVersion !== 13) throw new Error('The exported work file is not marked Ink compiled format v13.');
   if ((exported.terrain?.tiles?.length ?? 25) >= 25) throw new Error('The terrain erase gesture did not remove any reference cells.');
 
   await page.getByRole('button', { name: 'New' }).click();
@@ -231,6 +250,7 @@ try {
     groups: groups.length,
     strokePoints: strokePoints.length,
     fillBlocks: fillBlocks.length,
+    normalOutsets: normalOutsets.length,
     terrainTiles: exported.terrain.tiles.length,
   }, errors }, null, 2)}\n`);
   if (errors.length > 0) process.exitCode = 1;

@@ -2,8 +2,8 @@ import { BufferGeometry, Euler, Float32BufferAttribute, Matrix4, Vector3 } from 
 import { hashDerivedAssetSource } from './derivedAssets';
 
 export const INK_MANAGER_OBJECT_TYPE = 'painting.ink-manager';
-/** v11 keeps compiled Ribbons when only the editable Fill payload changes. */
-export const INK_COMPILED_FORMAT_VERSION = 11;
+/** v13 stores normal outset as a Shape configuration rather than painted data. */
+export const INK_COMPILED_FORMAT_VERSION = 13;
 export const INK_SPHERE_FACE_SEGMENTS = 4;
 export const INK_FILL_PIXELS_PER_WORLD_UNIT = 64;
 export const INK_FILL_BLOCK_SIZE = 16;
@@ -50,12 +50,21 @@ export type InkFillSurface = {
 /** Editable source pixels, not replayable brush samples. */
 export type InkFillLayer = { surfaces: InkFillSurface[] };
 
+/** One optional whole-Shape inward-facing normal-outset shell. */
+export type InkNormalOutsetSettings = {
+  enabled: boolean;
+  color: string;
+  distance: number;
+};
+
 type InkShapeBase = {
   id: string;
   position: InkVector3;
   rotation: InkVector3;
   strokes: InkOutlineStroke[];
   fill: InkFillLayer;
+  /** Cuboid/Sphere-only visual configuration; omitted by older assets and Planes. */
+  normalOutset?: InkNormalOutsetSettings;
 };
 
 export type InkPlaneShape = InkShapeBase & {
@@ -112,6 +121,8 @@ export type CompiledInkShape = {
   ribbonSourceHash: string;
   ribbon: CompiledInkRibbon;
   fill: CompiledInkFillSurface[];
+  /** Null means no shell Mesh, texture, material, or preview resource exists. */
+  normalOutset: CompiledInkNormalOutset | null;
 };
 
 /** A tightly packed, GPU-ready rectangular portion of one Fill chart. */
@@ -122,6 +133,11 @@ export type CompiledInkFillSurface = {
   width: number;
   height: number;
   rgba: number[];
+};
+
+export type CompiledInkNormalOutset = {
+  color: string;
+  distance: number;
 };
 
 export type CompiledInkGroup = {
@@ -172,6 +188,8 @@ export const DEFAULT_INK_STROKE_WIDTH = 0.035;
 export const DEFAULT_INK_CUBOID_SIZE: InkVector3 = { x: 1, y: 1, z: 1 };
 export const DEFAULT_INK_SPHERE_RADIUS = 0.5;
 export const DEFAULT_INK_FILL_BRUSH_SIZE = 0.1;
+export const DEFAULT_INK_NORMAL_OUTSET_COLOR = '#000000';
+export const DEFAULT_INK_NORMAL_OUTSET_DISTANCE = 0.05;
 const CUBOID_FACE_ORDER: readonly InkCuboidFace[] = [
   'positive-x', 'negative-x', 'positive-y', 'negative-y', 'positive-z', 'negative-z',
 ];
@@ -241,6 +259,7 @@ export function createInkCuboidShape(): InkCuboidShape {
     size: { ...DEFAULT_INK_CUBOID_SIZE },
     strokes: [],
     fill: createEmptyInkFillLayer(),
+    normalOutset: createDefaultInkNormalOutsetSettings(),
     lastOutlineEnd: null,
   };
 }
@@ -254,10 +273,14 @@ export function createInkSphereShape(): InkSphereShape {
     radius: DEFAULT_INK_SPHERE_RADIUS,
     strokes: [],
     fill: createEmptyInkFillLayer(),
+    normalOutset: createDefaultInkNormalOutsetSettings(),
   };
 }
 
 export function createEmptyInkFillLayer(): InkFillLayer { return { surfaces: [] }; }
+export function createDefaultInkNormalOutsetSettings(): InkNormalOutsetSettings {
+  return { enabled: false, color: DEFAULT_INK_NORMAL_OUTSET_COLOR, distance: DEFAULT_INK_NORMAL_OUTSET_DISTANCE };
+}
 
 /** Creates the sole 6-face × 4 × 4 cube Sphere surface used for picking and compilation. */
 export function createInkSphereGeometry(radius: number): BufferGeometry {
@@ -285,7 +308,7 @@ export function createInkOutlineStroke(
 
 export function withCompiledInkGroup(
   data: InkGroupData,
-  previous: InkGroupData | undefined = data,
+  previous: InkGroupData | null = data,
 ): InkGroupData {
   const source = { anchorPosition: data.anchorPosition, shapes: data.shapes };
   return {
@@ -345,6 +368,9 @@ function getInkShapeVisualBounds(shape: InkShape): { min: Vector3; max: Vector3 
     for (const point of stroke.points) points.push(getInkShapePoint(shape, point));
   }
   const hasFill = shape.fill.surfaces.some((surface) => surface.blocks.length > 0);
+  const normalOutsetMargin = shape.kind !== 'plane' && shape.normalOutset?.enabled
+    ? clampInkNormalOutsetDistance(shape.normalOutset.distance)
+    : 0;
   if (shape.kind === 'plane') {
     for (const surface of shape.fill.surfaces) {
       if (surface.id !== 'plane' || surface.blocks.length === 0) continue;
@@ -355,7 +381,7 @@ function getInkShapeVisualBounds(shape: InkShape): { min: Vector3; max: Vector3 
         );
       }
     }
-  } else if (hasFill) {
+  } else if (hasFill || normalOutsetMargin > 0) {
     const extent = shape.kind === 'cuboid'
       ? new Vector3(shape.size.x * 0.5, shape.size.y * 0.5, shape.size.z * 0.5)
       : new Vector3(shape.radius, shape.radius, shape.radius);
@@ -368,7 +394,8 @@ function getInkShapeVisualBounds(shape: InkShape): { min: Vector3; max: Vector3 
     min.min(point);
     max.max(point);
   }
-  if (outlineMargin > 0) min.addScalar(-outlineMargin), max.addScalar(outlineMargin);
+  const visualMargin = outlineMargin + normalOutsetMargin;
+  if (visualMargin > 0) min.addScalar(-visualMargin), max.addScalar(visualMargin);
   return { min, max };
 }
 
@@ -427,6 +454,7 @@ export function compileInkShape(
       ribbonSourceHash,
       ribbon: priorCompiled.ribbon,
       fill: compileInkFill(shape),
+      normalOutset: compileInkNormalOutset(shape),
     };
   }
   return {
@@ -435,6 +463,7 @@ export function compileInkShape(
     ribbonSourceHash,
     ribbon: compileInkShapeRibbon(shape),
     fill: compileInkFill(shape),
+    normalOutset: compileInkNormalOutset(shape),
   };
 }
 
@@ -658,6 +687,15 @@ export function compileInkFill(shape: InkShape): CompiledInkFillSurface[] {
     compiled.push({ id: surface.id, minX: bounds.minX, minY: bounds.minY, width, height, rgba });
   }
   return compiled;
+}
+
+/** Compiles one whole-Shape shell only when Cuboid/Sphere configuration enables it. */
+export function compileInkNormalOutset(shape: InkShape): CompiledInkNormalOutset | null {
+  if (shape.kind === 'plane' || !shape.normalOutset?.enabled) return null;
+  return {
+    color: normalizeInkNormalOutsetColor(shape.normalOutset.color),
+    distance: clampInkNormalOutsetDistance(shape.normalOutset.distance),
+  };
 }
 
 function cloneInkFillLayer(fill: InkFillLayer): InkFillLayer {
@@ -1091,8 +1129,9 @@ function upgradeShapes(value: unknown): InkShape[] | null {
   if (!Array.isArray(value)) return null;
   const shapes: InkShape[] = [];
   for (const rawShape of value) {
-    if (isInkShape(rawShape)) {
-      const withFill = rawShape.fill ? rawShape : { ...rawShape, fill: createEmptyInkFillLayer() };
+    const withNormalOutset = upgradeLegacyNormalOutset(rawShape);
+    if (withNormalOutset && isInkShape(withNormalOutset)) {
+      const withFill = withNormalOutset.fill ? withNormalOutset : { ...withNormalOutset, fill: createEmptyInkFillLayer() };
       shapes.push((withFill.kind === 'plane' || withFill.kind === 'cuboid') && withFill.lastOutlineEnd === undefined
         ? { ...withFill, lastOutlineEnd: null }
         : withFill);
@@ -1103,6 +1142,23 @@ function upgradeShapes(value: unknown): InkShape[] | null {
     shapes.push(retiredSphere);
   }
   return shapes;
+}
+
+/** v12's painted shell layer is deliberately retired into a disabled Shape setting. */
+function upgradeLegacyNormalOutset(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || !('normalOutset' in value)) return value;
+  const candidate = value as { normalOutset?: unknown };
+  if (candidate.normalOutset === undefined || isInkNormalOutsetSettings(candidate.normalOutset)) return value;
+  const prior = candidate.normalOutset as { distance?: unknown } | null;
+  return {
+    ...value,
+    normalOutset: {
+      ...createDefaultInkNormalOutsetSettings(),
+      ...(typeof prior?.distance === 'number' && Number.isFinite(prior.distance)
+        ? { distance: clampInkNormalOutsetDistance(prior.distance) }
+        : {}),
+    },
+  };
 }
 
 /** v6 Sphere UV strokes are not geometrically compatible with v7 and must be redrawn. */
@@ -1440,6 +1496,7 @@ function createInkSphereTriangleIndices(): number[] {
   const indices: number[] = [];
   const verticesPerFace = (INK_SPHERE_FACE_SEGMENTS + 1) ** 2;
   for (let faceIndex = 0; faceIndex < CUBOID_FACE_ORDER.length; faceIndex += 1) {
+    const face = CUBOID_FACE_ORDER[faceIndex]!;
     const first = faceIndex * verticesPerFace;
     for (let y = 0; y < INK_SPHERE_FACE_SEGMENTS; y += 1) {
       for (let x = 0; x < INK_SPHERE_FACE_SEGMENTS; x += 1) {
@@ -1447,7 +1504,14 @@ function createInkSphereTriangleIndices(): number[] {
         const topRight = topLeft + 1;
         const bottomLeft = topLeft + INK_SPHERE_FACE_SEGMENTS + 1;
         const bottomRight = bottomLeft + 1;
-        indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+        // ±Z charts reverse their local U orientation relative to the other
+        // cube faces. Reverse their winding so every sphere face has outward
+        // geometry normals for ray helpers and normal-outset rendering.
+        if (face === 'positive-z' || face === 'negative-z') {
+          indices.push(topLeft, topRight, bottomLeft, topRight, bottomRight, bottomLeft);
+        } else {
+          indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+        }
       }
     }
   }
@@ -1529,16 +1593,29 @@ function isInkShape(value: unknown): value is InkShape {
     return isPlaneOrientation(candidate.orientation)
       && isShapeStrokes(candidate.strokes, isInkPlaneStrokePoint)
       && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
+      && (candidate.normalOutset === undefined || isInkNormalOutsetSettings(candidate.normalOutset))
       && (candidate.lastOutlineEnd === undefined || candidate.lastOutlineEnd === null || isVector2(candidate.lastOutlineEnd));
   }
   if (candidate.kind === 'cuboid') {
     return isVector3InRange(candidate.size, 0.05, 64)
       && isShapeStrokes(candidate.strokes, isInkCuboidStrokePoint)
       && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
+      && (candidate.normalOutset === undefined || isInkNormalOutsetSettings(candidate.normalOutset))
       && (candidate.lastOutlineEnd === undefined || candidate.lastOutlineEnd === null || isInkCuboidStrokePoint(candidate.lastOutlineEnd));
   }
-  if (candidate.kind === 'sphere') return isFiniteRange(candidate.radius, 0.05, 64) && isShapeStrokes(candidate.strokes, isInkSphereStrokePoint) && (candidate.fill === undefined || isInkFillLayer(candidate.fill));
+  if (candidate.kind === 'sphere') return isFiniteRange(candidate.radius, 0.05, 64)
+    && isShapeStrokes(candidate.strokes, isInkSphereStrokePoint)
+    && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
+    && (candidate.normalOutset === undefined || isInkNormalOutsetSettings(candidate.normalOutset));
   return false;
+}
+
+function isInkNormalOutsetSettings(value: unknown): value is InkNormalOutsetSettings {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<InkNormalOutsetSettings>;
+  return typeof candidate.enabled === 'boolean'
+    && typeof candidate.color === 'string' && /^#[0-9a-f]{6}$/i.test(candidate.color)
+    && isFiniteRange(candidate.distance, 0.001, 1);
 }
 
 function isInkFillLayer(value: unknown): value is InkFillLayer {
@@ -1635,7 +1712,15 @@ function isCompiledInkShape(value: unknown): value is CompiledInkShape {
     && typeof candidate.ribbonSourceHash === 'string'
     && isCompiledInkRibbon(candidate.ribbon)
     && Array.isArray(candidate.fill)
-    && candidate.fill.every(isCompiledInkFillSurface);
+    && candidate.fill.every(isCompiledInkFillSurface)
+    && (candidate.normalOutset === null || isCompiledInkNormalOutset(candidate.normalOutset));
+}
+
+function isCompiledInkNormalOutset(value: unknown): value is CompiledInkNormalOutset {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<CompiledInkNormalOutset>;
+  return typeof candidate.color === 'string' && /^#[0-9a-f]{6}$/i.test(candidate.color)
+    && isFiniteRange(candidate.distance, 0.001, 1);
 }
 
 function isCompiledInkFillSurface(value: unknown): value is CompiledInkFillSurface {
@@ -1693,9 +1778,9 @@ function hashInkSource(
   });
 }
 
-/** Stroke and Fill source changes require a new canonical Shape payload. */
+/** Stroke, Fill, and normal-outset configuration changes require a new canonical Shape payload. */
 function hashInkShapeSource(shape: InkShape): string {
-  return hashInkData({ id: shape.id, kind: shape.kind, strokes: shape.strokes, fill: shape.fill });
+  return hashInkData({ id: shape.id, kind: shape.kind, strokes: shape.strokes, fill: shape.fill, normalOutset: shape.normalOutset });
 }
 
 function hashInkRibbonSource(shape: InkShape): string { return hashInkData({ id: shape.id, kind: shape.kind, strokes: shape.strokes }); }
@@ -1717,6 +1802,14 @@ function normalizeInkStrokeColor(value: string): string {
 
 function clampInkStrokeWidth(value: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(0.001, value)) : DEFAULT_INK_STROKE_WIDTH;
+}
+
+function clampInkNormalOutsetDistance(value: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0.001, value)) : DEFAULT_INK_NORMAL_OUTSET_DISTANCE;
+}
+
+function normalizeInkNormalOutsetColor(value: string): string {
+  return /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : DEFAULT_INK_NORMAL_OUTSET_COLOR;
 }
 
 function isGridCell(value: unknown): value is InkGridCell {

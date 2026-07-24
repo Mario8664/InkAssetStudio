@@ -1,6 +1,26 @@
-import { describe, expect, it } from 'vitest';
-import { DoubleSide, LineBasicMaterial, LineSegments, Mesh, MeshBasicMaterial, PerspectiveCamera, PlaneGeometry } from 'three';
-import { createInkCuboidShape, createInkOutlineStroke, createInkPlaneShape, createInkSphereShape } from '../src/domain/ink/ink';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  BackSide,
+  Color,
+  DirectionalLight,
+  DoubleSide,
+  FrontSide,
+  Group,
+  LineBasicMaterial,
+  LineSegments,
+  Mesh,
+  MeshBasicMaterial,
+  PerspectiveCamera,
+  PlaneGeometry,
+  Scene,
+  ShaderMaterial,
+  Vector3,
+  type Material,
+  type WebGLRenderTarget,
+  type WebGLRenderer,
+} from 'three';
+import { compileInkShape, createInkCuboidShape, createInkOutlineStroke, createInkPlaneShape, createInkSphereGeometry, createInkSphereShape, paintInkFill } from '../src/domain/ink/ink';
+import type { InkCuboidFace, InkShape } from '../src/domain/ink/ink';
 import { createTerrainTile } from '../src/domain/terrain/terrain';
 import { EditorViewportGuides } from '../src/render/EditorViewportGuides';
 import {
@@ -18,6 +38,15 @@ import {
   createHalfLambertShaderChunk,
 } from '../src/render/MapReferenceLayer';
 import { createTerrainBatchGeometry } from '../src/render/terrainGeometry';
+import {
+  applyInkShapeRenderTransform,
+  createInkFillLightingState,
+  createInkShapeRenderRoot,
+  updateInkShapeFillSurfaces,
+  updateInkShapeNormalOutset,
+} from '../src/render/InkGroupRenderer';
+import { hasRendererMaterial, InkHardShadowMap } from '../src/render/InkHardShadowMap';
+import { disposeObjectTree } from '../src/render/dispose';
 
 describe('Reference rendering', () => {
   it('supplies edge masks that hide the top-face triangle diagonal', () => {
@@ -105,5 +134,206 @@ describe('Reference rendering', () => {
     expect(sphere.grid.geometry.getAttribute('position').count).toBe(480);
     disposeInkShapePreviewTree(cuboid.root);
     disposeInkShapePreviewTree(sphere.root);
+  });
+
+  it('keeps all Sphere faces outward and uses front-visible/back-shadow Fill sides', () => {
+    const sphereGeometry = createInkSphereGeometry(1);
+    const positions = sphereGeometry.getAttribute('position');
+    const indices = sphereGeometry.getIndex()!;
+    for (let index = 0; index < indices.count; index += 3) {
+      const first = new Vector3().fromBufferAttribute(positions, indices.getX(index));
+      const second = new Vector3().fromBufferAttribute(positions, indices.getX(index + 1));
+      const third = new Vector3().fromBufferAttribute(positions, indices.getX(index + 2));
+      const normal = second.clone().sub(first).cross(third.clone().sub(first));
+      const centroid = first.clone().add(second).add(third).multiplyScalar(1 / 3);
+      expect(normal.dot(centroid)).toBeGreaterThan(0);
+    }
+    sphereGeometry.dispose();
+
+    const painted = paintInkFill(
+      createInkCuboidShape(),
+      [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }],
+      '#29adff',
+      0.12,
+      'circle',
+      false,
+    );
+    const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState(), { useSourceNormalOutset: true });
+    const fill = root.getObjectByName('InkFillSurface') as Mesh;
+    expect((fill.material as ShaderMaterial).side).toBe(FrontSide);
+    expect((fill.userData.inkHardShadowDepthMaterial as ShaderMaterial).side).toBe(BackSide);
+    const fillPositions = fill.geometry.getAttribute('position');
+    const fillIndices = fill.geometry.getIndex()!;
+    const first = new Vector3().fromBufferAttribute(fillPositions, fillIndices.getX(0));
+    const second = new Vector3().fromBufferAttribute(fillPositions, fillIndices.getX(1));
+    const third = new Vector3().fromBufferAttribute(fillPositions, fillIndices.getX(2));
+    expect(second.clone().sub(first).cross(third.clone().sub(first)).z).toBeGreaterThan(0);
+    disposeObjectTree(root);
+  });
+
+  it('keeps Fill triangles outward on all six Cuboid charts', () => {
+    const directions: Record<InkCuboidFace, Vector3> = {
+      'positive-x': new Vector3(1, 0, 0),
+      'negative-x': new Vector3(-1, 0, 0),
+      'positive-y': new Vector3(0, 1, 0),
+      'negative-y': new Vector3(0, -1, 0),
+      'positive-z': new Vector3(0, 0, 1),
+      'negative-z': new Vector3(0, 0, -1),
+    };
+    let shape: InkShape = createInkCuboidShape();
+    for (const face of Object.keys(directions) as InkCuboidFace[]) {
+      shape = paintInkFill(shape, [{ face, u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
+    }
+    const root = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState(), { useSourceNormalOutset: true });
+    const fills = root.children.filter((child): child is Mesh => child instanceof Mesh && child.name === 'InkFillSurface');
+    expect(fills).toHaveLength(6);
+    for (const fill of fills) {
+      const face = fill.userData.inkFillSurfaceId as InkCuboidFace;
+      const positions = fill.geometry.getAttribute('position');
+      const indices = fill.geometry.getIndex()!;
+      const first = new Vector3().fromBufferAttribute(positions, indices.getX(0));
+      const second = new Vector3().fromBufferAttribute(positions, indices.getX(1));
+      const third = new Vector3().fromBufferAttribute(positions, indices.getX(2));
+      const normal = second.clone().sub(first).cross(third.clone().sub(first));
+      expect(normal.dot(directions[face]), face).toBeGreaterThan(0);
+    }
+    disposeObjectTree(root);
+  });
+
+  it('creates and disposes a non-casting live-source Normal Outset shell', () => {
+    const shape = createInkSphereShape();
+    shape.normalOutset = { enabled: true, color: '#5a3e16', distance: 0.08 };
+    const root = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState(), { useSourceNormalOutset: true });
+    const shell = root.getObjectByName('InkNormalOutsetShell') as Mesh;
+    expect(shell).toBeInstanceOf(Mesh);
+    expect((shell.material as ShaderMaterial).side).toBe(BackSide);
+    expect(shell.castShadow).toBe(false);
+
+    const disposeGeometry = vi.spyOn(shell.geometry, 'dispose');
+    const disposeMaterial = vi.spyOn(shell.material as ShaderMaterial, 'dispose');
+    updateInkShapeNormalOutset(root, null, { ...shape, normalOutset: { ...shape.normalOutset, enabled: false } }, { useSourceNormalOutset: true });
+    expect(root.getObjectByName('InkNormalOutsetShell')).toBeUndefined();
+    expect(disposeGeometry).toHaveBeenCalledOnce();
+    expect(disposeMaterial).toHaveBeenCalledOnce();
+    disposeObjectTree(root);
+  });
+
+  it('reuses Ribbon and Fill GPU resources across Transform, Fill, and Normal Outset edits', () => {
+    const shape = createInkCuboidShape();
+    shape.strokes = [createInkOutlineStroke([
+      { face: 'positive-z', u: -0.2, v: 0, pressure: 1 },
+      { face: 'positive-z', u: 0.2, v: 0, pressure: 1 },
+    ], '#000000', 0.04)];
+    const painted = paintInkFill(shape, [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
+    const compiled = compileInkShape(painted);
+    const root = createInkShapeRenderRoot(compiled, painted, createInkFillLightingState(), { useSourceNormalOutset: true });
+    const ribbon = root.getObjectByName('InkShapeRibbon') as Mesh;
+    const fill = root.getObjectByName('InkFillSurface') as Mesh;
+    const fillGeometry = fill.geometry;
+    const fillMaterial = fill.material;
+    const fillTexture = fill.userData.inkFillTexture;
+
+    const transformed = {
+      ...painted,
+      position: { x: 2, y: 3, z: -1 },
+      rotation: { x: 0.1, y: 0.2, z: 0.3 },
+      normalOutset: { enabled: true, color: '#5a3e16', distance: 0.08 },
+    };
+    applyInkShapeRenderTransform(root, transformed);
+    updateInkShapeNormalOutset(root, compiled.normalOutset, transformed, { useSourceNormalOutset: true });
+    expect(root.getObjectByName('InkShapeRibbon')).toBe(ribbon);
+    expect(root.getObjectByName('InkFillSurface')).toBe(fill);
+    expect(root.position.toArray()).toEqual([2, 3, -1]);
+    expect(root.getObjectByName('InkNormalOutsetShell')).toBeInstanceOf(Mesh);
+
+    const repainted = paintInkFill(transformed, [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#ff004d', 0.12, 'circle', false);
+    const recompiled = compileInkShape(repainted, undefined, compiled);
+    updateInkShapeFillSurfaces(root, recompiled.fill, recompiled.normalOutset, repainted, createInkFillLightingState(), { useSourceNormalOutset: true });
+    expect(root.getObjectByName('InkShapeRibbon')).toBe(ribbon);
+    expect(root.getObjectByName('InkFillSurface')).toBe(fill);
+    expect(fill.geometry).toBe(fillGeometry);
+    expect(fill.material).toBe(fillMaterial);
+    expect(fill.userData.inkFillTexture).toBe(fillTexture);
+    disposeObjectTree(root);
+  });
+
+  it('identifies Line helpers for packed-depth hard-shadow suppression', () => {
+    const preview = createInkShapePreview(createInkPlaneShape('z', { x: 0, y: 0, z: 0 }), false);
+    expect(hasRendererMaterial(preview.grid)).toBe(true);
+    expect(hasRendererMaterial(new Group())).toBe(false);
+    disposeInkShapePreviewTree(preview.root);
+  });
+
+  it('isolates non-casters and restores every captured state when hard-shadow rendering throws', () => {
+    const scene = new Scene();
+    const sceneBackground = new Color(0x334455);
+    scene.background = sceneBackground;
+    const casterMaterial = new MeshBasicMaterial({ color: 0xffffff });
+    const caster = new Mesh(new PlaneGeometry(1, 1), casterMaterial);
+    caster.castShadow = true;
+    const nonCasterMaterial = new MeshBasicMaterial({ color: 0xffffff });
+    const nonCaster = new Mesh(new PlaneGeometry(1, 1), nonCasterMaterial);
+    const helper = new LineSegments(new PlaneGeometry(1, 1), new LineBasicMaterial({ color: 0xffffff }));
+    scene.add(caster, nonCaster, helper);
+
+    const light = new DirectionalLight();
+    scene.add(light);
+    const originalTarget = {} as WebGLRenderTarget;
+    const originalClearColor = new Color(0x123456);
+    let currentTarget: WebGLRenderTarget | null = originalTarget;
+    let clearColor = originalClearColor.clone();
+    let clearAlpha = 0.4;
+    let observed: { casterMaterial: Material | Material[]; nonCasterVisible: boolean; helperVisible: boolean; background: Scene['background'] } | null = null;
+    const renderer = {
+      capabilities: { maxTextureSize: 4096 },
+      autoClear: false,
+      shadowMap: { enabled: true },
+      getRenderTarget: () => currentTarget,
+      setRenderTarget: (target: WebGLRenderTarget | null) => { currentTarget = target; },
+      getClearColor: (target: Color) => target.copy(clearColor),
+      getClearAlpha: () => clearAlpha,
+      setClearColor: (color: Color | number, alpha: number) => {
+        clearColor = color instanceof Color ? color.clone() : new Color(color);
+        clearAlpha = alpha;
+      },
+      clear: () => undefined,
+      render: () => {
+        observed = {
+          casterMaterial: caster.material,
+          nonCasterVisible: nonCaster.visible,
+          helperVisible: helper.visible,
+          background: scene.background,
+        };
+        throw new Error('synthetic renderer failure');
+      },
+    } as unknown as WebGLRenderer;
+    const lighting = createInkFillLightingState();
+    const hardShadow = new InkHardShadowMap(renderer, scene, light, lighting);
+
+    expect(() => hardShadow.renderIfNeeded(true)).toThrow('synthetic renderer failure');
+    expect(observed).not.toBeNull();
+    expect(observed!.casterMaterial).not.toBe(casterMaterial);
+    expect(observed!.nonCasterVisible).toBe(false);
+    expect(observed!.helperVisible).toBe(false);
+    expect(observed!.background).toBeNull();
+    expect(caster.visible).toBe(true);
+    expect(caster.material).toBe(casterMaterial);
+    expect(nonCaster.visible).toBe(true);
+    expect(nonCaster.material).toBe(nonCasterMaterial);
+    expect(helper.visible).toBe(true);
+    expect(scene.background).toBe(sceneBackground);
+    expect(currentTarget).toBe(originalTarget);
+    expect(renderer.autoClear).toBe(false);
+    expect(renderer.shadowMap.enabled).toBe(true);
+    expect(clearColor.getHex()).toBe(originalClearColor.getHex());
+    expect(clearAlpha).toBe(0.4);
+
+    hardShadow.dispose();
+    caster.geometry.dispose();
+    casterMaterial.dispose();
+    nonCaster.geometry.dispose();
+    nonCasterMaterial.dispose();
+    helper.geometry.dispose();
+    (helper.material as LineBasicMaterial).dispose();
   });
 });

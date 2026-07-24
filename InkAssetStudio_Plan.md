@@ -30,6 +30,7 @@ Studio 不是图片画板、Procreate 导入器、远程桌面，也不是完整
 - 一个工作场景可包含多个 Ink Group、每个 Group 多个 Shape。
 - Group 保留稳定 `id`、名称、局部 Pivot、连续世界坐标摆放和 `0 / 90 / 180 / 270` 度离散 Y 轴旋转。
 - Shape 保留与 Painting 一致的 `plane`、`cuboid`、`sphere` 三类，以及位置、YXZ 旋转和固有尺寸/半径；不提供通用 Transform Scale。
+- Cuboid 与 Sphere 提供 Painting 当前的 `normalOutset` Shape 配置：可切换启用、设置壳颜色与 `0.001～1` 世界单位外扩距离；Plane 不提供该配置。壳不使用 Fill 纹理、Half-Lambert 或 Ink 硬阴影，关闭时不保留 Mesh 或 GPU 资源。
 - 提供完整 Ink 工具：描边绘制、描边擦除、填色绘制、填色擦除、Bucket Fill、吸色、颜色调整、可编辑色板、笔刷尺寸、直线辅助、Group/Shape 选择、Undo/Redo。
 - Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。
 - 描边仍是带压力点的可编辑表面坐标序列，并编译为世界宽度 Ribbon。
@@ -65,7 +66,7 @@ Studio 只提供下列渲染路径：
 | Map PBR | 关闭 | 不在移动端运行生产级地形材质、GTAO 或环境反射。 |
 | Map Reference | 开启 | 使用当前 Half-Lambert 风格显示地形颜色、体积和坡面。 |
 | 编辑期格子与坡向辅助 | 开启 | 地块真实边缘、近似无限网格与 X/Y/Z 坐标轴可分别开关，清楚显示单元边界、坡向、选择状态和绘制落点；永不作为最终资产内容。 |
-| Ink Ribbon / Fill | 开启 | 显示最终 Ink 描边、填色和真实深度遮挡。 |
+| Ink Ribbon / Fill / Normal Outset | 开启 | 显示最终 Ink 描边、填色、可选法线外扩壳和真实深度遮挡。 |
 | Ink 专属硬阴影 | 开启 | 保留 Ink 视觉表现必须的硬阴影。 |
 | 常规 PCF 阴影、GTAO、PMREM | 关闭 | 不运行与移动端 Ink 创作无关的重型路径。 |
 
@@ -99,23 +100,23 @@ Studio 提供与 Painting 当前 Global Lighting 相同语义的灯光调节，�
 
 Studio 以 Vue + Three.js 的静态 PWA 形式构建，目标设备为支持 Apple Pencil 的 iPad Safari / 主屏幕 Web App。它在视觉上是独立的全屏应用，而不是桌面网页的缩小版。
 
-### 5.1 当前阶段
+### 5.1 当前部署形态
 
 - 开发、构建和本地验证均在 Windows 完成。
 - PWA manifest、Service Worker、离线应用外壳缓存和 IndexedDB 草稿存储在项目内实现。
-- 本阶段不决定 PWA 的公网地址、局域网地址、证书、部署服务或配对流程。
-- 本阶段不启动常驻服务，也不要求 iPad 与电脑存在网络连接。
+- 源码托管在 `Mario8664/InkAssetStudio`，`main` 分支通过 GitHub Actions 构建并部署到 GitHub Pages。
+- 正式 HTTPS 地址为 `https://mario8664.github.io/InkAssetStudio/`；首次打开并完成预缓存后可离线使用。
+- Studio 不需要自建服务器或 Windows 常驻服务，也不要求 iPad 与电脑持续保持网络连接。
 
 ### 5.2 后续部署原则
 
 可靠的离线 PWA 必须至少一次从可信 HTTPS Origin 安装并预缓存应用外壳。普通 `http://192.168.x.x` 局域网地址不能作为正式的离线安装方案，因为 iPad Safari 的 Service Worker 安全上下文要求无法满足。
 
-后续可以在两种方式中选择其一：
+本项目已经选择第一种方式：
 
-1. 无后端的免费 HTTPS 静态托管，仅用于首次安装与应用更新；资产和草稿不上传；
-2. Windows 临时局域网 HTTPS 静态服务，配合 iPad 信任本地根证书；完成预缓存验证后服务可以关闭。
+1. GitHub Pages 无后端 HTTPS 静态托管，仅用于首次安装与应用更新；资产和草稿不上传。
 
-这两种选择均延后，不影响 Studio 的离线功能开发。
+局域网 HTTPS 配对不属于当前部署流程；如果以后需要，再作为独立功能设计。
 
 ### 5.3 本地数据安全
 
@@ -179,7 +180,7 @@ type InkStudioWorkFile = {
   formatVersion: number;
   sourceCompatibility: {
     paintingInkAssetSchemaVersion: 3;
-    paintingInkCompiledFormatVersion: 11;
+    paintingInkCompiledFormatVersion: 13;
     terrainSchemaVersion: number;
   };
   documentId: string;
@@ -245,7 +246,9 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 
 - 指针拖动期间仅维护临时 Ribbon 或 Fill 工作副本；松手后才形成一次作者源写入和一条 Undo/Redo 记录。
 - Ink 编译在 Worker 中完成；只编译受影响 Shape，并复用未变化 Shape 的 Ribbon/Fill 编译结果。
+- Shape Position/Rotation、Cuboid size 与 Sphere radius 使用已有 Mesh Transform 更新；Normal Outset 直接使用当前源配置预览。只有描边、Fill 或 Shape 拓扑的真实变化才替换相应渲染资源。
 - 只要输入不变，普通相机导航、UI 变化和灯光颜色/强度变化不得触发全场景重编译或硬阴影深度重建。
+- Ink 硬阴影捕获必须隔离 Line、Points、Sprite 和全部编辑辅助对象；纯 Outline 与 Normal Outset 编辑不得使硬阴影深度图失效。
 - Terrain 修改只重建必要的 Reference 几何与阴影深度；不得以整份文档克隆、全场景序列化或 GPU 资源重建作为普通交互的便利回退。
 - 每个 Three.js Geometry、Material、Texture、RenderTarget、Worker、事件监听、计时器和 PWA 页面 mount 都必须有单一所有者和明确 dispose 路径。
 - IndexedDB 写入必须节流并避免在 Pencil `pointermove` 中阻塞渲染；导出文件使用一致快照，不读取半提交的交互状态。
@@ -272,6 +275,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 
 - 多个 Group 可在同一工作场景中独立选择、摆放、编辑和撤销/重做。
 - Plane、Cuboid、Sphere 都支持现有的 Ink 描边与 Fill 规则。
+- Cuboid/Sphere 的 Normal Outset 开关、颜色和距离可实时预览、Undo/Redo、保存、导出和重新导入；Sphere 六面壳均保持朝外且无图表缺面。
 - 描边/擦除/填色/Fill 擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成。
 - Apple Pencil 压感开启时记录有效压力；关闭时新描边全部记录为 `1`；切换不会改写历史笔画。
 - 失焦、取消和 Pointer Capture 丢失不会产生半条已保存笔画或卡住的工具状态。
@@ -328,6 +332,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 | 常规阴影 / PBR | 不在移动端启用。 |
 | 灯光 | 完整参数可调；初值和 Reset 使用 Painting 当前保存值，不自动影响 Painting 全局灯光。 |
 | 压感 | 默认开启，可随时关闭；只影响新描边采样。 |
+| Normal Outset | Cuboid/Sphere Shape 配置；实时预览，不进入 Ink 硬阴影。 |
 | 图片导入 | 不做。 |
 | 网络 | 当前不实现；离线能力先完成。 |
 | Painting 修改 | 当前不做；未来导入器另行确认。 |

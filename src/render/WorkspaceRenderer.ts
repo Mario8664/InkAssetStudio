@@ -29,6 +29,8 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import {
   compileInkShapeRibbon,
   createInkOutlineStroke,
+  type CompiledInkFillSurface,
+  type CompiledInkShape,
   type InkCuboidFace,
   type InkGroupData,
   type InkShape,
@@ -42,7 +44,10 @@ import {
   applyInkShapeRenderTransform,
   createInkFillLightingState,
   createInkGroupRenderRoot,
+  createInkShapeRenderRoot,
   type InkFillLightingState,
+  updateInkShapeFillSurfaces,
+  updateInkShapeNormalOutset,
 } from './InkGroupRenderer';
 import { InkHardShadowMap } from './InkHardShadowMap';
 import { EditorViewportGuides } from './EditorViewportGuides';
@@ -55,7 +60,16 @@ type InkRenderEntry = {
   source: InkGroupData;
   anchorKey: string;
   root: Group;
+  shapes: Map<string, Group>;
 };
+
+type InkRenderUpdate = {
+  changed: boolean;
+  hardShadowChanged: boolean;
+  boundsChanged: boolean;
+};
+
+const INK_SHAPE_RENDER_OPTIONS = { useSourceNormalOutset: true } as const;
 
 export type InkSurfaceHit = {
   referenceId: string;
@@ -182,12 +196,12 @@ export class WorkspaceRenderer {
     this.referenceLayer.setTerrainEdgesVisible(session.showTerrainEdges);
     this.editorGuides.setGridVisible(session.showInfiniteGrid);
     this.editorGuides.setAxesVisible(session.showAxes);
-    const inkChanged = this.updateInkGroups(document);
+    const inkUpdate = this.updateInkGroups(document);
     const lightingDirectionChanged = this.applyLighting(document);
-    if (terrainChanged || inkChanged || lightingDirectionChanged) this.hardShadow.markDirty();
-    if (terrainChanged || inkChanged) this.updateShadowBounds(document);
+    if (terrainChanged || inkUpdate.hardShadowChanged || lightingDirectionChanged) this.hardShadow.markDirty();
+    if (terrainChanged || inkUpdate.boundsChanged) this.updateShadowBounds(document);
     const editHelperStateKey = `${session.mode}|${session.activeReferenceId ?? ''}|${session.activeShapeId ?? ''}`;
-    const selectionChanged = this.editHelperStateKey !== editHelperStateKey || inkChanged;
+    const selectionChanged = this.editHelperStateKey !== editHelperStateKey || inkUpdate.changed;
     this.editHelperStateKey = editHelperStateKey;
     if (selectionChanged) this.rebuildEditHelpers();
     this.controls.enabled = session.mode === 'navigate';
@@ -308,14 +322,18 @@ export class WorkspaceRenderer {
     this.renderer.dispose();
   }
 
-  private updateInkGroups(document: InkStudioWorkFile): boolean {
+  private updateInkGroups(document: InkStudioWorkFile): InkRenderUpdate {
     const resolved = resolveInkGroups(document);
     const sources = new Map(document.ink.embeddedAssets.map((embedded) => [embedded.assetId, embedded.group]));
     const references = new Map(document.ink.assetReferences.map((reference) => [reference.id, reference]));
     const nextIds = new Set(resolved.map((group) => group.id));
     let changed = false;
+    let hardShadowChanged = false;
+    let boundsChanged = false;
     for (const [id, entry] of this.inkEntries) {
       if (nextIds.has(id)) continue;
+      hardShadowChanged ||= hasInkHardShadowCasterInGroup(entry.source);
+      boundsChanged = true;
       disposeObjectTree(entry.root);
       entry.root.removeFromParent();
       this.inkEntries.delete(id);
@@ -327,17 +345,101 @@ export class WorkspaceRenderer {
       const anchorKey = `${reference.anchorPosition.x}:${reference.anchorPosition.y}:${reference.anchorPosition.z}:${reference.rotation}`;
       const existing = this.inkEntries.get(group.id);
       if (existing?.source === source && existing.anchorKey === anchorKey) continue;
-      if (existing) {
-        disposeObjectTree(existing.root);
-        existing.root.removeFromParent();
+      if (!existing) {
+        const root = createInkGroupRenderRoot(group, this.inkLighting, INK_SHAPE_RENDER_OPTIONS);
+        root.userData.referenceId = group.id;
+        this.inkRoot.add(root);
+        this.inkEntries.set(group.id, {
+          source,
+          anchorKey,
+          root,
+          shapes: collectInkShapeRoots(root),
+        });
+        hardShadowChanged ||= hasInkHardShadowCasterInGroup(source);
+        boundsChanged = true;
+        changed = true;
+        continue;
       }
-      const root = createInkGroupRenderRoot(group, this.inkLighting);
-      root.userData.referenceId = group.id;
-      this.inkRoot.add(root);
-      this.inkEntries.set(group.id, { source, anchorKey, root });
+
+      if (existing.anchorKey !== anchorKey) {
+        const hasCaster = hasInkHardShadowCasterInGroup(existing.source) || hasInkHardShadowCasterInGroup(source);
+        existing.root.position.set(reference.anchorPosition.x, reference.anchorPosition.y, reference.anchorPosition.z);
+        existing.root.rotation.y = reference.rotation * Math.PI / 180;
+        hardShadowChanged ||= hasCaster;
+        boundsChanged = true;
+      }
+      if (existing.source !== source) {
+        hardShadowChanged ||= this.updateInkGroupShapes(existing, source);
+      }
+      existing.source = source;
+      existing.anchorKey = anchorKey;
       changed = true;
     }
-    return changed;
+    return { changed, hardShadowChanged, boundsChanged };
+  }
+
+  /** Reuses Shape roots and uploaded Ribbon buffers whenever their true source is unchanged. */
+  private updateInkGroupShapes(entry: InkRenderEntry, source: InkGroupData): boolean {
+    const previousShapes = new Map(entry.source.shapes.map((shape) => [shape.id, shape]));
+    const nextShapes = new Map(source.shapes.map((shape) => [shape.id, shape]));
+    const previousCompiled = new Map(entry.source.compiled.shapes.map((shape) => [shape.shapeId, shape]));
+    const nextCompiled = new Map(source.compiled.shapes.map((shape) => [shape.shapeId, shape]));
+    let hardShadowChanged = false;
+
+    for (const [shapeId, root] of entry.shapes) {
+      if (nextShapes.has(shapeId) && nextCompiled.has(shapeId)) continue;
+      hardShadowChanged ||= hasInkHardShadowCasterInShape(previousCompiled.get(shapeId));
+      disposeObjectTree(root);
+      root.removeFromParent();
+      entry.shapes.delete(shapeId);
+    }
+
+    for (const [shapeId, compiled] of nextCompiled) {
+      const shape = nextShapes.get(shapeId);
+      if (!shape) continue;
+      const existing = entry.shapes.get(shapeId);
+      const priorShape = previousShapes.get(shapeId);
+      const priorCompiled = previousCompiled.get(shapeId);
+      if (!existing) {
+        const root = createInkShapeRenderRoot(compiled, shape, this.inkLighting, INK_SHAPE_RENDER_OPTIONS);
+        entry.root.add(root);
+        entry.shapes.set(shapeId, root);
+        hardShadowChanged ||= hasInkHardShadowCasterInShape(compiled);
+        continue;
+      }
+
+      const shapeTransformChanged = !priorShape || didInkShapeTransformChange(priorShape, shape);
+      const fillChanged = !sameCompiledInkFill(priorCompiled?.fill ?? [], compiled.fill);
+      if ((shapeTransformChanged || fillChanged)
+        && (hasInkHardShadowCasterInShape(priorCompiled) || hasInkHardShadowCasterInShape(compiled))) {
+        hardShadowChanged = true;
+      }
+
+      if (priorCompiled?.sourceHash === compiled.sourceHash) {
+        applyInkShapeRenderTransform(existing, shape);
+        updateInkShapeNormalOutset(existing, compiled.normalOutset, shape, INK_SHAPE_RENDER_OPTIONS);
+        continue;
+      }
+      if (priorCompiled?.ribbonSourceHash === compiled.ribbonSourceHash) {
+        applyInkShapeRenderTransform(existing, shape);
+        updateInkShapeFillSurfaces(
+          existing,
+          compiled.fill,
+          compiled.normalOutset,
+          shape,
+          this.inkLighting,
+          INK_SHAPE_RENDER_OPTIONS,
+        );
+        continue;
+      }
+
+      disposeObjectTree(existing);
+      existing.removeFromParent();
+      const replacement = createInkShapeRenderRoot(compiled, shape, this.inkLighting, INK_SHAPE_RENDER_OPTIONS);
+      entry.root.add(replacement);
+      entry.shapes.set(shapeId, replacement);
+    }
+    return hardShadowChanged;
   }
 
   private rebuildEditHelpers(): void {
@@ -462,6 +564,64 @@ export class WorkspaceRenderer {
     this.terrain.referenceRoot.visible = previousTerrainVisibility;
     this.composer.render();
   };
+}
+
+function collectInkShapeRoots(root: Group): Map<string, Group> {
+  const shapes = new Map<string, Group>();
+  for (const child of root.children) {
+    if (child instanceof Group && typeof child.userData.inkShapeId === 'string') {
+      shapes.set(child.userData.inkShapeId, child);
+    }
+  }
+  return shapes;
+}
+
+function hasInkHardShadowCasterInGroup(group: InkGroupData): boolean {
+  return group.compiled.shapes.some((shape) => hasInkHardShadowCasterInShape(shape));
+}
+
+function hasInkHardShadowCasterInShape(shape: CompiledInkShape | undefined): boolean {
+  return (shape?.fill.length ?? 0) > 0;
+}
+
+function didInkShapeTransformChange(previous: InkShape, next: InkShape): boolean {
+  if (previous.kind !== next.kind
+    || !sameInkVector3(previous.position, next.position)
+    || !sameInkVector3(previous.rotation, next.rotation)) return true;
+  if (previous.kind === 'cuboid' && next.kind === 'cuboid') return !sameInkVector3(previous.size, next.size);
+  if (previous.kind === 'sphere' && next.kind === 'sphere') return previous.radius !== next.radius;
+  return false;
+}
+
+/** Worker round-trips break reference equality, so compare the packed Fill payload exactly. */
+function sameCompiledInkFill(
+  previous: readonly CompiledInkFillSurface[],
+  next: readonly CompiledInkFillSurface[],
+): boolean {
+  if (previous === next) return true;
+  if (previous.length !== next.length) return false;
+  for (let surfaceIndex = 0; surfaceIndex < previous.length; surfaceIndex += 1) {
+    const first = previous[surfaceIndex]!;
+    const second = next[surfaceIndex]!;
+    if (first === second) continue;
+    if (first.id !== second.id
+      || first.minX !== second.minX
+      || first.minY !== second.minY
+      || first.width !== second.width
+      || first.height !== second.height
+      || first.rgba.length !== second.rgba.length) return false;
+    for (let componentIndex = 0; componentIndex < first.rgba.length; componentIndex += 1) {
+      if (first.rgba[componentIndex] !== second.rgba[componentIndex]) return false;
+    }
+  }
+  return true;
+}
+
+function sameInkVector3(
+  previous: Readonly<{ x: number; y: number; z: number }>,
+  next: Readonly<{ x: number; y: number; z: number }>,
+): boolean {
+  return previous.x === next.x && previous.y === next.y && previous.z === next.z;
 }
 
 function getSurfacePoint(shape: InkShape, local: Vector3, normal: Vector3, pressure: number): InkSurfacePoint {

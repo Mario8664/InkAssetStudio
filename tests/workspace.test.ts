@@ -24,6 +24,67 @@ describe('Ink Studio work files', () => {
     expect(parsed.document.ink.assetReferences[1]?.anchorPosition).toEqual({ x: 2, y: 1, z: -1 });
   });
 
+  it('upgrades v11 work files to v13 and treats missing Normal Outset as disabled', () => {
+    const legacy = JSON.parse(serializeStudioDocument(createStudioDocument('Legacy v11'))) as any;
+    legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 11;
+    const shape = legacy.ink.embeddedAssets[0].group.shapes[0];
+    delete shape.normalOutset;
+    legacy.ink.embeddedAssets[0].group.compiled.formatVersion = 11;
+    for (const compiled of legacy.ink.embeddedAssets[0].group.compiled.shapes) delete compiled.normalOutset;
+
+    const parsed = parseStudioWorkFile(JSON.stringify(legacy));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const upgraded = parsed.document.ink.embeddedAssets[0]!.group;
+    expect(parsed.document.sourceCompatibility.paintingInkCompiledFormatVersion).toBe(13);
+    expect(upgraded.compiled.formatVersion).toBe(13);
+    expect(upgraded.compiled.shapes[0]?.normalOutset).toBeNull();
+  });
+
+  it('retires v12 painted Normal Outset data into a disabled editable setting', () => {
+    const legacy = JSON.parse(serializeStudioDocument(createStudioDocument('Legacy v12'))) as any;
+    legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 12;
+    const shape = legacy.ink.embeddedAssets[0].group.shapes[0];
+    shape.kind = 'cuboid';
+    delete shape.orientation;
+    shape.size = { x: 1, y: 1, z: 1 };
+    shape.normalOutset = { distance: 0.22, fill: { surfaces: [] } };
+    legacy.ink.embeddedAssets[0].group.compiled.formatVersion = 12;
+
+    const parsed = parseStudioWorkFile(JSON.stringify(legacy));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const upgraded = parsed.document.ink.embeddedAssets[0]!.group;
+    expect(upgraded.shapes[0]?.normalOutset).toEqual({ enabled: false, color: '#000000', distance: 0.22 });
+    expect(upgraded.compiled.formatVersion).toBe(13);
+    expect(upgraded.compiled.shapes[0]?.normalOutset).toBeNull();
+  });
+
+  it('rebuilds tampered derived Ink payloads even when their persisted hashes still match', () => {
+    const document = createStudioDocument('Untrusted derived payload');
+    const group = document.ink.embeddedAssets[0]!.group;
+    const shape = group.shapes[0]!;
+    const authored = {
+      ...shape,
+      strokes: [createInkOutlineStroke([
+        { x: -0.25, y: 0, pressure: 0.5 },
+        { x: 0.25, y: 0, pressure: 1 },
+      ], '#ff004d', 0.04)],
+    };
+    document.ink.embeddedAssets[0]!.group = withCompiledInkGroup({ ...group, shapes: [authored] });
+    const untrusted = JSON.parse(serializeStudioDocument(document)) as any;
+    const persisted = untrusted.ink.embeddedAssets[0].group.compiled.shapes[0];
+    expect(persisted.ribbon.positions.length).toBeGreaterThan(0);
+    persisted.ribbon.positions = persisted.ribbon.positions.map(() => 999);
+
+    const parsed = parseStudioWorkFile(JSON.stringify(untrusted));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const rebuilt = parsed.document.ink.embeddedAssets[0]!.group.compiled.shapes[0]!;
+    expect(rebuilt.sourceHash).toBe(persisted.sourceHash);
+    expect(rebuilt.ribbon.positions).not.toContain(999);
+  });
+
   it('rejects duplicate terrain cells', () => {
     const document = createStudioDocument();
     document.terrain.tiles.push({ ...document.terrain.tiles[0]! });

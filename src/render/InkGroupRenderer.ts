@@ -1,10 +1,13 @@
 import {
+  BackSide,
   BufferAttribute,
   BufferGeometry,
+  Color,
   DataTexture,
   DynamicDrawUsage,
   DoubleSide,
   Float32BufferAttribute,
+  FrontSide,
   Group,
   Mesh,
   Object3D,
@@ -19,9 +22,13 @@ import {
   Vector3,
 } from 'three';
 import {
+  DEFAULT_INK_NORMAL_OUTSET_COLOR,
+  DEFAULT_INK_NORMAL_OUTSET_DISTANCE,
   INK_FILL_PIXELS_PER_WORLD_UNIT,
   INK_SPHERE_FACE_SEGMENTS,
+  createInkSphereGeometry,
   type CompiledInkFillSurface,
+  type CompiledInkNormalOutset,
   type CompiledInkRibbon,
   type CompiledInkShape,
   type InkCuboidFace,
@@ -29,6 +36,11 @@ import {
   type InkGroupData,
   type InkShape,
 } from '../domain/ink/ink';
+
+/** Studio previews current source settings before the Worker result arrives. */
+export type InkShapeRenderOptions = {
+  useSourceNormalOutset?: boolean;
+};
 
 /** Shared mutable uniforms for every Fill material mounted by one GridSceneView. */
 export type InkFillLightingState = {
@@ -57,30 +69,36 @@ export function createInkFillLightingState(): InkFillLightingState {
  * Materializes only already-compiled ribbon attributes. Source strokes are
  * never sampled or triangulated in the Game Window.
  */
-export function createInkGroupRenderRoot(data: InkGroupData, lighting = createInkFillLightingState()): Group {
+export function createInkGroupRenderRoot(
+  data: InkGroupData,
+  lighting = createInkFillLightingState(),
+  options: InkShapeRenderOptions = {},
+): Group {
   const root = new Group();
   root.name = 'InkGroup';
   root.position.set(data.anchorPosition.x, data.anchorPosition.y, data.anchorPosition.z);
   root.rotation.y = ((data.placementRotation ?? 0) * Math.PI) / 180;
   for (const shape of data.compiled.shapes) {
     const source = data.shapes.find((candidate) => candidate.id === shape.shapeId);
-    const shapeRoot = source ? createInkShapeRenderRoot(shape, source, lighting) : null;
+    const shapeRoot = source ? createInkShapeRenderRoot(shape, source, lighting, options) : null;
     if (shapeRoot) root.add(shapeRoot);
   }
   return root;
 }
 
-/** Creates one independently replaceable Shape root: Fill first, Outline on top. */
+/** Creates one independently replaceable Shape root: Fill, optional shell, then Outline. */
 export function createInkShapeRenderRoot(
   shape: CompiledInkShape,
   source: InkShape,
   lighting = createInkFillLightingState(),
+  options: InkShapeRenderOptions = {},
 ): Group {
   const root = new Group();
   root.name = 'InkShape';
   root.userData.inkShapeId = shape.shapeId;
   applyInkShapeRenderTransform(root, source);
   for (const fill of shape.fill) root.add(createInkFillSurfaceMesh(fill, source, lighting));
+  updateInkShapeNormalOutset(root, shape.normalOutset, source, options);
   const outline = createInkShapeRenderMesh(shape, source, false);
   if (outline) root.add(outline);
   return root;
@@ -90,8 +108,10 @@ export function createInkShapeRenderRoot(
 export function updateInkShapeFillSurfaces(
   root: Group,
   fills: readonly CompiledInkFillSurface[],
+  normalOutset: CompiledInkNormalOutset | null,
   source: InkShape,
   lighting = createInkFillLightingState(),
+  options: InkShapeRenderOptions = {},
 ): void {
   const existing = new Map<InkFillSurfaceId, Mesh>();
   for (const child of root.children) if (child instanceof Mesh && child.name === 'InkFillSurface' && typeof child.userData.inkFillSurfaceId === 'string') {
@@ -109,6 +129,31 @@ export function updateInkShapeFillSurfaces(
     if (mesh) updateInkFillSurfaceMesh(mesh, fill, source);
     else root.add(createInkFillSurfaceMesh(fill, source, lighting));
   }
+
+  updateInkShapeNormalOutset(root, normalOutset, source, options);
+}
+
+/** Creates, updates, or removes the whole-Shape shell from live source settings. */
+export function updateInkShapeNormalOutset(
+  root: Group,
+  normalOutset: CompiledInkNormalOutset | null,
+  source: InkShape,
+  options: InkShapeRenderOptions = {},
+): void {
+  const next = resolveInkNormalOutsetRenderSettings(normalOutset, source, options);
+  const existing = root.children.find((child) => child instanceof Mesh && child.name === 'InkNormalOutsetShell') as Mesh | undefined;
+  if (!next) {
+    if (existing) {
+      disposeInkNormalOutsetMesh(existing);
+      existing.removeFromParent();
+    }
+    return;
+  }
+  if (existing) {
+    updateInkNormalOutsetMesh(existing, next);
+    return;
+  }
+  root.add(createInkNormalOutsetMesh(next, source));
 }
 
 /**
@@ -220,6 +265,86 @@ export function createInkShapeRenderMesh(shape: CompiledInkShape, source: InkSha
   return mesh;
 }
 
+type InkNormalOutsetRenderSettings = CompiledInkNormalOutset & { enabled: boolean };
+
+function resolveInkNormalOutsetRenderSettings(
+  normalOutset: CompiledInkNormalOutset | null,
+  shape: InkShape,
+  options: InkShapeRenderOptions,
+): InkNormalOutsetRenderSettings | null {
+  if (!options.useSourceNormalOutset) return normalOutset ? { ...normalOutset, enabled: true } : null;
+  if (shape.kind === 'plane' || !shape.normalOutset?.enabled) return null;
+  return {
+    enabled: true,
+    color: shape.normalOutset.color ?? DEFAULT_INK_NORMAL_OUTSET_COLOR,
+    distance: shape.normalOutset.distance ?? DEFAULT_INK_NORMAL_OUTSET_DISTANCE,
+  };
+}
+
+/** Disabled Shapes own no shell resource; enabled Studio previews use live source settings. */
+function createInkNormalOutsetMesh(outset: InkNormalOutsetRenderSettings, shape: InkShape): Mesh {
+  const geometry = createInkNormalOutsetGeometry(shape);
+  if (!geometry) throw new Error(`Normal outset is unsupported for Ink ${shape.kind}.`);
+  const mesh = new Mesh(geometry, createInkNormalOutsetMaterial(outset, shape));
+  mesh.name = 'InkNormalOutsetShell';
+  mesh.visible = outset.enabled;
+  mesh.castShadow = false;
+  return mesh;
+}
+
+function updateInkNormalOutsetMesh(mesh: Mesh, outset: InkNormalOutsetRenderSettings): void {
+  const uniforms = (mesh.material as ShaderMaterial).uniforms;
+  (uniforms.inkNormalOutsetColor!.value as Color).set(outset.color);
+  uniforms.inkNormalOutsetDistance!.value = outset.distance;
+  mesh.visible = outset.enabled;
+}
+
+function disposeInkNormalOutsetMesh(mesh: Mesh): void {
+  mesh.geometry.dispose();
+  (mesh.material as ShaderMaterial).dispose();
+}
+
+function createInkNormalOutsetGeometry(shape: InkShape): BufferGeometry | null {
+  if (shape.kind === 'cuboid') return createAveragedNormalCuboidGeometry();
+  if (shape.kind === 'sphere') return createInkSphereGeometry(1);
+  return null;
+}
+
+/** Shared corners and equal-weight corner normals keep the Cuboid shell continuous. */
+function createAveragedNormalCuboidGeometry(): BufferGeometry {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute([
+    -0.5, -0.5, -0.5,
+    0.5, -0.5, -0.5,
+    0.5, 0.5, -0.5,
+    -0.5, 0.5, -0.5,
+    -0.5, -0.5, 0.5,
+    0.5, -0.5, 0.5,
+    0.5, 0.5, 0.5,
+    -0.5, 0.5, 0.5,
+  ], 3));
+  geometry.setIndex([
+    4, 5, 7, 5, 6, 7,
+    1, 0, 2, 0, 3, 2,
+    1, 2, 5, 5, 2, 6,
+    0, 4, 3, 4, 7, 3,
+    3, 7, 2, 7, 6, 2,
+    0, 1, 4, 1, 5, 4,
+  ]);
+  const cornerNormal = 1 / Math.sqrt(3);
+  geometry.setAttribute('normal', new Float32BufferAttribute([
+    -cornerNormal, -cornerNormal, -cornerNormal,
+    cornerNormal, -cornerNormal, -cornerNormal,
+    cornerNormal, cornerNormal, -cornerNormal,
+    -cornerNormal, cornerNormal, -cornerNormal,
+    -cornerNormal, -cornerNormal, cornerNormal,
+    cornerNormal, -cornerNormal, cornerNormal,
+    cornerNormal, cornerNormal, cornerNormal,
+    -cornerNormal, cornerNormal, cornerNormal,
+  ], 3));
+  return geometry;
+}
+
 function createInkFillSurfaceMesh(fill: CompiledInkFillSurface, shape: InkShape, lighting: InkFillLightingState): Mesh {
   const texture = new DataTexture(new Uint8Array(fill.rgba), fill.width, fill.height, RGBAFormat, UnsignedByteType);
   texture.magFilter = NearestFilter;
@@ -319,7 +444,7 @@ function createInkFillSurfaceMaterial(
     transparent: false,
     depthTest: true,
     depthWrite: true,
-    side: DoubleSide,
+    side: FrontSide,
     toneMapped: false,
     polygonOffset: true,
     polygonOffsetFactor: -0.5,
@@ -383,6 +508,42 @@ void main() {
   });
 }
 
+/** The shell moves in world space and renders only its inward-facing side. */
+function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset, shape: InkShape): ShaderMaterial {
+  return new ShaderMaterial({
+    uniforms: {
+      inkNormalOutsetColor: { value: new Color(outset.color) },
+      inkNormalOutsetDistance: { value: outset.distance },
+      inkNormalOutsetSphere: { value: shape.kind === 'sphere' ? 1 : 0 },
+    },
+    transparent: false,
+    depthTest: true,
+    depthWrite: true,
+    side: BackSide,
+    toneMapped: false,
+    vertexShader: `
+uniform float inkNormalOutsetDistance;
+uniform float inkNormalOutsetSphere;
+void main() {
+  vec3 localNormal = inkNormalOutsetSphere > 0.5 ? normalize(position) : normal;
+  vec3 modelScale = vec3(
+    length(modelMatrix[0].xyz),
+    length(modelMatrix[1].xyz),
+    length(modelMatrix[2].xyz)
+  );
+  vec3 outwardWorldNormal = normalize(mat3(modelMatrix) * (localNormal / max(modelScale * modelScale, vec3(0.000001))));
+  vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+  worldPosition.xyz += outwardWorldNormal * inkNormalOutsetDistance;
+  gl_Position = projectionMatrix * viewMatrix * worldPosition;
+}`,
+    fragmentShader: `
+uniform vec3 inkNormalOutsetColor;
+void main() {
+  gl_FragColor = vec4(inkNormalOutsetColor, 1.0);
+}`,
+  });
+}
+
 /**
  * The dedicated Ink shadow pass must discard the same transparent pixels as
  * the visible Fill shader. Otherwise each sparse Fill atlas would cast its
@@ -397,7 +558,7 @@ function createInkFillHardShadowDepthMaterial(fillMaterial: ShaderMaterial): Sha
     },
     depthTest: true,
     depthWrite: true,
-    side: DoubleSide,
+    side: BackSide,
     vertexShader: `
 varying vec2 vInkFillUv;
 void main() {
@@ -438,6 +599,7 @@ function createCuboidFillSurfaceGeometry(id: InkFillSurfaceId): BufferGeometry {
     getCuboidFacePosition(id, 0.5, -0.5),
     getCuboidFacePosition(id, -0.5, 0.5),
     getCuboidFacePosition(id, 0.5, 0.5),
+    id === 'positive-z' || id === 'negative-z',
   );
 }
 
@@ -460,7 +622,11 @@ function createSphereFillSurfaceGeometry(id: InkFillSurfaceId): BufferGeometry {
     const topRight = topLeft + 1;
     const bottomLeft = topLeft + segments + 1;
     const bottomRight = bottomLeft + 1;
-    indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+    if (id === 'positive-z' || id === 'negative-z') {
+      indices.push(topLeft, topRight, bottomLeft, topRight, bottomRight, bottomLeft);
+    } else {
+      indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+    }
   }
   geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
   geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
@@ -483,7 +649,14 @@ function getInkFillGeometryKey(fill: CompiledInkFillSurface, shape: InkShape): s
   return shape.kind === 'plane' ? `${fill.minX}:${fill.minY}:${fill.width}:${fill.height}` : shape.kind;
 }
 
-function createSurfaceQuad(topLeft: Vector3, topRight: Vector3, bottomLeft: Vector3, bottomRight: Vector3): BufferGeometry {
+/** `±Z` use the opposite winding under Ink's persisted u/v chart convention. */
+function createSurfaceQuad(
+  topLeft: Vector3,
+  topRight: Vector3,
+  bottomLeft: Vector3,
+  bottomRight: Vector3,
+  reverseWinding = false,
+): BufferGeometry {
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new Float32BufferAttribute([
     topLeft.x, topLeft.y, topLeft.z,
@@ -492,7 +665,7 @@ function createSurfaceQuad(topLeft: Vector3, topRight: Vector3, bottomLeft: Vect
     bottomRight.x, bottomRight.y, bottomRight.z,
   ], 3));
   geometry.setAttribute('uv', new Float32BufferAttribute([0, 0, 1, 0, 0, 1, 1, 1], 2));
-  geometry.setIndex([0, 2, 1, 1, 2, 3]);
+  geometry.setIndex(reverseWinding ? [0, 1, 2, 1, 3, 2] : [0, 2, 1, 1, 2, 3]);
   geometry.computeVertexNormals();
   return geometry;
 }

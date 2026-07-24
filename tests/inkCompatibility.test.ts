@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  INK_COMPILED_FORMAT_VERSION,
   compileInkShape,
   createInkCuboidShape,
   createInkOutlineStroke,
@@ -50,4 +51,26 @@ describe('Painting-compatible Ink Shapes', () => {
       expect(compiled.fill.some((surface) => surface.rgba.some((channel) => channel !== 0))).toBe(true);
     });
   }
+
+  it('compiles Normal Outset as v13 Shape configuration without rebuilding Ribbon data', () => {
+    const shape = createInkCuboidShape();
+    const outlined = {
+      ...shape,
+      strokes: [createInkOutlineStroke([
+        { face: 'positive-z', u: -0.2, v: 0, pressure: 1 },
+        { face: 'positive-z', u: 0.2, v: 0, pressure: 1 },
+      ], '#000000', 0.04)],
+    } as InkShape;
+    const before = compileInkShape(outlined);
+    const enabled = {
+      ...outlined,
+      normalOutset: { enabled: true, color: '#5A3E16', distance: 0.075 },
+    } as InkShape;
+    const after = compileInkShape(enabled, undefined, before);
+
+    expect(INK_COMPILED_FORMAT_VERSION).toBe(13);
+    expect(after.normalOutset).toEqual({ color: '#5a3e16', distance: 0.075 });
+    expect(after.ribbon).toBe(before.ribbon);
+    expect(compileInkShape({ ...enabled, normalOutset: { ...enabled.normalOutset!, enabled: false } }).normalOutset).toBeNull();
+  });
 });

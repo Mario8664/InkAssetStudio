@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "typecheck": "vue-tsc -b --pretty false",
-    "test": "vitest run",
+    "test": "vitest run && node tools/test-service-worker.mjs",
     "build": "npm run typecheck && npm run test && vite build && node tools/generate-service-worker.mjs",
     "visual-check": "node tools/visual-check.mjs",
     "preview": "vite preview --host 127.0.0.1"
