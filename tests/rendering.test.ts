@@ -16,6 +16,7 @@ import {
   ShaderMaterial,
   Vector3,
   type Material,
+  type Intersection,
   type WebGLRenderTarget,
   type WebGLRenderer,
 } from 'three';
@@ -38,17 +39,40 @@ import {
   createHalfLambertShaderChunk,
 } from '../src/render/MapReferenceLayer';
 import { createTerrainBatchGeometry } from '../src/render/terrainGeometry';
+import { TerrainRenderer } from '../src/render/TerrainRenderer';
 import {
   applyInkShapeRenderTransform,
   createInkFillLightingState,
   createInkShapeRenderRoot,
   updateInkShapeFillSurfaces,
   updateInkShapeNormalOutset,
+  updateInkShapeRibbon,
 } from '../src/render/InkGroupRenderer';
 import { hasRendererMaterial, InkHardShadowMap } from '../src/render/InkHardShadowMap';
 import { disposeObjectTree } from '../src/render/dispose';
 
 describe('Reference rendering', () => {
+  it('rebuilds only changed Terrain chunks and preserves triangle-to-tile raycast mapping', () => {
+    const first = createTerrainTile('block', 0, 0, 0, 0, 'blue');
+    const distant = createTerrainTile('slope', 90, 20, 0, 0, 'green');
+    const terrain = new TerrainRenderer();
+    expect(terrain.update([first, distant])).toBe(true);
+    const before = terrain.getPickMeshes();
+    const firstChunk = before.find((mesh) => mesh.name.endsWith(':0:0:0'))!;
+    const distantChunk = before.find((mesh) => mesh.name.endsWith(':1:0:0'))!;
+    expect(terrain.getTileFromIntersection({ object: firstChunk, faceIndex: 0 } as unknown as Intersection)).toBe(first);
+
+    const repainted = createTerrainTile('block', 0, 0, 0, 0, 'red');
+    terrain.preparePatch([{ x: 0, y: 0, z: 0, before: first, after: repainted }]);
+    expect(terrain.update([repainted, distant])).toBe(true);
+    const after = terrain.getPickMeshes();
+    const replacedFirstChunk = after.find((mesh) => mesh.name.endsWith(':0:0:0'))!;
+    expect(replacedFirstChunk).not.toBe(firstChunk);
+    expect(after.find((mesh) => mesh.name.endsWith(':1:0:0'))).toBe(distantChunk);
+    expect(terrain.getTileFromIntersection({ object: replacedFirstChunk, faceIndex: 0 } as unknown as Intersection)).toBe(repainted);
+    terrain.dispose();
+  });
+
   it('supplies edge masks that hide the top-face triangle diagonal', () => {
     const geometry = createTerrainBatchGeometry([createTerrainTile('block', 0, 0, 0, 0)]);
     const barycentric = geometry.getAttribute('terrainBarycentric');
@@ -254,6 +278,21 @@ describe('Reference rendering', () => {
     expect(fill.geometry).toBe(fillGeometry);
     expect(fill.material).toBe(fillMaterial);
     expect(fill.userData.inkFillTexture).toBe(fillTexture);
+    disposeObjectTree(root);
+  });
+
+  it('updates an erased Ribbon without recreating the Shape Fill resources', () => {
+    const shape = createInkCuboidShape();
+    shape.strokes = [createInkOutlineStroke([
+      { face: 'positive-z', u: -0.2, v: 0, pressure: 1 },
+      { face: 'positive-z', u: 0.2, v: 0, pressure: 1 },
+    ], '#000000', 0.04)];
+    const painted = paintInkFill(shape, [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
+    const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState());
+    const fill = root.getObjectByName('InkFillSurface') as Mesh;
+    updateInkShapeRibbon(root, compileInkShape({ ...painted, strokes: [] }).ribbon);
+    expect(root.getObjectByName('InkShapeRibbon')).toBeUndefined();
+    expect(root.getObjectByName('InkFillSurface')).toBe(fill);
     disposeObjectTree(root);
   });
 

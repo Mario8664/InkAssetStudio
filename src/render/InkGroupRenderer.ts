@@ -133,6 +133,21 @@ export function updateInkShapeFillSurfaces(
   updateInkShapeNormalOutset(root, normalOutset, source, options);
 }
 
+/** Replaces only one Shape's compiled Ribbon while preserving its Fill resources. */
+export function updateInkShapeRibbon(root: Group, ribbon: CompiledInkRibbon): void {
+  const existing = root.children.find((child) => child instanceof Mesh && child.name === 'InkShapeRibbon') as Mesh | undefined;
+  if (existing) {
+    existing.removeFromParent();
+    existing.geometry.dispose();
+    const materials = Array.isArray(existing.material) ? existing.material : [existing.material];
+    materials.forEach((material) => material.dispose());
+  }
+  if (ribbon.indices.length === 0) return;
+  const replacement = createInkRibbonMesh(ribbon);
+  replacement.name = 'InkShapeRibbon';
+  root.add(replacement);
+}
+
 /** Creates, updates, or removes the whole-Shape shell from live source settings. */
 export function updateInkShapeNormalOutset(
   root: Group,

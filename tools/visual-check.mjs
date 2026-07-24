@@ -12,6 +12,7 @@ const context = await browser.newContext({
   acceptDownloads: true,
 });
 const page = await context.newPage();
+const cdp = await context.newCDPSession(page);
 const baseUrl = process.env.INK_STUDIO_BASE_URL ?? 'http://127.0.0.1:4430/';
 const errors = [];
 page.on('console', (message) => {
@@ -37,12 +38,34 @@ async function waitUntilReady() {
   }
 }
 
-async function dragCanvas(fromX, fromY, toX, toY) {
+async function dragPencil(fromX, fromY, toX, toY, force = 0.55) {
+  const bounds = await page.locator('canvas').boundingBox();
+  if (!bounds) throw new Error('Canvas has no layout bounds.');
+  const start = { x: bounds.x + bounds.width * fromX, y: bounds.y + bounds.height * fromY };
+  const end = { x: bounds.x + bounds.width * toX, y: bounds.y + bounds.height * toY };
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...start, pointerType: 'pen', button: 'none', buttons: 0, force: 0 });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...start, pointerType: 'pen', button: 'left', buttons: 1, clickCount: 1, force });
+  for (let step = 1; step <= 14; step += 1) {
+    const factor = step / 14;
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: start.x + (end.x - start.x) * factor,
+      y: start.y + (end.y - start.y) * factor,
+      pointerType: 'pen',
+      button: 'left',
+      buttons: 1,
+      force,
+    });
+  }
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...end, pointerType: 'pen', button: 'left', buttons: 0, clickCount: 1, force: 0 });
+}
+
+async function dragMouse(fromX, fromY, toX, toY) {
   const bounds = await page.locator('canvas').boundingBox();
   if (!bounds) throw new Error('Canvas has no layout bounds.');
   await page.mouse.move(bounds.x + bounds.width * fromX, bounds.y + bounds.height * fromY);
   await page.mouse.down();
-  await page.mouse.move(bounds.x + bounds.width * toX, bounds.y + bounds.height * toY, { steps: 14 });
+  await page.mouse.move(bounds.x + bounds.width * toX, bounds.y + bounds.height * toY, { steps: 8 });
   await page.mouse.up();
 }
 
@@ -77,9 +100,17 @@ async function layoutSummary(label) {
 try {
   await page.goto(baseUrl, { waitUntil: 'networkidle' });
   await waitUntilReady();
+  if (await page.getByRole('button', { name: 'Navigate', exact: true }).count()) throw new Error('Retired Navigate mode is still present.');
+
+  // Mouse is intentionally neither an authoring input nor a camera gesture.
+  await dragMouse(0.488, 0.405, 0.512, 0.445);
+  const mouseOnly = (await exportWorkFile()).json;
+  const mouseStrokeCount = mouseOnly.ink.embeddedAssets.flatMap((asset) => asset.group.shapes).flatMap((shape) => shape.strokes).length;
+  if (mouseStrokeCount !== 0) throw new Error('Mouse input incorrectly authored Ink.');
 
   await page.locator('.round-button[title="New Group"]').click();
   if (await page.locator('.group-row').count() !== 2) throw new Error('Creating a second Ink Group failed.');
+  if (await page.locator('.group-list .list-delete-button').count() !== 2) throw new Error('Every Group row must expose its own delete button.');
 
   const pressure = page.getByRole('button', { name: /Pressure/ });
   await pressure.click();
@@ -87,16 +118,20 @@ try {
 
   // Painting-compatible dynamic Planes start at a 1x1 authoring surface.
   // Keep the automated stroke inside that visible central surface.
-  await dragCanvas(0.488, 0.405, 0.512, 0.445);
+  await dragPencil(0.488, 0.405, 0.512, 0.445);
   await page.getByRole('button', { name: 'Fill Paint' }).click();
-  await dragCanvas(0.495, 0.412, 0.507, 0.438);
+  await dragPencil(0.495, 0.412, 0.507, 0.438);
   await page.waitForTimeout(350);
 
   await pressure.click();
   if (!(await pressure.textContent())?.includes('On')) throw new Error('Pressure On toggle did not update.');
 
   await page.getByRole('button', { name: 'Shape' }).click();
+  for (const name of ['X', 'Y', 'Z', 'Camera']) {
+    if (!await page.locator('.plane-create-row').getByRole('button', { name, exact: true }).isVisible()) throw new Error(`Plane ${name} creation button is missing.`);
+  }
   await page.getByRole('button', { name: '+ Box', exact: true }).click();
+  if (await page.locator('.shape-list-section .list-delete-button').count() !== 2) throw new Error('Every Shape row must expose its own delete button.');
   const normalOutset = page.locator('.normal-outset-settings');
   if (!await normalOutset.isVisible()) throw new Error('Cuboid Normal Outset controls are not visible.');
   await normalOutset.getByLabel('Enabled').check();
@@ -118,7 +153,7 @@ try {
   await page.locator('.palette-editor-row').first().getByTitle('Move right').click();
   await page.getByRole('button', { name: 'Done' }).click();
 
-  await page.getByRole('button', { name: 'Navigate' }).click();
+  await page.getByRole('button', { name: 'Lighting', exact: true }).click();
   const undoButton = page.getByRole('button', { name: 'Undo', exact: true });
   const redoButton = page.getByRole('button', { name: 'Redo', exact: true });
   if (!await undoButton.isVisible() || !await redoButton.isVisible()) throw new Error('Undo and Redo must remain directly visible.');
@@ -172,8 +207,13 @@ try {
   await page.screenshot({ path: 'studio-lighting.png', fullPage: true });
 
   await page.getByRole('button', { name: 'Terrain' }).click();
-  await page.getByRole('button', { name: 'Erase' }).click();
-  await dragCanvas(0.46, 0.43, 0.54, 0.54);
+  if (await page.locator('.terrain-tools .terrain-tool').count() !== 3) throw new Error('Terrain Tile tools are not three direct preview buttons.');
+  if (await page.locator('.terrain-direction-pad button').count() !== 4) throw new Error('Terrain direction is not exposed as four direct arrow buttons.');
+  if (await page.locator('.terrain-axis-buttons button').count() !== 3) throw new Error('Terrain X/Y/Z work-plane buttons are missing.');
+  await page.locator('.terrain-tools .terrain-tool').nth(1).click();
+  await page.locator('.terrain-direction-pad .east').click();
+  await page.getByRole('button', { name: 'Erase', exact: true }).click();
+  await dragPencil(0.46, 0.43, 0.54, 0.54);
   await page.waitForTimeout(150);
 
   const exportedDownload = await exportWorkFile();
@@ -224,7 +264,7 @@ try {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitUntilReady();
   summaries.push(await layoutSummary('offline-reload'));
-  await page.getByRole('button', { name: 'Navigate' }).click();
+  await page.getByRole('button', { name: 'Lighting', exact: true }).click();
 
   await page.setViewportSize({ width: 1024, height: 768 });
   await page.waitForTimeout(100);

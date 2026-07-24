@@ -11,51 +11,34 @@ import {
 } from '../domain/ink/ink';
 import type { StudioEditorSession } from '../domain/workspace/session';
 import {
-  getInkReference,
-  updateInkReference,
-  updateInkShape,
   updateInkShapeAuthor,
 } from '../domain/workspace/workspace';
-import { compareTiles, createTerrainTile, tileKey } from '../domain/terrain/terrain';
 import type { WorkspaceStore } from '../domain/workspace/WorkspaceStore';
-import type { InkSurfaceHit } from '../render/WorkspaceRenderer';
+import type { InkSurfaceHit, InkStrokePreviewSegment } from '../render/WorkspaceRenderer';
 import { WorkspaceRenderer } from '../render/WorkspaceRenderer';
+import { isApplePencilPointer } from './pointerInput';
 
 type PendingInkSegment = {
   referenceId: string;
   shapeId: string;
   shape: InkShape;
   points: InkSurfacePoint[];
+  processedPointCount: number;
   lastScreenX: number;
   lastScreenY: number;
   lastTimestamp: number;
 };
 
-type PendingTransform =
-  | {
-      kind: 'group';
-      referenceId: string;
-      startAnchor: { x: number; y: number; z: number };
-      startPlanePoint: Vector3;
-      currentAnchor: { x: number; y: number; z: number };
-    }
-  | {
-      kind: 'shape';
-      referenceId: string;
-      shapeId: string;
-      groupRotation: number;
-      startPosition: { x: number; y: number; z: number };
-      startRotation: { x: number; y: number; z: number };
-      startPlanePoint: Vector3;
-      startClientX: number;
-      currentPosition: { x: number; y: number; z: number };
-      currentRotation: { x: number; y: number; z: number };
-    };
+type WorkingShape = {
+  referenceId: string;
+  shape: InkShape;
+};
 
 const STABILIZER_FOLLOW_AT_MIN_SPEED = 0.06;
 const STABILIZER_FOLLOW_AT_MAX_SPEED = 0.9;
 const STABILIZER_MAX_SPEED_PIXELS_PER_MILLISECOND = 0.85;
 const STABILIZER_REFERENCE_INTERVAL_MILLISECONDS = 1000 / 60;
+const FINAL_SAMPLE_MIN_SCREEN_DISTANCE_PIXELS = 0.5;
 
 export type InkEditorControllerOptions = {
   renderer: WorkspaceRenderer;
@@ -63,16 +46,18 @@ export type InkEditorControllerOptions = {
   getSession: () => StudioEditorSession;
   updateSession: (update: Partial<StudioEditorSession>) => void;
   showMessage: (message: string, tone?: 'info' | 'error') => void;
+  isTransformPointerClaimed?: (pointerId: number) => boolean;
 };
 
+/** Pencil-only Ink authoring; Touch is left entirely to OrbitControls. */
 export class InkEditorController {
   private pointerId: number | null = null;
   private pendingInk: PendingInkSegment[] = [];
-  private pendingTerrainCells = new Map<string, { x: number; y: number; z: number }>();
+  private readonly workingShapes = new Map<string, WorkingShape>();
   private usesRawPointerUpdates = false;
+  private receivedRawPointerUpdate = false;
   private previewFrame: number | null = null;
-  private hasDocumentPreview = false;
-  private pendingTransform: PendingTransform | null = null;
+  private disposed = false;
 
   constructor(private readonly options: InkEditorControllerOptions) {
     const canvas = options.renderer.canvas;
@@ -87,6 +72,8 @@ export class InkEditorController {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.cancelGesture();
     const canvas = this.options.renderer.canvas;
     canvas.removeEventListener('pointerdown', this.handlePointerDown);
@@ -100,32 +87,26 @@ export class InkEditorController {
   }
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
-    if (event.button !== 0 || this.pointerId !== null) return;
+    if (!isApplePencilPointer(event) || event.button !== 0 || this.pointerId !== null) return;
+    if (this.options.isTransformPointerClaimed?.(event.pointerId)) return;
     const session = this.options.getSession();
-    if (session.mode === 'navigate') return;
-    if (session.mode === 'terrain') {
-      const cell = this.options.renderer.pickTerrainCell(event.clientX, event.clientY, session.terrainLayer);
-      if (!cell) return;
-      this.beginGesture(event);
-      this.pendingTerrainCells.set(tileKey(cell), cell);
-      event.preventDefault();
-      return;
-    }
+    if (session.mode === 'terrain') return;
     if (session.mode === 'select') {
       const hit = this.options.renderer.pickGroup(event.clientX, event.clientY);
-      if (hit) {
-        if (hit.referenceId === session.activeReferenceId) this.beginGroupTransform(event, hit.referenceId);
-        else this.options.updateSession({ activeReferenceId: hit.referenceId, activeShapeId: null });
-      }
+      if (hit) this.options.updateSession({ activeReferenceId: hit.referenceId, activeShapeId: null });
       event.preventDefault();
       return;
     }
-    const pressure = resolvePointerPressure(event, session.pressureEnabled);
-    const hit = this.options.renderer.pickInkSurface(event.clientX, event.clientY, pressure);
+
+    const hit = this.options.renderer.pickInkSurface(
+      event.clientX,
+      event.clientY,
+      resolvePointerPressure(event, session.pressureEnabled),
+      this.getFallbackPlane(),
+    );
     if (!hit) return;
     if (session.activeShapeId !== hit.shapeId) this.options.updateSession({ activeShapeId: hit.shapeId });
     if (session.mode === 'shape') {
-      if (hit.shapeId === session.activeShapeId) this.beginShapeTransform(event, hit);
       event.preventDefault();
       return;
     }
@@ -149,34 +130,37 @@ export class InkEditorController {
     this.beginGesture(event);
     this.appendInkHit(hit, event.clientX, event.clientY, event.timeStamp);
     this.updateStrokePreview();
+    this.scheduleLivePreview();
     event.preventDefault();
   };
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (!isApplePencilPointer(event)) return;
     const session = this.options.getSession();
     if (this.pointerId === null) {
       if (session.mode === 'draw') this.updateCursor(event);
       return;
     }
     if (event.pointerId !== this.pointerId) return;
-    if (this.pendingTransform) { this.updateTransform(event); return; }
-    if (this.usesRawPointerUpdates && session.mode === 'draw') return;
+    if (!shouldAppendCoalescedPointerMove(this.usesRawPointerUpdates, this.receivedRawPointerUpdate)) return;
     this.appendEventSamples(event);
   };
 
   private readonly handlePointerRawUpdate = (event: Event): void => {
-    if (!(event instanceof PointerEvent) || event.pointerId !== this.pointerId || !this.usesRawPointerUpdates) return;
+    if (!(event instanceof PointerEvent)
+      || !isApplePencilPointer(event)
+      || event.pointerId !== this.pointerId
+      || !this.usesRawPointerUpdates) return;
+    this.receivedRawPointerUpdate = true;
     this.appendEventSamples(event, false);
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
-    if (event.pointerId !== this.pointerId) return;
-    this.appendEventSamples(event);
-    const session = this.options.getSession();
-    if (this.pendingTransform) this.commitTransform();
-    else if (session.mode === 'terrain') this.commitTerrain(session);
-    else if (session.mode === 'draw') this.commitInk(session);
-    this.endGesture();
+    if (!isApplePencilPointer(event) || event.pointerId !== this.pointerId) return;
+    this.appendEventSamples(event, false, true);
+    this.flushLivePreview();
+    this.commitInk(this.options.getSession());
+    this.endGesture(false);
     event.preventDefault();
   };
 
@@ -188,137 +172,69 @@ export class InkEditorController {
     if (event.pointerId === this.pointerId) this.cancelGesture();
   };
 
-  private readonly handlePointerLeave = (): void => {
-    if (this.pointerId === null) this.options.renderer.hideCursor();
+  private readonly handlePointerLeave = (event: PointerEvent): void => {
+    if (isApplePencilPointer(event) && this.pointerId === null) this.options.renderer.hideCursor();
   };
 
   private beginGesture(event: PointerEvent): void {
     this.pointerId = event.pointerId;
     this.pendingInk = [];
-    this.pendingTerrainCells.clear();
-    this.usesRawPointerUpdates = event.pointerType === 'pen' && 'onpointerrawupdate' in window;
+    this.workingShapes.clear();
+    this.usesRawPointerUpdates = event.pointerType === 'pen';
+    this.receivedRawPointerUpdate = false;
     this.options.renderer.canvas.setPointerCapture(event.pointerId);
   }
 
-  private beginGroupTransform(event: PointerEvent, referenceId: string): void {
-    const reference = getInkReference(this.options.store.getDocument(), referenceId);
-    if (!reference) return;
-    const point = this.options.renderer.pickHorizontalPlane(event.clientX, event.clientY, reference.anchorPosition.y);
-    if (!point) return;
-    this.beginGesture(event);
-    this.options.renderer.controls.enabled = false;
-    this.pendingTransform = {
-      kind: 'group',
-      referenceId,
-      startAnchor: { ...reference.anchorPosition },
-      startPlanePoint: point,
-      currentAnchor: { ...reference.anchorPosition },
-    };
-  }
-
-  private beginShapeTransform(event: PointerEvent, hit: InkSurfaceHit): void {
-    const reference = getInkReference(this.options.store.getDocument(), hit.referenceId);
-    if (!reference) return;
-    const point = this.options.renderer.pickHorizontalPlane(event.clientX, event.clientY, hit.world.y);
-    if (!point) return;
-    this.beginGesture(event);
-    this.options.renderer.controls.enabled = false;
-    this.pendingTransform = {
-      kind: 'shape',
-      referenceId: hit.referenceId,
-      shapeId: hit.shapeId,
-      groupRotation: reference.rotation,
-      startPosition: { ...hit.shape.position },
-      startRotation: { ...hit.shape.rotation },
-      startPlanePoint: point,
-      startClientX: event.clientX,
-      currentPosition: { ...hit.shape.position },
-      currentRotation: { ...hit.shape.rotation },
-    };
-  }
-
-  private updateTransform(event: PointerEvent): void {
-    const transform = this.pendingTransform;
-    if (!transform) return;
-    let preview = this.options.store.getDocument();
-    if (transform.kind === 'group') {
-      const point = this.options.renderer.pickHorizontalPlane(event.clientX, event.clientY, transform.startAnchor.y);
-      if (!point) return;
-      transform.currentAnchor = {
-        x: transform.startAnchor.x + point.x - transform.startPlanePoint.x,
-        y: transform.startAnchor.y,
-        z: transform.startAnchor.z + point.z - transform.startPlanePoint.z,
-      };
-      preview = updateInkReference(preview, transform.referenceId, { anchorPosition: transform.currentAnchor });
-    } else if (this.options.getSession().transformMode === 'rotate') {
-      transform.currentRotation = {
-        ...transform.startRotation,
-        y: transform.startRotation.y + (event.clientX - transform.startClientX) * 0.01,
-      };
-      preview = updateInkShape(preview, transform.referenceId, transform.shapeId, (shape) => ({ ...shape, rotation: { ...transform.currentRotation } }));
-    } else {
-      const worldY = transform.startPlanePoint.y;
-      const point = this.options.renderer.pickHorizontalPlane(event.clientX, event.clientY, worldY);
-      if (!point) return;
-      const worldDelta = point.clone().sub(transform.startPlanePoint);
-      const radians = -transform.groupRotation * Math.PI / 180;
-      const localX = Math.cos(radians) * worldDelta.x + Math.sin(radians) * worldDelta.z;
-      const localZ = -Math.sin(radians) * worldDelta.x + Math.cos(radians) * worldDelta.z;
-      transform.currentPosition = {
-        x: transform.startPosition.x + localX,
-        y: transform.startPosition.y,
-        z: transform.startPosition.z + localZ,
-      };
-      preview = updateInkShape(preview, transform.referenceId, transform.shapeId, (shape) => ({ ...shape, position: { ...transform.currentPosition } }));
-    }
-    this.hasDocumentPreview = true;
-    this.options.renderer.update(preview, this.options.getSession());
-    event.preventDefault();
-  }
-
-  private commitTransform(): void {
-    const transform = this.pendingTransform;
-    if (!transform) return;
-    if (transform.kind === 'group') {
-      this.options.store.transact('Move Ink Group', (document) => updateInkReference(document, transform.referenceId, { anchorPosition: transform.currentAnchor }));
-    } else if (this.options.getSession().transformMode === 'rotate') {
-      this.options.store.transact('Rotate Ink Shape', (document) => updateInkShapeAuthor(document, transform.referenceId, transform.shapeId, (shape) => ({ ...shape, rotation: { ...transform.currentRotation } })));
-    } else {
-      this.options.store.transact('Move Ink Shape', (document) => updateInkShapeAuthor(document, transform.referenceId, transform.shapeId, (shape) => ({ ...shape, position: { ...transform.currentPosition } })));
-    }
-  }
-
-  private appendEventSamples(event: PointerEvent, includeCoalesced = true): void {
+  private appendEventSamples(event: PointerEvent, includeCoalesced = true, complete = false): void {
+    if (this.options.getSession().mode !== 'draw') return;
     const session = this.options.getSession();
-    if (session.mode === 'terrain') {
-      const cell = this.options.renderer.pickTerrainCell(event.clientX, event.clientY, session.terrainLayer);
-      if (cell) this.pendingTerrainCells.set(tileKey(cell), cell);
-      return;
-    }
-    if (session.mode !== 'draw') return;
     const samples = includeCoalesced ? event.getCoalescedEvents?.() ?? [event] : [event];
-    for (const sample of samples.length > 0 ? samples : [event]) {
+    const pointerSamples = samples.length > 0 ? samples : [event];
+    for (let index = 0; index < pointerSamples.length; index += 1) {
+      const sample = pointerSamples[index]!;
+      const previousPressure = this.pendingInk.at(-1)?.points.at(-1)?.pressure;
       const hit = this.options.renderer.pickInkSurface(
         sample.clientX,
         sample.clientY,
-        resolvePointerPressure(sample, session.pressureEnabled),
+        resolvePointerPressure(sample, session.pressureEnabled, previousPressure),
+        this.getFallbackPlane(),
       );
-      if (hit) this.appendInkHit(hit, sample.clientX, sample.clientY, sample.timeStamp);
+      if (hit) this.appendInkHit(
+        hit,
+        sample.clientX,
+        sample.clientY,
+        sample.timeStamp,
+        complete && index === pointerSamples.length - 1,
+      );
     }
     this.updateStrokePreview();
-    this.scheduleDocumentPreview();
+    this.scheduleLivePreview();
   }
 
-  private appendInkHit(hit: InkSurfaceHit, screenX: number, screenY: number, timestamp: number): void {
+  private appendInkHit(hit: InkSurfaceHit, screenX: number, screenY: number, timestamp: number, complete = false): void {
     let segment = this.pendingInk.at(-1);
     if (!segment || segment.referenceId !== hit.referenceId || segment.shapeId !== hit.shapeId) {
-      segment = { referenceId: hit.referenceId, shapeId: hit.shapeId, shape: hit.shape, points: [], lastScreenX: screenX, lastScreenY: screenY, lastTimestamp: timestamp };
+      segment = {
+        referenceId: hit.referenceId,
+        shapeId: hit.shapeId,
+        shape: hit.shape,
+        points: [],
+        processedPointCount: 0,
+        lastScreenX: screenX,
+        lastScreenY: screenY,
+        lastTimestamp: timestamp,
+      };
       this.pendingInk.push(segment);
     }
     const prior = segment.points.at(-1);
     const screenDistance = Math.hypot(screenX - segment.lastScreenX, screenY - segment.lastScreenY);
-    if (prior && screenDistance <= 0.0001) return;
-    const point = prior ? stabilizeInkPoint(segment.shape, prior, hit.point, screenDistance, timestamp - segment.lastTimestamp) : hit.point;
+    if (prior && (
+      screenDistance <= 0.0001
+      || (complete && screenDistance < FINAL_SAMPLE_MIN_SCREEN_DISTANCE_PIXELS)
+    )) return;
+    const point = prior
+      ? resolveInkGesturePoint(segment.shape, prior, hit.point, screenDistance, timestamp - segment.lastTimestamp, complete)
+      : hit.point;
     if (prior && sameSurfacePoint(prior, point)) return;
     segment.points.push({ ...point });
     segment.lastScreenX = screenX;
@@ -330,32 +246,55 @@ export class InkEditorController {
 
   private updateStrokePreview(): void {
     const session = this.options.getSession();
-    if (session.drawTool !== 'outline') { this.options.renderer.clearStrokePreview(); return; }
-    const segment = this.pendingInk.at(-1);
-    if (!segment) return;
-    const points = getOutlineCommitPoints(segment.shape, segment.points, session.straightLineEnabled);
-    this.options.renderer.showStrokePreview(segment.referenceId, segment.shape, points, session.outlineColor, session.outlineWidth);
+    if (session.drawTool !== 'outline') {
+      this.options.renderer.clearStrokePreview();
+      return;
+    }
+    const previews: InkStrokePreviewSegment[] = this.pendingInk.flatMap((segment) => {
+      const points = getOutlineCommitPoints(segment.shape, segment.points, session.straightLineEnabled);
+      return points.length >= 2 ? [{ referenceId: segment.referenceId, shape: segment.shape, points }] : [];
+    });
+    this.options.renderer.showStrokePreviews(previews, session.outlineColor, session.outlineWidth);
   }
 
-  private scheduleDocumentPreview(): void {
+  private scheduleLivePreview(): void {
     const tool = this.options.getSession().drawTool;
-    if (tool === 'outline' || tool === 'fill-bucket' || tool === 'picker' || this.previewFrame !== null) return;
+    if (tool !== 'fill-brush' && tool !== 'fill-eraser' && tool !== 'outline-eraser') return;
+    if (this.previewFrame !== null) return;
     this.previewFrame = window.requestAnimationFrame(() => {
       this.previewFrame = null;
-      const session = this.options.getSession();
-      let preview = this.options.store.getDocument();
-      for (const segment of this.pendingInk) {
-        if (segment.points.length === 0) continue;
-        preview = updateInkShape(preview, segment.referenceId, segment.shapeId, (shape) => applyInkTool(shape, segment.points, session));
-      }
-      this.hasDocumentPreview = preview !== this.options.store.getDocument();
-      if (this.hasDocumentPreview) this.options.renderer.update(preview, session);
+      this.flushLivePreview();
     });
+  }
+
+  private flushLivePreview(): void {
+    if (this.previewFrame !== null) window.cancelAnimationFrame(this.previewFrame);
+    this.previewFrame = null;
+    const session = this.options.getSession();
+    if (session.drawTool !== 'fill-brush' && session.drawTool !== 'fill-eraser' && session.drawTool !== 'outline-eraser') return;
+    for (const segment of this.pendingInk) {
+      if (segment.processedPointCount >= segment.points.length) continue;
+      const key = workingShapeKey(segment.referenceId, segment.shapeId);
+      const working = this.workingShapes.get(key) ?? { referenceId: segment.referenceId, shape: segment.shape };
+      const firstNew = segment.processedPointCount;
+      const points = segment.points.slice(Math.max(0, firstNew - 1));
+      const shape = applyInkTool(working.shape, points, session);
+      segment.processedPointCount = segment.points.length;
+      if (shape === working.shape) continue;
+      this.workingShapes.set(key, { referenceId: segment.referenceId, shape });
+      if (session.drawTool === 'outline-eraser') this.options.renderer.previewInkRibbon(segment.referenceId, shape);
+      else this.options.renderer.previewInkFill(segment.referenceId, shape);
+    }
   }
 
   private updateCursor(event: PointerEvent): void {
     const session = this.options.getSession();
-    const hit = this.options.renderer.pickInkSurface(event.clientX, event.clientY, resolvePointerPressure(event, session.pressureEnabled));
+    const hit = this.options.renderer.pickInkSurface(
+      event.clientX,
+      event.clientY,
+      resolvePointerPressure(event, session.pressureEnabled),
+      this.getFallbackPlane(),
+    );
     if (hit) this.options.renderer.showCursor(hit, getToolRadius(session), session.fillBrushShape === 'square' && isFillTool(session.drawTool));
     else this.options.renderer.hideCursor();
   }
@@ -365,6 +304,12 @@ export class InkEditorController {
     const label = getInkHistoryLabel(session.drawTool);
     this.options.store.transact(label, (document) => {
       let next = document;
+      if (this.workingShapes.size > 0) {
+        for (const working of this.workingShapes.values()) {
+          next = updateInkShapeAuthor(next, working.referenceId, working.shape.id, () => working.shape);
+        }
+        return next;
+      }
       for (const segment of this.pendingInk) {
         if (segment.points.length === 0) continue;
         next = updateInkShapeAuthor(next, segment.referenceId, segment.shapeId, (shape) => applyInkTool(shape, segment.points, session));
@@ -373,47 +318,72 @@ export class InkEditorController {
     });
   }
 
-  private commitTerrain(session: StudioEditorSession): void {
-    if (this.pendingTerrainCells.size === 0) return;
-    this.options.store.transact(session.terrainAction === 'place' ? 'Place terrain' : 'Erase terrain', (document) => {
-      const changes = new Map(this.pendingTerrainCells);
-      const retained = document.terrain.tiles.filter((tile) => !changes.has(tileKey(tile)));
-      const additions = session.terrainAction === 'place'
-        ? [...changes.values()].map((cell) => createTerrainTile(session.terrainKind, session.terrainRotation, cell.x, cell.y, cell.z, session.terrainColor))
-        : [];
-      return { ...document, terrain: { tiles: [...retained, ...additions].sort(compareTiles) } };
-    });
+  private getFallbackPlane(): { referenceId: string; shapeId: string } | null {
+    const segment = this.pendingInk.at(-1);
+    if (segment?.shape.kind === 'plane') return { referenceId: segment.referenceId, shapeId: segment.shapeId };
+    const session = this.options.getSession();
+    return session.activeReferenceId && session.activeShapeId
+      ? { referenceId: session.activeReferenceId, shapeId: session.activeShapeId }
+      : null;
   }
 
-  private endGesture(): void {
+  private endGesture(restorePreview: boolean): void {
     const pointerId = this.pointerId;
     this.pointerId = null;
-    this.pendingInk = [];
-    this.pendingTerrainCells.clear();
-    this.pendingTransform = null;
-    this.usesRawPointerUpdates = false;
     if (this.previewFrame !== null) window.cancelAnimationFrame(this.previewFrame);
     this.previewFrame = null;
     this.options.renderer.clearStrokePreview();
-    if (this.hasDocumentPreview) {
-      this.hasDocumentPreview = false;
-      this.options.renderer.update(this.options.store.getDocument(), this.options.getSession());
+    if (restorePreview) {
+      const document = this.options.store.getDocument();
+      for (const working of this.workingShapes.values()) {
+        const reference = document.ink.assetReferences.find((entry) => entry.id === working.referenceId);
+        const source = reference ? document.ink.embeddedAssets.find((entry) => entry.assetId === reference.assetId)?.group : null;
+        const shape = source?.shapes.find((entry) => entry.id === working.shape.id);
+        if (!shape) continue;
+        if (this.options.getSession().drawTool === 'outline-eraser') this.options.renderer.previewInkRibbon(working.referenceId, shape);
+        else this.options.renderer.previewInkFill(working.referenceId, shape);
+      }
     }
+    this.pendingInk = [];
+    this.workingShapes.clear();
+    this.usesRawPointerUpdates = false;
+    this.receivedRawPointerUpdate = false;
     if (pointerId !== null && this.options.renderer.canvas.hasPointerCapture(pointerId)) {
       this.options.renderer.canvas.releasePointerCapture(pointerId);
     }
-    this.options.renderer.controls.enabled = this.options.getSession().mode === 'navigate';
   }
 
   private readonly cancelGesture = (): void => {
-    this.endGesture();
+    this.endGesture(true);
     this.options.renderer.hideCursor();
   };
 }
 
-export function resolvePointerPressure(event: Pick<PointerEvent, 'pointerType' | 'pressure'>, enabled: boolean): number {
-  if (!enabled || event.pointerType !== 'pen' || !Number.isFinite(event.pressure) || event.pressure <= 0) return 1;
+export function resolvePointerPressure(
+  event: Pick<PointerEvent, 'pointerType' | 'pressure'>,
+  enabled: boolean,
+  previousPressure?: number,
+): number {
+  if (!enabled || event.pointerType !== 'pen') return 1;
+  if (!Number.isFinite(event.pressure) || event.pressure <= 0) return previousPressure ?? 1;
   return Math.min(1, Math.max(0.05, event.pressure));
+}
+
+/** Pen falls back to coalesced pointermove samples until this gesture actually receives raw input. */
+export function shouldAppendCoalescedPointerMove(prefersRawInput: boolean, receivedRawInput: boolean): boolean {
+  return !prefersRawInput || !receivedRawInput;
+}
+
+/** The real release point closes a stroke without allowing the streaming stabilizer to shorten it. */
+export function resolveInkGesturePoint(
+  shape: InkShape,
+  previous: InkSurfacePoint,
+  raw: InkSurfacePoint,
+  screenDistance: number,
+  elapsedRaw: number,
+  complete: boolean,
+): InkSurfacePoint {
+  return complete ? raw : stabilizeInkPoint(shape, previous, raw, screenDistance, elapsedRaw);
 }
 
 export function eraseInkOutline(shape: InkShape, eraserPoints: readonly InkSurfacePoint[], width: number): InkShape {
@@ -431,8 +401,10 @@ export function eraseInkOutline(shape: InkShape, eraserPoints: readonly InkSurfa
     };
     for (const point of stroke.points) {
       const covered = surfaceDistanceToPath(shape, point, eraserPoints) <= radius;
-      if (covered) { changed = true; flush(); }
-      else segment.push({ ...point });
+      if (covered) {
+        changed = true;
+        flush();
+      } else segment.push({ ...point });
     }
     flush();
   }
@@ -534,10 +506,25 @@ function sameSurfacePoint(left: InkSurfacePoint, right: InkSurfacePoint): boolea
   return false;
 }
 
-function isPlanePoint(point: InkSurfacePoint): point is { x: number; y: number; pressure: number } { return 'x' in point && 'y' in point && !('z' in point); }
-function isCuboidPoint(point: InkSurfacePoint): point is InkCuboidStrokePoint { return 'face' in point; }
-function isSpherePoint(point: InkSurfacePoint): point is { x: number; y: number; z: number; pressure: number } { return 'x' in point && 'y' in point && 'z' in point; }
-function isFillTool(tool: StudioEditorSession['drawTool']): boolean { return tool === 'fill-brush' || tool === 'fill-eraser' || tool === 'fill-bucket'; }
+function workingShapeKey(referenceId: string, shapeId: string): string {
+  return `${referenceId}:${shapeId}`;
+}
+
+function isPlanePoint(point: InkSurfacePoint): point is { x: number; y: number; pressure: number } {
+  return 'x' in point && 'y' in point && !('z' in point);
+}
+
+function isCuboidPoint(point: InkSurfacePoint): point is InkCuboidStrokePoint {
+  return 'face' in point;
+}
+
+function isSpherePoint(point: InkSurfacePoint): point is { x: number; y: number; z: number; pressure: number } {
+  return 'x' in point && 'y' in point && 'z' in point;
+}
+
+function isFillTool(tool: StudioEditorSession['drawTool']): boolean {
+  return tool === 'fill-brush' || tool === 'fill-eraser' || tool === 'fill-bucket';
+}
 
 function getToolRadius(session: StudioEditorSession): number {
   if (session.drawTool === 'outline') return session.outlineWidth * 0.5;

@@ -12,6 +12,7 @@ import {
   PerspectiveCamera,
   Plane,
   PlaneGeometry,
+  Quaternion,
   Raycaster,
   RingGeometry,
   Scene,
@@ -28,6 +29,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import {
   compileInkShapeRibbon,
+  compileInkFill,
   createInkOutlineStroke,
   type CompiledInkFillSurface,
   type CompiledInkShape,
@@ -38,6 +40,8 @@ import {
 } from '../domain/ink/ink';
 import { resolvePreviewLighting } from '../domain/lighting/lighting';
 import type { StudioEditorSession } from '../domain/workspace/session';
+import type { TerrainWorkAxis } from '../domain/workspace/session';
+import { isValidTerrainCell, type TerrainCellPosition, type TerrainTileChange, type TileCell } from '../domain/terrain/terrain';
 import { getInkSourceByReference, resolveInkGroups, type InkStudioWorkFile } from '../domain/workspace/workspace';
 import {
   InkRibbonPreview,
@@ -48,12 +52,14 @@ import {
   type InkFillLightingState,
   updateInkShapeFillSurfaces,
   updateInkShapeNormalOutset,
+  updateInkShapeRibbon,
 } from './InkGroupRenderer';
 import { InkHardShadowMap } from './InkHardShadowMap';
 import { EditorViewportGuides } from './EditorViewportGuides';
-import { createInkShapePreview, disposeInkShapePreviewTree } from './InkShapePreview';
+import { createInkShapePreview, disposeInkShapePreviewTree, getInkPlanePreviewBounds, type InkShapePreview } from './InkShapePreview';
 import { MapReferenceLayer } from './MapReferenceLayer';
 import { TerrainRenderer } from './TerrainRenderer';
+import { createTerrainBatchGeometry } from './terrainGeometry';
 import { disposeObjectTree } from './dispose';
 
 type InkRenderEntry = {
@@ -69,6 +75,18 @@ type InkRenderUpdate = {
   boundsChanged: boolean;
 };
 
+type InkHelperEntry = InkShapePreview & {
+  referenceId: string;
+  shapeId: string;
+  geometryKey: string;
+  active: boolean;
+};
+
+type StrokePreviewEntry = {
+  root: Group;
+  preview: InkRibbonPreview;
+};
+
 const INK_SHAPE_RENDER_OPTIONS = { useSourceNormalOutset: true } as const;
 
 export type InkSurfaceHit = {
@@ -81,6 +99,16 @@ export type InkSurfaceHit = {
 };
 
 export type GroupHit = { referenceId: string };
+
+export type TerrainPick =
+  | { source: 'terrain'; tile: TileCell; point: Vector3; normal: Vector3 }
+  | { source: 'work-plane'; point: Vector3 };
+
+export type InkStrokePreviewSegment = {
+  referenceId: string;
+  shape: InkShape;
+  points: readonly InkSurfacePoint[];
+};
 
 export class WorkspaceRenderer {
   readonly renderer: WebGLRenderer;
@@ -98,6 +126,8 @@ export class WorkspaceRenderer {
   private readonly groupPivotRoot = new Group();
   private readonly cursorRoot = new Group();
   private readonly strokePreviewRoot = new Group();
+  private readonly terrainPreviewRoot = new Group();
+  private readonly terrainToolPreviewRoot = new Group();
   private readonly referenceLayer: MapReferenceLayer;
   private readonly mainLight = new DirectionalLight(0xffffff, 3.2);
   private readonly ambientLight = new AmbientLight(0xffffff, 0.22);
@@ -107,8 +137,17 @@ export class WorkspaceRenderer {
   private readonly inkEntries = new Map<string, InkRenderEntry>();
   private readonly shapePickers: Mesh[] = [];
   private readonly pivotPickers: Mesh[] = [];
+  private readonly cursorCircleGeometry = new RingGeometry(0.9, 1.1, 40);
+  private readonly cursorSquareGeometry = new PlaneGeometry(2, 2);
   private readonly cursor: Mesh;
-  private readonly strokePreview = new InkRibbonPreview();
+  private readonly strokePreviews: StrokePreviewEntry[] = [];
+  private readonly helperEntries = new Map<string, InkHelperEntry>();
+  private helperGroupRoot: Group | null = null;
+  private helperGroupReferenceId: string | null = null;
+  private terrainPreviewFrame = 0;
+  private pendingTerrainPreview: { tiles: readonly TileCell[]; mode: 'place' | 'remove' } | null = null;
+  private terrainToolPreviewTimer: number | null = null;
+  private cursorIsSquare = false;
   private document: InkStudioWorkFile | null = null;
   private session: StudioEditorSession | null = null;
   private editHelperStateKey: string | null = null;
@@ -131,6 +170,12 @@ export class WorkspaceRenderer {
     this.controls.minDistance = 1.5;
     this.controls.maxDistance = 80;
     this.controls.maxPolarAngle = Math.PI * 0.49;
+    // OrbitControls already separates Touch from mouse-like Pointer Events.
+    // Null mouse bindings leave one/two-finger navigation intact while making
+    // Apple Pencil and desktop mouse inert for camera movement.
+    this.controls.mouseButtons.LEFT = null;
+    this.controls.mouseButtons.MIDDLE = null;
+    this.controls.mouseButtons.RIGHT = null;
     this.controls.addEventListener('change', this.handleControlsChange);
     const composerTarget = new WebGLRenderTarget(1, 1, {
       type: HalfFloatType,
@@ -164,6 +209,8 @@ export class WorkspaceRenderer {
       this.groupPivotRoot,
       this.cursorRoot,
       this.strokePreviewRoot,
+      this.terrainPreviewRoot,
+      this.terrainToolPreviewRoot,
       this.mainLight,
       this.mainLight.target,
       this.ambientLight,
@@ -174,14 +221,15 @@ export class WorkspaceRenderer {
     this.groupPivotRoot.name = 'InkGroupPivots';
     this.cursorRoot.name = 'InkBrushCursor';
     this.strokePreviewRoot.name = 'InkStrokePreviewRoot';
+    this.terrainPreviewRoot.name = 'TerrainEditPreviewRoot';
+    this.terrainToolPreviewRoot.name = 'TerrainToolPreviewRoot';
     this.cursor = new Mesh(
-      new RingGeometry(0.09, 0.105, 40),
+      this.cursorCircleGeometry,
       new MeshBasicMaterial({ color: 0x111111, depthTest: false, depthWrite: false, side: DoubleSide }),
     );
     this.cursor.visible = false;
     this.cursor.renderOrder = 2000;
     this.cursorRoot.add(this.cursor);
-    this.strokePreviewRoot.add(this.strokePreview.mesh);
     this.hardShadow = new InkHardShadowMap(this.renderer, this.scene, this.mainLight, this.inkLighting, onWarning);
     this.resizeObserver = new ResizeObserver(this.handleResize);
     this.resizeObserver.observe(canvas);
@@ -203,36 +251,66 @@ export class WorkspaceRenderer {
     const editHelperStateKey = `${session.mode}|${session.activeReferenceId ?? ''}|${session.activeShapeId ?? ''}`;
     const selectionChanged = this.editHelperStateKey !== editHelperStateKey || inkUpdate.changed;
     this.editHelperStateKey = editHelperStateKey;
-    if (selectionChanged) this.rebuildEditHelpers();
-    this.controls.enabled = session.mode === 'navigate';
+    if (selectionChanged) this.syncEditHelpers();
+    this.controls.enabled = true;
     this.requestRender();
   }
 
-  pickInkSurface(clientX: number, clientY: number, pressure: number): InkSurfaceHit | null {
+  pickInkSurface(
+    clientX: number,
+    clientY: number,
+    pressure: number,
+    fallbackPlane?: { referenceId: string; shapeId: string } | null,
+  ): InkSurfaceHit | null {
     if (!this.document || !this.session) return null;
     this.setRay(clientX, clientY);
     const intersections = this.raycaster.intersectObjects(this.shapePickers, false);
     const intersection = intersections[0];
-    if (!intersection || !(intersection.object instanceof Mesh)) return null;
-    const referenceId = intersection.object.userData.referenceId as string | undefined;
-    const shapeId = intersection.object.userData.shapeId as string | undefined;
-    const source = referenceId ? getInkSourceByReference(this.document, referenceId) : null;
-    const shape = source?.shapes.find((candidate) => candidate.id === shapeId);
-    if (!referenceId || !shapeId || !shape) return null;
-    // Painting's dynamic Plane helper is translated to the content bounds.
-    // Plane author coordinates remain relative to the Shape root, while
-    // Cuboid/Sphere coordinates remain relative to their scaled surface mesh.
-    const local = shape.kind === 'plane'
-      ? intersection.object.parent?.worldToLocal(intersection.point.clone()) ?? intersection.object.worldToLocal(intersection.point.clone())
-      : intersection.object.worldToLocal(intersection.point.clone());
-    const normalLocal = intersection.face?.normal.clone() ?? new Vector3(0, 0, 1);
-    const normal = normalLocal.transformDirection(intersection.object.matrixWorld).normalize();
+    if (intersection && intersection.object instanceof Mesh) {
+      const referenceId = intersection.object.userData.referenceId as string | undefined;
+      const shapeId = intersection.object.userData.shapeId as string | undefined;
+      const source = referenceId ? getInkSourceByReference(this.document, referenceId) : null;
+      const shape = source?.shapes.find((candidate) => candidate.id === shapeId);
+      if (referenceId && shapeId && shape) {
+        // A dynamic Plane surface is translated inside its Shape root. Author
+        // coordinates stay relative to the root; Cuboid/Sphere charts stay
+        // relative to their scaled surface mesh.
+        const local = shape.kind === 'plane'
+          ? intersection.object.parent?.worldToLocal(intersection.point.clone()) ?? intersection.object.worldToLocal(intersection.point.clone())
+          : intersection.object.worldToLocal(intersection.point.clone());
+        const normalLocal = intersection.face?.normal.clone() ?? new Vector3(0, 0, 1);
+        const normal = normalLocal.transformDirection(intersection.object.matrixWorld).normalize();
+        return {
+          referenceId,
+          shapeId,
+          shape,
+          point: getSurfacePoint(shape, local, normalLocal, pressure),
+          world: intersection.point.clone(),
+          normal,
+        };
+      }
+    }
+
+    const candidate = fallbackPlane ?? (this.session.activeReferenceId && this.session.activeShapeId
+      ? { referenceId: this.session.activeReferenceId, shapeId: this.session.activeShapeId }
+      : null);
+    if (!candidate) return null;
+    const source = getInkSourceByReference(this.document, candidate.referenceId);
+    const shape = source?.shapes.find((entry) => entry.id === candidate.shapeId);
+    const helper = this.helperEntries.get(helperKey(candidate.referenceId, candidate.shapeId));
+    if (!shape || shape.kind !== 'plane' || !helper) return null;
+    helper.root.updateWorldMatrix(true, false);
+    const origin = helper.root.getWorldPosition(new Vector3());
+    const normal = new Vector3(0, 0, 1).applyQuaternion(helper.root.getWorldQuaternion(new Quaternion())).normalize();
+    const world = this.raycaster.ray.intersectPlane(new Plane().setFromNormalAndCoplanarPoint(normal, origin), new Vector3());
+    if (!world) return null;
+    const local = helper.root.worldToLocal(world.clone());
     return {
-      referenceId,
-      shapeId,
+      referenceId: candidate.referenceId,
+      shapeId: candidate.shapeId,
       shape,
-      point: getSurfacePoint(shape, local, normalLocal, pressure),
-      world: intersection.point.clone(),
+      point: { x: local.x, y: local.y, pressure },
+      world,
       normal,
     };
   }
@@ -244,10 +322,89 @@ export class WorkspaceRenderer {
     return referenceId ? { referenceId } : null;
   }
 
-  pickTerrainCell(clientX: number, clientY: number, layer: number): { x: number; y: number; z: number } | null {
+  pickTerrain(clientX: number, clientY: number, axis: TerrainWorkAxis): TerrainPick | null {
     this.setRay(clientX, clientY);
-    const point = this.raycaster.ray.intersectPlane(new Plane(new Vector3(0, 1, 0), -(layer + 1)), new Vector3());
-    return point ? { x: Math.floor(point.x + 0.5), y: layer, z: Math.floor(point.z + 0.5) } : null;
+    const intersection = this.raycaster.intersectObjects([...this.terrain.getPickMeshes()], false)[0];
+    if (intersection) {
+      const tile = this.terrain.getTileFromIntersection(intersection);
+      const faceNormal = intersection.face?.normal;
+      if (tile && faceNormal) {
+        return {
+          source: 'terrain',
+          tile,
+          point: intersection.point.clone(),
+          normal: faceNormal.clone().transformDirection(intersection.object.matrixWorld).normalize(),
+        };
+      }
+    }
+    const point = this.intersectTerrainWorkPlane(axis, 0);
+    return point ? { source: 'work-plane', point } : null;
+  }
+
+  getTerrainPlacementCell(pick: TerrainPick, axis: TerrainWorkAxis): TerrainCellPosition | null {
+    if (pick.source === 'work-plane') {
+      const cell = pointToTerrainCell(pick.point);
+      cell[axis] = 0;
+      return isValidTerrainCell(cell.x, cell.y, cell.z) ? cell : null;
+    }
+    const { tile, normal } = pick;
+    if (normal.y > 0.5) return { x: tile.x, y: tile.y + 1, z: tile.z };
+    if (normal.y < -0.5) return { x: tile.x, y: tile.y - 1, z: tile.z };
+    if (Math.abs(normal.x) >= Math.abs(normal.z)) return { x: tile.x + Math.sign(normal.x), y: tile.y, z: tile.z };
+    return { x: tile.x, y: tile.y, z: tile.z + Math.sign(normal.z) };
+  }
+
+  pickTerrainCellOnPlane(
+    clientX: number,
+    clientY: number,
+    axis: TerrainWorkAxis,
+    coordinate: number,
+  ): TerrainCellPosition | null {
+    if (!Number.isInteger(coordinate)) return null;
+    this.setRay(clientX, clientY);
+    const point = this.intersectTerrainWorkPlane(axis, coordinate);
+    if (!point) return null;
+    const cell = pointToTerrainCell(point);
+    cell[axis] = coordinate;
+    return isValidTerrainCell(cell.x, cell.y, cell.z) ? cell : null;
+  }
+
+  prepareTerrainPatch(changes: readonly TerrainTileChange[]): void {
+    this.terrain.preparePatch(changes);
+  }
+
+  setTerrainPreviews(tiles: readonly TileCell[], mode: 'place' | 'remove'): void {
+    this.pendingTerrainPreview = { tiles: [...tiles], mode };
+    if (!this.terrainPreviewFrame) this.terrainPreviewFrame = requestAnimationFrame(this.flushTerrainPreview);
+  }
+
+  clearTerrainPreview(): void {
+    this.pendingTerrainPreview = null;
+    if (this.terrainPreviewFrame) cancelAnimationFrame(this.terrainPreviewFrame);
+    this.terrainPreviewFrame = 0;
+    disposeObjectTree(this.terrainPreviewRoot);
+    this.terrainPreviewRoot.clear();
+    this.requestRender();
+  }
+
+  showTerrainToolPreview(tile: TileCell): void {
+    if (this.terrainToolPreviewTimer !== null) window.clearTimeout(this.terrainToolPreviewTimer);
+    disposeObjectTree(this.terrainToolPreviewRoot);
+    this.terrainToolPreviewRoot.clear();
+    const mesh = new Mesh(
+      createTerrainBatchGeometry([{ ...tile, x: 0, y: 0, z: 0 }]),
+      new MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.72, depthTest: false, depthWrite: false }),
+    );
+    mesh.renderOrder = 3000;
+    this.terrainToolPreviewRoot.add(mesh);
+    this.updateTerrainToolPreviewTransform();
+    this.terrainToolPreviewTimer = window.setTimeout(() => {
+      this.terrainToolPreviewTimer = null;
+      disposeObjectTree(this.terrainToolPreviewRoot);
+      this.terrainToolPreviewRoot.clear();
+      this.requestRender();
+    }, 1_000);
+    this.requestRender();
   }
 
   pickHorizontalPlane(clientX: number, clientY: number, worldY: number): Vector3 | null {
@@ -256,10 +413,11 @@ export class WorkspaceRenderer {
   }
 
   showCursor(hit: InkSurfaceHit, radius: number, square = false): void {
-    this.cursor.geometry.dispose();
-    this.cursor.geometry = square
-      ? new PlaneGeometry(radius * 2, radius * 2)
-      : new RingGeometry(Math.max(0.002, radius - 0.008), radius + 0.008, 40);
+    if (this.cursorIsSquare !== square) {
+      this.cursorIsSquare = square;
+      this.cursor.geometry = square ? this.cursorSquareGeometry : this.cursorCircleGeometry;
+    }
+    this.cursor.scale.setScalar(Math.max(0.002, radius));
     this.cursor.position.copy(hit.world).addScaledVector(hit.normal, 0.006);
     this.cursor.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), hit.normal);
     this.cursor.visible = true;
@@ -268,19 +426,89 @@ export class WorkspaceRenderer {
 
   hideCursor(): void { if (this.cursor.visible) { this.cursor.visible = false; this.requestRender(); } }
 
-  showStrokePreview(referenceId: string, shape: InkShape, points: readonly InkSurfacePoint[], color: string, width: number): void {
-    if (!this.document || points.length < 2) { this.clearStrokePreview(); return; }
-    const reference = this.document.ink.assetReferences.find((candidate) => candidate.id === referenceId);
-    if (!reference) { this.clearStrokePreview(); return; }
-    const previewShape: InkShape = { ...shape, strokes: [createInkOutlineStroke(points, color, width)] };
-    this.strokePreview.update(compileInkShapeRibbon(previewShape));
-    this.strokePreviewRoot.position.set(reference.anchorPosition.x, reference.anchorPosition.y, reference.anchorPosition.z);
-    this.strokePreviewRoot.rotation.set(0, reference.rotation * Math.PI / 180, 0);
-    applyInkShapeRenderTransform(this.strokePreview.mesh, shape);
+  showStrokePreviews(segments: readonly InkStrokePreviewSegment[], color: string, width: number): void {
+    if (!this.document) return;
+    let used = 0;
+    for (const segment of segments) {
+      if (segment.points.length < 2) continue;
+      const reference = this.document.ink.assetReferences.find((candidate) => candidate.id === segment.referenceId);
+      if (!reference) continue;
+      const entry = this.ensureStrokePreview(used++);
+      const previewShape: InkShape = {
+        ...segment.shape,
+        strokes: [createInkOutlineStroke(segment.points, color, width)],
+      };
+      entry.preview.update(compileInkShapeRibbon(previewShape));
+      entry.root.position.set(reference.anchorPosition.x, reference.anchorPosition.y, reference.anchorPosition.z);
+      entry.root.rotation.set(0, reference.rotation * Math.PI / 180, 0);
+      applyInkShapeRenderTransform(entry.preview.mesh, segment.shape);
+      entry.root.visible = true;
+    }
+    for (let index = used; index < this.strokePreviews.length; index += 1) {
+      this.strokePreviews[index]!.preview.clear();
+      this.strokePreviews[index]!.root.visible = false;
+    }
     this.requestRender();
   }
 
-  clearStrokePreview(): void { this.strokePreview.clear(); this.requestRender(); }
+  clearStrokePreview(): void {
+    for (const entry of this.strokePreviews) {
+      entry.preview.clear();
+      entry.root.visible = false;
+    }
+    this.requestRender();
+  }
+
+  previewInkFill(referenceId: string, shape: InkShape): void {
+    const entry = this.inkEntries.get(referenceId);
+    const root = entry?.shapes.get(shape.id);
+    if (!root) return;
+    updateInkShapeFillSurfaces(
+      root,
+      compileInkFill(shape),
+      null,
+      shape,
+      this.inkLighting,
+      INK_SHAPE_RENDER_OPTIONS,
+    );
+    applyInkShapeRenderTransform(root, shape);
+    this.syncSingleInkHelper(referenceId, shape);
+    this.hardShadow.markDirty();
+    this.requestRender();
+  }
+
+  previewInkRibbon(referenceId: string, shape: InkShape): void {
+    const root = this.inkEntries.get(referenceId)?.shapes.get(shape.id);
+    if (!root) return;
+    updateInkShapeRibbon(root, compileInkShapeRibbon(shape));
+    this.requestRender();
+  }
+
+  previewGroupTransform(referenceId: string, position: Readonly<{ x: number; y: number; z: number }>, rotationDegrees: number): void {
+    const entry = this.inkEntries.get(referenceId);
+    if (entry) {
+      entry.root.position.set(position.x, position.y, position.z);
+      entry.root.rotation.y = rotationDegrees * Math.PI / 180;
+    }
+    if (this.helperGroupReferenceId === referenceId && this.helperGroupRoot) {
+      this.helperGroupRoot.position.set(position.x, position.y, position.z);
+      this.helperGroupRoot.rotation.y = rotationDegrees * Math.PI / 180;
+    }
+    const pivot = this.pivotPickers.find((candidate) => candidate.userData.referenceId === referenceId);
+    pivot?.position.set(position.x, position.y, position.z);
+    if (entry && hasInkHardShadowCasterInGroup(entry.source)) this.hardShadow.markDirty();
+    this.requestRender();
+  }
+
+  previewShapeTransform(referenceId: string, shape: InkShape): void {
+    const renderRoot = this.inkEntries.get(referenceId)?.shapes.get(shape.id);
+    if (renderRoot) applyInkShapeRenderTransform(renderRoot, shape);
+    const helper = this.helperEntries.get(helperKey(referenceId, shape.id));
+    if (helper) applyInkShapeRenderTransform(helper.root, shape);
+    const compiled = this.inkEntries.get(referenceId)?.source.compiled.shapes.find((entry) => entry.shapeId === shape.id);
+    if (hasInkHardShadowCasterInShape(compiled)) this.hardShadow.markDirty();
+    this.requestRender();
+  }
 
   focusSelection(): void {
     if (!this.document || !this.session?.activeReferenceId) return;
@@ -305,6 +533,8 @@ export class WorkspaceRenderer {
     this.resizeObserver.disconnect();
     this.controls.removeEventListener('change', this.handleControlsChange);
     this.controls.dispose();
+    if (this.terrainPreviewFrame) cancelAnimationFrame(this.terrainPreviewFrame);
+    if (this.terrainToolPreviewTimer !== null) window.clearTimeout(this.terrainToolPreviewTimer);
     this.hardShadow.dispose();
     this.referenceLayer.dispose();
     this.editorGuides.dispose();
@@ -313,9 +543,13 @@ export class WorkspaceRenderer {
     this.inkEntries.clear();
     disposeInkShapePreviewTree(this.helperRoot);
     disposeObjectTree(this.groupPivotRoot);
-    this.cursor.geometry.dispose();
+    disposeObjectTree(this.terrainPreviewRoot);
+    disposeObjectTree(this.terrainToolPreviewRoot);
+    this.cursorCircleGeometry.dispose();
+    this.cursorSquareGeometry.dispose();
     (this.cursor.material as MeshBasicMaterial).dispose();
-    this.strokePreview.dispose();
+    for (const entry of this.strokePreviews) entry.preview.dispose();
+    this.strokePreviews.length = 0;
     this.renderPass.dispose();
     this.outputPass.dispose();
     this.composer.dispose();
@@ -442,18 +676,81 @@ export class WorkspaceRenderer {
     return hardShadowChanged;
   }
 
-  private rebuildEditHelpers(): void {
-    disposeInkShapePreviewTree(this.helperRoot);
-    disposeObjectTree(this.groupPivotRoot);
-    this.shapePickers.length = 0;
-    this.pivotPickers.length = 0;
+  private syncEditHelpers(): void {
+    if (!this.document || !this.session) {
+      this.clearShapeHelpers();
+      this.clearGroupPivots();
+      return;
+    }
+    if (this.session.mode === 'select') {
+      this.clearShapeHelpers();
+      this.syncGroupPivots();
+      return;
+    }
+    this.clearGroupPivots();
+    if (this.session.mode === 'terrain') {
+      this.clearShapeHelpers();
+      return;
+    }
+    const referenceId = this.session.activeReferenceId;
+    const source = getInkSourceByReference(this.document, referenceId);
+    const reference = this.document.ink.assetReferences.find((candidate) => candidate.id === referenceId);
+    if (!referenceId || !source || !reference) {
+      this.clearShapeHelpers();
+      return;
+    }
+    if (this.helperGroupReferenceId !== referenceId || !this.helperGroupRoot) {
+      this.clearShapeHelpers();
+      this.helperGroupRoot = new Group();
+      this.helperGroupRoot.name = 'InkShapeHelperGroup';
+      this.helperGroupReferenceId = referenceId;
+      this.helperRoot.add(this.helperGroupRoot);
+    }
+    this.helperGroupRoot.position.set(reference.anchorPosition.x, reference.anchorPosition.y, reference.anchorPosition.z);
+    this.helperGroupRoot.rotation.y = reference.rotation * Math.PI / 180;
+
+    const nextShapeIds = new Set(source.shapes.map((shape) => shape.id));
+    for (const [key, entry] of this.helperEntries) {
+      if (entry.referenceId === referenceId && nextShapeIds.has(entry.shapeId)) continue;
+      entry.root.removeFromParent();
+      disposeInkShapePreviewTree(entry.root);
+      this.helperEntries.delete(key);
+    }
+    for (const shape of source.shapes) this.syncSingleInkHelper(referenceId, shape);
+    this.refreshShapePickers();
+  }
+
+  private syncSingleInkHelper(referenceId: string, shape: InkShape): void {
+    if (!this.session || this.helperGroupReferenceId !== referenceId || !this.helperGroupRoot) return;
+    const key = helperKey(referenceId, shape.id);
+    const active = this.session.mode === 'shape' && shape.id === this.session.activeShapeId;
+    const geometryKey = getInkShapeHelperGeometryKey(shape);
+    const existing = this.helperEntries.get(key);
+    if (!existing || existing.geometryKey !== geometryKey || existing.active !== active) {
+      if (existing) {
+        existing.root.removeFromParent();
+        disposeInkShapePreviewTree(existing.root);
+      }
+      const preview = createInkShapePreview(shape, active);
+      preview.surface.userData.referenceId = referenceId;
+      preview.surface.userData.shapeId = shape.id;
+      const entry: InkHelperEntry = { ...preview, referenceId, shapeId: shape.id, geometryKey, active };
+      this.helperEntries.set(key, entry);
+      this.helperGroupRoot.add(entry.root);
+      this.refreshShapePickers();
+      return;
+    }
+    applyInkShapeRenderTransform(existing.root, shape);
+  }
+
+  private syncGroupPivots(): void {
+    this.clearGroupPivots();
     if (!this.document || !this.session) return;
-    const showPivots = this.session.mode === 'select';
-    if (showPivots) for (const reference of this.document.ink.assetReferences) {
+    for (const reference of this.document.ink.assetReferences) {
       const selected = reference.id === this.session.activeReferenceId;
       const pivot = new Mesh(
         new BoxGeometry(selected ? 0.2 : 0.14, selected ? 0.2 : 0.14, selected ? 0.2 : 0.14),
-        new MeshBasicMaterial({ color: selected ? 0xf3b85f : 0xd94545, depthTest: false, depthWrite: false }),
+        new MeshBasicMaterial({ color: selected ? 0x63c7fa : 0x548097, depthTest: false, depthWrite: false }),
       );
       pivot.position.set(reference.anchorPosition.x, reference.anchorPosition.y, reference.anchorPosition.z);
       pivot.userData.referenceId = reference.id;
@@ -461,22 +758,64 @@ export class WorkspaceRenderer {
       this.groupPivotRoot.add(pivot);
       this.pivotPickers.push(pivot);
     }
-    const referenceId = this.session.activeReferenceId;
-    const source = getInkSourceByReference(this.document, referenceId);
-    const reference = this.document.ink.assetReferences.find((candidate) => candidate.id === referenceId);
-    if (!source || !reference || this.session.mode === 'navigate' || this.session.mode === 'terrain') return;
-    const groupRoot = new Group();
-    groupRoot.position.set(reference.anchorPosition.x, reference.anchorPosition.y, reference.anchorPosition.z);
-    groupRoot.rotation.y = reference.rotation * Math.PI / 180;
-    this.helperRoot.add(groupRoot);
-    for (const shape of source.shapes) {
-      const active = this.session.mode !== 'draw' && shape.id === this.session.activeShapeId;
-      const preview = createInkShapePreview(shape, active);
-      preview.surface.userData.referenceId = reference.id;
-      preview.surface.userData.shapeId = shape.id;
-      groupRoot.add(preview.root);
-      this.shapePickers.push(preview.surface);
-    }
+  }
+
+  private clearShapeHelpers(): void {
+    disposeInkShapePreviewTree(this.helperRoot);
+    this.helperEntries.clear();
+    this.shapePickers.length = 0;
+    this.helperGroupRoot = null;
+    this.helperGroupReferenceId = null;
+  }
+
+  private clearGroupPivots(): void {
+    disposeObjectTree(this.groupPivotRoot);
+    this.pivotPickers.length = 0;
+  }
+
+  private refreshShapePickers(): void {
+    this.shapePickers.length = 0;
+    for (const entry of this.helperEntries.values()) this.shapePickers.push(entry.surface);
+  }
+
+  private ensureStrokePreview(index: number): StrokePreviewEntry {
+    const existing = this.strokePreviews[index];
+    if (existing) return existing;
+    const root = new Group();
+    const preview = new InkRibbonPreview();
+    root.add(preview.mesh);
+    this.strokePreviewRoot.add(root);
+    const entry = { root, preview };
+    this.strokePreviews.push(entry);
+    return entry;
+  }
+
+  private readonly flushTerrainPreview = (): void => {
+    this.terrainPreviewFrame = 0;
+    const preview = this.pendingTerrainPreview;
+    this.pendingTerrainPreview = null;
+    disposeObjectTree(this.terrainPreviewRoot);
+    this.terrainPreviewRoot.clear();
+    if (!preview || preview.tiles.length === 0 || this.disposed) return;
+    const material = preview.mode === 'place'
+      ? new MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.48, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })
+      : new MeshBasicMaterial({ color: 0xd35f5f, transparent: true, opacity: 0.5, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+    const mesh = new Mesh(createTerrainBatchGeometry(preview.tiles), material);
+    mesh.renderOrder = 20;
+    this.terrainPreviewRoot.add(mesh);
+    this.requestRender();
+  };
+
+  private updateTerrainToolPreviewTransform(): void {
+    if (this.terrainToolPreviewRoot.children.length === 0) return;
+    const local = new Vector3(0.68, -0.52, -3.2);
+    this.terrainToolPreviewRoot.position.copy(local.applyMatrix4(this.camera.matrixWorld));
+    this.terrainToolPreviewRoot.quaternion.copy(this.camera.quaternion);
+  }
+
+  private intersectTerrainWorkPlane(axis: TerrainWorkAxis, coordinate: number): Vector3 | null {
+    const normal = new Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
+    return this.raycaster.ray.intersectPlane(new Plane(normal, -coordinate), new Vector3());
   }
 
   private applyLighting(document: InkStudioWorkFile): boolean {
@@ -535,6 +874,7 @@ export class WorkspaceRenderer {
   private setRay(clientX: number, clientY: number): void {
     const bounds = this.canvas.getBoundingClientRect();
     this.pointer.set(((clientX - bounds.left) / bounds.width) * 2 - 1, -((clientY - bounds.top) / bounds.height) * 2 + 1);
+    this.camera.updateMatrixWorld();
     this.raycaster.setFromCamera(this.pointer, this.camera);
   }
 
@@ -556,6 +896,8 @@ export class WorkspaceRenderer {
   private readonly render = (): void => {
     this.frameRequested = false;
     if (this.disposed) return;
+    this.camera.updateMatrixWorld();
+    this.updateTerrainToolPreviewTransform();
     this.editorGuides.update();
     this.referenceLayer.render(this.scene, this.camera, new Set<Object3D>([this.terrain.referenceRoot]));
     const previousTerrainVisibility = this.terrain.referenceRoot.visible;
@@ -563,6 +905,27 @@ export class WorkspaceRenderer {
     this.hardShadow.renderIfNeeded();
     this.terrain.referenceRoot.visible = previousTerrainVisibility;
     this.composer.render();
+  };
+}
+
+function helperKey(referenceId: string, shapeId: string): string {
+  return `${referenceId}:${shapeId}`;
+}
+
+function getInkShapeHelperGeometryKey(shape: InkShape): string {
+  if (shape.kind === 'plane') {
+    const bounds = getInkPlanePreviewBounds(shape);
+    return `plane:${bounds.minX}:${bounds.maxX}:${bounds.minY}:${bounds.maxY}`;
+  }
+  if (shape.kind === 'cuboid') return `cuboid:${shape.size.x}:${shape.size.y}:${shape.size.z}`;
+  return `sphere:${shape.radius}`;
+}
+
+function pointToTerrainCell(point: Vector3): TerrainCellPosition {
+  return {
+    x: Math.floor(point.x + 0.5),
+    y: Math.floor(point.y + 0.5),
+    z: Math.floor(point.z + 0.5),
   };
 }
 

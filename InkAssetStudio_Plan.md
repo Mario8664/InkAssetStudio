@@ -229,7 +229,7 @@ type InkStudioWorkFile = {
 | 当前意图 | Studio 交互 |
 | --- | --- |
 | Pencil 落笔绘制 | Apple Pencil 在激活 Draw 工具且命中 Shape 时绘制。 |
-| 视图导航 | 双指平移/缩放；必要时进入明确的 Navigate 模式。Pencil 不负责相机导航。 |
+| 视图导航 | 所有编辑模式下始终可用的手指触控轨道导航；Pencil 和鼠标都不负责相机导航。 |
 | 选择 Group / Shape | 明确的 Select 模式，点击 Pivot 或可见的 Shape 辅助面。 |
 | 直线辅助 | 工具栏中可见的直线模式/临时按钮，不依赖键盘 `Shift`。 |
 | 吸色 | 独立吸色工具按钮，不依赖 `Ctrl`。 |
@@ -336,3 +336,20 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 | 图片导入 | 不做。 |
 | 网络 | 当前不实现；离线能力先完成。 |
 | Painting 修改 | 当前不做；未来导入器另行确认。 |
+
+## 13. iPad Pencil 交互与增量编辑升级
+
+本节取代此前“显式 Navigate 模式”和“按层放置 Terrain”的交互描述。
+
+- 视口导航不再是独立模式。它在 Terrain、Group、Shape 与 Draw 模式中始终可用，但只接收手指触摸；Apple Pencil、鼠标均不得驱动镜头。
+- Terrain、Ink、Group/Shape 选择与全部 Transform/尺寸手柄只接收 Apple Pencil。手指不得修改作者内容，鼠标不得作为移动端编辑输入的替代品。
+- Terrain 优先射线命中已有地块并按命中面放置相邻格，从而可以向上或向侧面搭建；空白处使用 X/Y/Z 三个零坐标工作面。一次 Brush 或 Rectangle 手势锁定工作轴和工作面。
+- Terrain 保留 Brush 与 Rectangle、Block/Slope/Corner Slope、Place/Erase 和四向旋转。Tile 类型与四向旋转都使用直接按钮；点选类型或方向后在主画面显示一秒半透明形状预览，实际绘制期间持续显示半透明落点或范围预览。
+- Terrain 颜色只能从固定的 PICO-8 16 色集合中选择。它没有可编辑色板、任意颜色输入或取色器；只有 Ink 支持任意颜色和可编辑色板。
+- Group 与 Shape 的删除按钮位于左侧列表各自对应项右侧，并只删除该项。删除仍需确认，并作为一条 Undo 事务提交。
+- 新建 Plane 的方向可直接选择 X、Y、Z 或 Camera，与 Painting 当前 Ink Plane 语义一致。
+- Plane 在同一 Pencil 笔画中允许越出当前有限辅助面：离开有限面后继续与该 Shape 的无限作者平面求交，直到命中其它 Shape 或手势结束。
+- 一笔经过同一 Group 的多个 Shape 时，每个 Shape 的段和实时预览都保留；Fill/擦除也分别维护每个 Shape 的临时作者状态。
+- Fill 拖动只处理新增采样、只编译和上传变化 Shape 的 Fill；Terrain 只重建受影响分块；Transform 拖动只更新已有对象节点。普通 Pointer Move 不得构造完整临时文档或调用全局场景更新。
+- Group 模式提供位置和兼容数据格式的 Y 旋转手柄；Shape 模式提供 XYZ 位置/旋转手柄，Cuboid 另有三轴 Size Handle，Sphere 另有 Radius Handle。全部手柄只接收 Apple Pencil。
+- Editor Session 持久化 Snap 开关和 Translation Unit；默认单位为 `0.5`。启用后位置手柄持续吸附，不依赖 iPad 不便使用的 Ctrl 修饰键。

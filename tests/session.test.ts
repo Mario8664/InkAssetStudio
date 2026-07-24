@@ -26,4 +26,29 @@ describe('Editor viewport session', () => {
     expect(session.showInfiniteGrid).toBe(false);
     expect(session.showAxes).toBe(true);
   });
+
+  it('migrates the retired Navigate and Layer session into Pencil-first defaults', () => {
+    const session = normalizeStudioEditorSession({
+      mode: 'navigate',
+      terrainLayer: 12,
+      terrainOperation: 'rectangle',
+      terrainAxis: 'z',
+      snapEnabled: true,
+      transformSnapUnit: 0.25,
+    });
+    expect(session.mode).toBe('draw');
+    expect('terrainLayer' in session).toBe(false);
+    expect(session.terrainOperation).toBe('rectangle');
+    expect(session.terrainAxis).toBe('z');
+    expect(session.snapEnabled).toBe(true);
+    expect(session.transformSnapUnit).toBe(0.25);
+  });
+
+  it('defaults Terrain to a horizontal brush and Painting translation snap unit', () => {
+    const session = createStudioEditorSession();
+    expect(session.terrainOperation).toBe('brush');
+    expect(session.terrainAxis).toBe('y');
+    expect(session.transformSnapUnit).toBe(0.5);
+    expect(session.snapEnabled).toBe(false);
+  });
 });

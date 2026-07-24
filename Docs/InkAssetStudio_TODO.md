@@ -59,10 +59,10 @@
 
 - 支持 Painting 兼容的 Block、45° Slope 和 Corner Slope。
 - 地形格保存整数 `x/y/z`、0/90/180/270° 旋转和 PICO-8 基础颜色。
-- 支持按层放置、拖动连续放置、拖动擦除、类型/旋转/颜色切换。
+- 支持已有地块射线相邻放置、X/Y/Z 零坐标工作面、Brush/Rectangle 连续放置与擦除，以及按钮式类型/四向旋转和固定 PICO-8 颜色切换。
 - 地形 Reference 几何携带 barycentric 与真实边界掩码，边缘暗化不会显示内部三角形对角线；描边使用与地块协调的深色并设有非纯黑下限。
 - 无限网格与 X/Y/Z 坐标轴是 Studio 所有的编辑器视口辅助，可分别开关；地块边缘也有独立开关。三个设置仅进入 Editor Session，不进入工作场景、Ink 作者源或导出文件。
-- Terrain、Group、Shape 和 Draw 模式不会同时驱动 OrbitControls；相机只在显式 Navigate 模式中导航，避免一边绘制一边转动相机。
+- Terrain、Group、Shape 和 Draw 模式中手指始终只驱动 OrbitControls；Apple Pencil 只驱动编辑，鼠标不驱动编辑或镜头。
 
 ### 2.5 渲染与灯光
 
@@ -94,8 +94,8 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 8 个 Vitest 文件、40 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
-- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere 网格密度，以及地形几何与边界掩码、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、格式往返和限制、多个 Group、Plane/Cuboid/Sphere Outline/Fill 编译、Normal Outset v13 编译与资源释放、Shape GPU 资源复用、Sphere 与 Cuboid 六面朝外绕序、Fill 正面/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v11/v12 工作文件升级、篡改派生缓存重建、压感策略、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存语义、Undo/Redo 和连续输入合并。
+- 8 个 Vitest 文件、51 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere 网格密度，以及地形几何与边界掩码、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、格式往返和限制、多个 Group、Plane/Cuboid/Sphere Outline/Fill 编译、Normal Outset v13 编译与资源释放、Shape GPU 资源复用、Sphere 与 Cuboid 六面朝外绕序、Fill 正面/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v11/v12 工作文件升级、篡改派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存语义、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
 真实 Chrome 自动验收命令：
@@ -113,9 +113,9 @@ npm.cmd run visual-check
 5. 切换到 Shape 模式、新建 Cuboid，启用并调整 Normal Outset 颜色与距离，截取 Painting 风格浅蓝半透明辅助面与壳体，再切回 Draw 模式继续编辑；
 6. 打开调色板编辑器并排序颜色；
 7. 核对 Painting 当前完整灯光初值、全部参数输入和重点昼夜滑杆，修改预览灯光并执行 Undo/Redo/Reset；
-8. 核对 Navigate 模式不会残留 Shape 辅助面；
+8. 核对独立 Navigate 模式已删除，鼠标拖动不会绘制 Ink；
 9. 核对地块边缘、无限网格和坐标轴三个开关默认开启，并逐个关闭、重新开启；
-10. 进入 Terrain 模式拖动擦除地形；
+10. 进入 Terrain 模式，核对三个 Tile 按钮、四向按钮、X/Y/Z 工作面按钮并用 Pencil 拖动擦除地形；
 11. 导出 JSON，检查 Group、描边点、压力、Fill 块、Normal Outset v13 配置和地形结果；
 12. 新建场景后重新导入刚导出的文件；
 13. 等待 IndexedDB 保存完成；
@@ -123,7 +123,7 @@ npm.cmd run visual-check
 15. 在 1366×900、1024×768 和 768×1024 三种视口检查布局、画布、Group、工具、三个视口辅助开关和页面溢出；
 16. 收集控制台和页面错误。
 
-最近一次结果：2 个 Group、15 个可编辑 Outline 点、2 个稀疏 Fill 块、1 个已启用 Normal Outset、22 个剩余地形格；导出声明 Painting Ink compiled format v13。三种视口均无页面溢出，Undo/Redo、重点昼夜控件和三个视口辅助开关在 iPad 横竖屏可见，模式切换、开关交互、断网恢复均成功，控制台和页面错误为 0。截图确认 Shape 模式使用浅蓝半透明辅助面与参考网格，Cuboid 壳无缺面且使用配置颜色/距离，Draw 模式使用低透明度辅助面，Navigate 模式不残留辅助面；地块暗面、真实边缘、无限网格和坐标轴仍与 Painting 参考风格一致。
+最近一次结果：2 个 Group、15 个可编辑 Outline 点、4 个稀疏 Fill 块、1 个已启用 Normal Outset、21 个剩余地形格；导出声明 Painting Ink compiled format v13。三种视口均无页面溢出，Undo/Redo、重点昼夜控件和三个视口辅助开关在 iPad 横竖屏可见，按钮式 Terrain 工具、Pencil 绘制、鼠标输入隔离、模式切换、开关交互、断网恢复均成功，控制台和页面错误为 0。截图确认 Shape 模式使用浅蓝半透明辅助面与参考网格，Cuboid 壳无缺面且使用配置颜色/距离，Draw 模式使用低透明度辅助面；地块暗面、真实边缘、无限网格和坐标轴仍与 Painting 参考风格一致。
 
 视觉验收图位于：
 
@@ -143,3 +143,14 @@ npm.cmd run visual-check
 - Painting 侧 `.inkstudio-work.json` 导入器仍需在 Painting 仓库中单独设计、确认和实现；当前 Studio 不写入 Painting。
 
 上述真实设备验收不需要启动或保留任何 Studio 常驻服务。
+
+## 5. 当前 iPad 绘画体验升级
+
+- [x] 删除独立 Navigate 模式，完成 Touch-only 导航与 Pencil-only 编辑输入仲裁。
+- [x] Terrain 改为已有地形射线相邻放置、X/Y/Z 工作面、Brush/Rectangle 和批量半透明预览。
+- [x] Terrain 改为固定 PICO-8 颜色、按钮式 Tile/四向旋转，并增加一秒工具形状预览。
+- [x] 修复 Plane 同笔越界扩展、扩大后的局部坐标映射、多 Shape Outline/Fill 预览与提交。
+- [x] 将 Fill、Terrain、Helper 与 Transform 热路径改为精确局部更新。
+- [x] 增加 Group/Shape Transform Handle、Cuboid Size Handle、Sphere Radius Handle 与持久化 Snap 设置。
+- [x] 将 Group/Shape 删除按钮移到左侧列表对应项，并增加 X/Y/Z/Camera Plane 创建按钮。
+- [x] 补齐单元、交互、iPad 尺寸、离线与部署后远程验收，再提交推送 GitHub Pages。

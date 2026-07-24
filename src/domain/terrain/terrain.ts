@@ -11,6 +11,12 @@ export type TileCell = {
   color: Pico8ColorId;
 };
 
+export type TerrainCellPosition = Pick<TileCell, 'x' | 'y' | 'z'>;
+export type TerrainTileChange = TerrainCellPosition & {
+  before: TileCell | null;
+  after: TileCell | null;
+};
+
 export type TerrainHeightFieldCorner = { x: number; z: number; height: number };
 export const TILE_ROTATIONS: readonly TileRotation[] = [0, 90, 180, 270];
 
@@ -65,6 +71,11 @@ export function isTileCell(value: unknown): value is TileCell {
     && (tile.kind === 'block' || tile.kind === 'slope' || tile.kind === 'corner-slope')
     && (tile.rotation === 0 || tile.rotation === 90 || tile.rotation === 180 || tile.rotation === 270)
     && isPico8ColorId(tile.color);
+}
+
+export function isValidTerrainCell(x: number, y: number, z: number): boolean {
+  return Number.isSafeInteger(x) && Number.isSafeInteger(y) && Number.isSafeInteger(z)
+    && Math.abs(x) <= 1_000 && Math.abs(y) <= 1_000 && Math.abs(z) <= 1_000;
 }
 
 function rotateAroundY(x: number, z: number, degrees: number): { x: number; z: number } {

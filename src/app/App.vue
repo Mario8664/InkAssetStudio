@@ -10,6 +10,7 @@ import {
 } from '../domain/ink/ink';
 import { DEFAULT_PREVIEW_LIGHTING, clonePreviewLighting } from '../domain/lighting/lighting';
 import { PICO_8_COLORS } from '../domain/terrain/pico8';
+import { createTerrainTile, type TileKind, type TileRotation } from '../domain/terrain/terrain';
 import type { StudioEditorSession, WorkspaceMode } from '../domain/workspace/session';
 import { createStudioEditorSession, normalizeStudioEditorSession } from '../domain/workspace/session';
 import {
@@ -28,6 +29,8 @@ import {
 } from '../domain/workspace/workspace';
 import { WorkspaceStore, type WorkspaceSnapshot } from '../domain/workspace/WorkspaceStore';
 import { InkEditorController } from '../editor/InkEditorController';
+import { PencilTransformController } from '../editor/PencilTransformController';
+import { TerrainEditorController } from '../editor/TerrainEditorController';
 import { WorkspaceRenderer } from '../render/WorkspaceRenderer';
 import { downloadStudioDocument, readStudioDocumentFile } from '../storage/files';
 import { loadCurrentDocument, loadDocumentSavedAt, loadEditorSession, saveDocument, saveEditorSession } from '../storage/indexedDb';
@@ -43,9 +46,12 @@ const online = ref(navigator.onLine);
 const message = ref<{ text: string; tone: 'info' | 'error' } | null>(null);
 const lastSavedAt = ref<number | null>(null);
 const paletteEditing = ref(false);
+const lightingPanelOpen = ref(false);
 let store: WorkspaceStore | null = null;
 let renderer: WorkspaceRenderer | null = null;
 let controller: InkEditorController | null = null;
+let terrainController: TerrainEditorController | null = null;
+let transformController: PencilTransformController | null = null;
 let compiler: InkCompilationCoordinator | null = null;
 let unsubscribe: (() => void) | null = null;
 let saveTimer: number | null = null;
@@ -92,17 +98,22 @@ onMounted(async () => {
     store = new WorkspaceStore(initialDocument);
     if (!canvas.value) throw new Error('Studio canvas did not mount.');
     renderer = new WorkspaceRenderer(canvas.value, (warning) => showMessage(warning, 'error'));
+    transformController = new PencilTransformController({ renderer, store, getSession: () => session });
     controller = new InkEditorController({
       renderer,
       store,
       getSession: () => session,
       updateSession,
       showMessage,
+      isTransformPointerClaimed: (pointerId) => transformController?.isPointerClaimed(pointerId) ?? false,
     });
+    terrainController = new TerrainEditorController({ renderer, store, getSession: () => session, showMessage });
     unsubscribe = store.subscribe((next) => {
       snapshot.value = next;
       normalizeSelection(next.document);
       renderer?.update(next.document, session);
+      transformController?.sync(next.document, session);
+      terrainController?.syncSession();
       if (next.revision > next.savedRevision) scheduleSave(next.document, next.revision);
     });
     compiler = new InkCompilationCoordinator(store, (error) => showMessage(error, 'error'));
@@ -119,6 +130,8 @@ onBeforeUnmount(() => {
   unsubscribe?.();
   compiler?.dispose();
   controller?.dispose();
+  terrainController?.dispose();
+  transformController?.dispose();
   renderer?.dispose();
   window.removeEventListener('online', updateOnline);
   window.removeEventListener('offline', updateOnline);
@@ -126,8 +139,36 @@ onBeforeUnmount(() => {
   window.document.removeEventListener('visibilitychange', handleVisibilityChange);
 });
 
+watch(() => [
+  session.mode,
+  session.activeReferenceId,
+  session.activeShapeId,
+  session.showTerrainEdges,
+  session.showInfiniteGrid,
+  session.showAxes,
+] as const, () => {
+  const current = store?.getDocument() ?? document.value;
+  if (!current) return;
+  renderer?.update(current, session);
+  transformController?.sync(current, session);
+  terrainController?.syncSession();
+});
+
+watch(() => [session.transformMode, session.snapEnabled, session.transformSnapUnit] as const, () => {
+  const current = store?.getDocument() ?? document.value;
+  if (current) transformController?.sync(current, session);
+});
+
+watch(() => [
+  session.terrainAction,
+  session.terrainOperation,
+  session.terrainAxis,
+  session.terrainKind,
+  session.terrainRotation,
+  session.terrainColor,
+] as const, () => terrainController?.syncSession());
+
 watch(session, () => {
-  renderer?.update(store?.getDocument() ?? document.value!, session);
   if (sessionTimer !== null) window.clearTimeout(sessionTimer);
   sessionTimer = window.setTimeout(() => { void persistEditorSession(); }, 350);
 }, { deep: true });
@@ -147,6 +188,7 @@ function updateSession(update: Partial<StudioEditorSession>): void { Object.assi
 
 function setMode(mode: WorkspaceMode): void {
   session.mode = mode;
+  lightingPanelOpen.value = false;
   if (mode === 'draw' && !session.activeReferenceId && document.value?.ink.assetReferences[0]) {
     session.activeReferenceId = document.value.ink.assetReferences[0].id;
   }
@@ -241,9 +283,8 @@ function createGroup(): void {
   session.mode = 'draw';
 }
 
-function deleteGroup(): void {
-  if (!session.activeReferenceId || !window.confirm('Delete this Ink Group and all its editable content?')) return;
-  const id = session.activeReferenceId;
+function deleteGroup(id: string): void {
+  if (!window.confirm('Delete this Ink Group and all its editable content?')) return;
   store?.transact('Delete Ink Group', (value) => removeInkGroup(value, id));
 }
 
@@ -271,17 +312,51 @@ function setReferenceRotation(event: Event): void {
   if (reference) store?.transact('Rotate Ink Group', (value) => updateInkReference(value, reference.id, { rotation }));
 }
 
-function createShape(kind: InkShape['kind']): void {
+function createShape(kind: InkShape['kind'], orientation = session.planeOrientation): void {
   if (!store || !session.activeReferenceId) return;
-  const shape = kind === 'plane' ? createInkPlaneShape(session.planeOrientation, { x: 0, y: 0, z: 0 }) : kind === 'cuboid' ? createInkCuboidShape() : createInkSphereShape();
+  const cameraRotation = renderer?.camera.rotation;
+  const shape = kind === 'plane'
+    ? createInkPlaneShape(orientation, cameraRotation ? { x: cameraRotation.x, y: cameraRotation.y, z: cameraRotation.z } : { x: 0, y: 0, z: 0 })
+    : kind === 'cuboid' ? createInkCuboidShape() : createInkSphereShape();
   store.transact(`Create ${kind} Shape`, (value) => addInkShape(value, session.activeReferenceId!, shape));
   session.activeShapeId = shape.id;
   session.mode = 'shape';
 }
 
-function deleteShape(): void {
-  if (!session.activeReferenceId || !session.activeShapeId || !window.confirm('Delete the selected Shape and all of its Ink content?')) return;
-  store?.transact('Delete Ink Shape', (value) => removeInkShape(value, session.activeReferenceId!, session.activeShapeId!));
+function createPlane(orientation: StudioEditorSession['planeOrientation']): void {
+  session.planeOrientation = orientation;
+  createShape('plane', orientation);
+}
+
+function deleteShape(shapeId: string): void {
+  if (!session.activeReferenceId || !window.confirm('Delete this Shape and all of its Ink content?')) return;
+  store?.transact('Delete Ink Shape', (value) => removeInkShape(value, session.activeReferenceId!, shapeId));
+}
+
+function selectTerrainKind(kind: TileKind): void {
+  session.terrainKind = kind;
+  showTerrainToolPreview();
+}
+
+function selectTerrainRotation(rotation: TileRotation): void {
+  session.terrainRotation = rotation;
+  showTerrainToolPreview();
+}
+
+function selectTerrainColor(color: StudioEditorSession['terrainColor']): void {
+  session.terrainColor = color;
+  showTerrainToolPreview();
+}
+
+function showTerrainToolPreview(): void {
+  renderer?.showTerrainToolPreview(createTerrainTile(
+    session.terrainKind,
+    session.terrainRotation,
+    0,
+    0,
+    0,
+    session.terrainColor,
+  ));
 }
 
 function setShapeVector(field: 'position' | 'rotation', axis: keyof InkVector3, event: Event): void {
@@ -427,11 +502,11 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
     </header>
 
     <nav class="modebar" aria-label="Editor mode">
-      <button :class="{ active: session.mode === 'navigate' }" @click="setMode('navigate')">Navigate</button>
       <button :class="{ active: session.mode === 'terrain' }" @click="setMode('terrain')">Terrain</button>
       <button :class="{ active: session.mode === 'select' }" @click="setMode('select')">Group</button>
       <button :class="{ active: session.mode === 'shape' }" @click="setMode('shape')">Shape</button>
       <button :class="{ active: session.mode === 'draw' }" @click="setMode('draw')">Draw</button>
+      <button :class="{ active: lightingPanelOpen }" @click="lightingPanelOpen = !lightingPanelOpen">Lighting</button>
       <button class="focus-button" :disabled="!session.activeReferenceId" @click="focusSelection">Focus</button>
     </nav>
 
@@ -441,32 +516,42 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
         <button class="round-button" title="New Group" @click="createGroup">＋</button>
       </div>
       <div class="group-list">
-        <button
+        <div
           v-for="reference in document?.ink.assetReferences"
           :key="reference.id"
-          class="group-row"
+          class="list-row-shell"
           :class="{ active: reference.id === session.activeReferenceId }"
-          @click="selectGroup(reference.id)"
         >
-          <span class="group-dot" />
-          <span>{{ document?.ink.embeddedAssets.find(asset => asset.assetId === reference.assetId)?.group.name }}</span>
-          <small>{{ reference.anchorPosition.x.toFixed(1) }}, {{ reference.anchorPosition.z.toFixed(1) }}</small>
-        </button>
+          <button class="group-row" @click="selectGroup(reference.id)">
+            <span class="group-dot" />
+            <span>{{ document?.ink.embeddedAssets.find(asset => asset.assetId === reference.assetId)?.group.name }}</span>
+            <small>{{ reference.anchorPosition.x.toFixed(1) }}, {{ reference.anchorPosition.z.toFixed(1) }}</small>
+          </button>
+          <button class="list-delete-button" :aria-label="`Delete ${document?.ink.embeddedAssets.find(asset => asset.assetId === reference.assetId)?.group.name ?? 'Group'}`" title="Delete Group" @click="deleteGroup(reference.id)">⌫</button>
+        </div>
       </div>
       <div v-if="activeGroup" class="shape-list-section">
         <div class="subheading"><span>Shapes</span><span>{{ activeGroup.shapes.length }}</span></div>
-        <button
+        <div
           v-for="(shape, index) in activeGroup.shapes"
           :key="shape.id"
-          class="shape-row"
+          class="list-row-shell shape-list-row"
           :class="{ active: shape.id === session.activeShapeId }"
-          @click="session.activeShapeId = shape.id; session.mode = 'shape'"
         >
-          <span>{{ shape.kind === 'plane' ? '▱' : shape.kind === 'cuboid' ? '⬡' : '●' }}</span>
-          <span>{{ shape.kind }} {{ index + 1 }}</span>
-        </button>
+          <button class="shape-row" @click="session.activeShapeId = shape.id; session.mode = 'shape'">
+            <span>{{ shape.kind === 'plane' ? '▱' : shape.kind === 'cuboid' ? '⬡' : '●' }}</span>
+            <span>{{ shape.kind }} {{ index + 1 }}</span>
+          </button>
+          <button class="list-delete-button" :aria-label="`Delete ${shape.kind} ${index + 1}`" title="Delete Shape" @click="deleteShape(shape.id)">⌫</button>
+        </div>
+        <label class="shape-create-label">Add Plane</label>
+        <div class="plane-create-row" aria-label="Plane orientation">
+          <button title="Plane normal X" @click="createPlane('x')">X</button>
+          <button title="Plane normal Y" @click="createPlane('y')">Y</button>
+          <button title="Plane normal Z" @click="createPlane('z')">Z</button>
+          <button title="Face the current editor camera" @click="createPlane('camera')">Camera</button>
+        </div>
         <div class="shape-create-row">
-          <button @click="createShape('plane')">+ Plane</button>
           <button @click="createShape('cuboid')">+ Box</button>
           <button @click="createShape('sphere')">+ Sphere</button>
         </div>
@@ -476,27 +561,52 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
     <main class="viewport">
       <canvas ref="canvas" aria-label="Ink Studio 3D viewport" />
       <div class="viewport-hint">
-        <template v-if="session.mode === 'navigate'">One finger or Pencil: orbit · two fingers: zoom/pan</template>
-        <template v-else-if="session.mode === 'terrain'">Drag across the active layer to {{ session.terrainAction }} terrain</template>
-        <template v-else-if="session.mode === 'select'">Tap a red pivot to select; drag the selected pivot to move the Group</template>
-        <template v-else-if="session.mode === 'shape'">Tap a Shape; drag to {{ session.transformMode === 'translate' ? 'move' : 'rotate' }}</template>
-        <template v-else>Apple Pencil or mouse draws · switch to Navigate to move the camera</template>
+        <template v-if="session.mode === 'terrain'">Pencil: {{ session.terrainOperation }} {{ session.terrainAction }} · finger: orbit / pan / zoom</template>
+        <template v-else-if="session.mode === 'select'">Pencil: select or use the Group handle · finger: orbit / pan / zoom</template>
+        <template v-else-if="session.mode === 'shape'">Pencil: select or use Shape and size handles · finger: orbit / pan / zoom</template>
+        <template v-else>Apple Pencil draws · finger: orbit / pan / zoom</template>
       </div>
     </main>
 
     <aside v-if="session.rightPanelOpen" class="panel right-panel">
-      <template v-if="session.mode === 'terrain'">
+      <template v-if="session.mode === 'terrain' && !lightingPanelOpen">
         <div class="panel-heading"><div><strong>Terrain</strong><small>Painting-compatible cells</small></div></div>
         <section>
           <label>Action</label>
           <div class="segmented"><button :class="{ active: session.terrainAction === 'place' }" @click="session.terrainAction = 'place'">Place</button><button :class="{ active: session.terrainAction === 'erase' }" @click="session.terrainAction = 'erase'">Erase</button></div>
+          <label>Operation</label>
+          <div class="terrain-operation-buttons">
+            <button :class="{ active: session.terrainOperation === 'brush' }" title="Continuous grid brush" @click="session.terrainOperation = 'brush'">🖌</button>
+            <button :class="{ active: session.terrainOperation === 'rectangle' }" title="Filled rectangle" @click="session.terrainOperation = 'rectangle'">▣</button>
+          </div>
+          <label>Work Plane</label>
+          <div class="terrain-axis-buttons">
+            <button v-for="axis in (['x', 'y', 'z'] as const)" :key="axis" :class="{ active: session.terrainAxis === axis }" :title="`${axis.toUpperCase()} work plane`" @click="session.terrainAxis = axis">{{ axis.toUpperCase() }}</button>
+          </div>
           <label>Tile</label>
-          <select v-model="session.terrainKind"><option value="block">Block</option><option value="slope">45° Slope</option><option value="corner-slope">Corner Slope</option></select>
-          <label>Rotation</label>
-          <select v-model.number="session.terrainRotation"><option :value="0">North</option><option :value="90">East</option><option :value="180">South</option><option :value="270">West</option></select>
-          <label>Layer Y</label><input v-model.number="session.terrainLayer" type="number" step="1" />
-          <label>Tile Color</label>
-          <div class="pico-palette"><button v-for="color in PICO_8_COLORS" :key="color.id" :class="{ active: session.terrainColor === color.id }" :style="{ background: color.hex }" :title="color.label" @click="session.terrainColor = color.id" /></div>
+          <div class="terrain-tools">
+            <button v-for="kind in (['block', 'slope', 'corner-slope'] as const)" :key="kind" class="terrain-tool" :class="{ active: session.terrainKind === kind }" :title="kind" @click="selectTerrainKind(kind)">
+              <svg v-if="kind === 'block'" class="tile-icon-svg" viewBox="0 0 48 36" aria-hidden="true">
+                <polygon class="tile-icon-top" points="14,12 24,6 34,12 24,18" /><polygon class="tile-icon-left" points="14,12 24,18 24,30 14,24" /><polygon class="tile-icon-right" points="24,18 34,12 34,24 24,30" /><polyline class="tile-icon-line" points="14,12 24,18 34,12 24,6 14,12" /><polyline class="tile-icon-line" points="14,24 24,30 34,24" /><line class="tile-icon-line" x1="14" y1="12" x2="14" y2="24" /><line class="tile-icon-line" x1="24" y1="18" x2="24" y2="30" /><line class="tile-icon-line" x1="34" y1="12" x2="34" y2="24" />
+              </svg>
+              <svg v-else-if="kind === 'slope'" class="tile-icon-svg" viewBox="0 0 48 36" aria-hidden="true">
+                <polygon class="tile-icon-left" points="14,12 24,30 14,24" /><polygon class="tile-icon-right" points="24,6 34,24 24,30" /><polygon class="tile-icon-top" points="14,12 24,6 34,24 24,30" /><line class="tile-icon-line" x1="14" y1="12" x2="24" y2="6" /><line class="tile-icon-line" x1="14" y1="12" x2="24" y2="30" /><line class="tile-icon-line" x1="24" y1="6" x2="34" y2="24" /><line class="tile-icon-line" x1="14" y1="24" x2="24" y2="30" /><line class="tile-icon-line" x1="14" y1="12" x2="14" y2="24" />
+              </svg>
+              <svg v-else class="tile-icon-svg" viewBox="0 0 48 36" aria-hidden="true">
+                <polygon class="tile-icon-left" points="24,6 14,24 24,30" /><polygon class="tile-icon-right" points="24,6 24,30 34,24" /><polyline class="tile-icon-line" points="14,24 24,30 34,24" /><line class="tile-icon-line" x1="24" y1="6" x2="14" y2="24" /><line class="tile-icon-line" x1="24" y1="6" x2="24" y2="30" /><line class="tile-icon-line" x1="24" y1="6" x2="34" y2="24" />
+              </svg>
+            </button>
+          </div>
+          <label>Direction</label>
+          <div class="terrain-direction-pad" aria-label="Terrain direction">
+            <button class="north" :class="{ active: session.terrainRotation === 0 }" title="North (−Z)" @click="selectTerrainRotation(0)">↑</button>
+            <button class="west" :class="{ active: session.terrainRotation === 270 }" title="West (−X)" @click="selectTerrainRotation(270)">←</button>
+            <button class="east" :class="{ active: session.terrainRotation === 90 }" title="East (+X)" @click="selectTerrainRotation(90)">→</button>
+            <button class="south" :class="{ active: session.terrainRotation === 180 }" title="South (+Z)" @click="selectTerrainRotation(180)">↓</button>
+          </div>
+          <label>Fixed PICO-8 Color</label>
+          <div class="pico-palette"><button v-for="color in PICO_8_COLORS" :key="color.id" :class="{ active: session.terrainColor === color.id }" :style="{ background: color.hex }" :title="`PICO-8 ${color.label}`" @click="selectTerrainColor(color.id)" /></div>
+          <p class="note">Terrain uses only the fixed PICO-8 16-color set. Pencil edits; fingers always navigate.</p>
           <div class="viewport-guide-options">
             <strong>Viewport Guides</strong>
             <label class="check-row"><input v-model="session.showTerrainEdges" type="checkbox" /> Show tile edges</label>
@@ -506,7 +616,7 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
         </section>
       </template>
 
-      <template v-else-if="session.mode === 'navigate'">
+      <template v-else-if="lightingPanelOpen">
         <div class="panel-heading">
           <div><strong>Preview Lighting</strong><small>Painting Global Lighting</small></div>
           <button class="lighting-reset-button" title="Restore all current Painting lighting values" @click="resetLightingToPainting">Reset</button>
@@ -559,16 +669,23 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
       </template>
 
       <template v-else-if="activeGroup && activeReference">
-        <div class="panel-heading"><div><strong>{{ session.mode === 'shape' ? 'Shape Inspector' : 'Group Inspector' }}</strong><small>{{ activeGroup.name }}</small></div><button class="danger-icon" title="Delete Group" @click="deleteGroup">⌫</button></div>
+        <div class="panel-heading"><div><strong>{{ session.mode === 'shape' ? 'Shape Inspector' : 'Group Inspector' }}</strong><small>{{ activeGroup.name }}</small></div></div>
         <section>
+          <template v-if="session.mode === 'select' || session.mode === 'shape'">
+            <label>Transform Handle</label>
+            <div class="segmented"><button :class="{ active: session.transformMode === 'translate' }" @click="session.transformMode = 'translate'">Move XYZ</button><button :class="{ active: session.transformMode === 'rotate' }" @click="session.transformMode = 'rotate'">{{ session.mode === 'select' ? 'Rotate Y' : 'Rotate XYZ' }}</button></div>
+            <div class="snap-settings">
+              <label class="check-row"><input v-model="session.snapEnabled" type="checkbox" /> Snap</label>
+              <label>Translation Unit <input v-model.number="session.transformSnapUnit" type="number" min="0.001" max="1000" step="0.01" /></label>
+            </div>
+          </template>
           <label>Group Name</label><input :value="activeGroup.name" @change="setGroupName" />
           <label>Anchor Position</label>
           <div class="vector-row"><label>X<input type="number" step="0.1" :value="activeReference.anchorPosition.x" @change="setReferencePosition('x', $event)" /></label><label>Y<input type="number" step="0.1" :value="activeReference.anchorPosition.y" @change="setReferencePosition('y', $event)" /></label><label>Z<input type="number" step="0.1" :value="activeReference.anchorPosition.z" @change="setReferencePosition('z', $event)" /></label></div>
           <label>Placement Rotation</label><select :value="activeReference.rotation" @change="setReferenceRotation"><option :value="0">0°</option><option :value="90">90°</option><option :value="180">180°</option><option :value="270">270°</option></select>
         </section>
-        <section v-if="activeShape" class="shape-inspector">
-          <div class="subheading"><span>{{ activeShape.kind }} Shape</span><button class="danger-icon" title="Delete Shape" @click="deleteShape">⌫</button></div>
-          <label>Viewport Drag</label><div class="segmented"><button :class="{ active: session.transformMode === 'translate' }" @click="session.transformMode = 'translate'">Move XZ</button><button :class="{ active: session.transformMode === 'rotate' }" @click="session.transformMode = 'rotate'">Rotate Y</button></div>
+        <section v-if="activeShape && session.mode === 'shape'" class="shape-inspector">
+          <div class="subheading"><span>{{ activeShape.kind }} Shape</span></div>
           <label>Position</label>
           <div class="vector-row"><label>X<input type="number" step="0.1" :value="activeShape.position.x" @change="setShapeVector('position', 'x', $event)" /></label><label>Y<input type="number" step="0.1" :value="activeShape.position.y" @change="setShapeVector('position', 'y', $event)" /></label><label>Z<input type="number" step="0.1" :value="activeShape.position.z" @change="setShapeVector('position', 'z', $event)" /></label></div>
           <label>Rotation</label>

@@ -72,16 +72,21 @@ output { color: var(--accent); font-variant-numeric: tabular-nums; }
 .viewport-guide-options > strong { color: #cdd1ce; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
 
 .group-list { display: grid; padding: 7px; gap: 3px; }
+.list-row-shell { display: grid; grid-template-columns: minmax(0, 1fr) 34px; align-items: stretch; gap: 3px; border-radius: 7px; }
 .group-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; border-color: transparent; background: transparent; text-align: left; }
-.group-row.active { border-color: #6b5633; background: var(--accent-dark); }
+.list-row-shell.active .group-row { border-color: #6b5633; background: var(--accent-dark); }
 .group-row small { color: var(--muted); font-size: 9px; }
 .group-dot { width: 7px; height: 7px; border-radius: 50%; background: #d14f4f; }
-.group-row.active .group-dot { background: var(--accent); }
+.list-row-shell.active .group-dot { background: var(--accent); }
+.list-delete-button { width: 34px; min-height: 34px; padding: 0; color: var(--danger); background: #292d30cc; }
 .shape-list-section { border-top: 1px solid var(--line); padding: 8px; }
 .subheading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 3px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
 .shape-row { display: grid; grid-template-columns: 20px 1fr; align-items: center; width: 100%; border-color: transparent; background: transparent; text-align: left; }
-.shape-row.active { border-color: #4f7590; background: #263946; }
-.shape-create-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 7px; }
+.shape-list-row.active .shape-row { border-color: #4f7590; background: #263946; }
+.shape-create-label { margin-top: 9px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+.plane-create-row { display: grid; grid-template-columns: repeat(3, 1fr) 1.6fr; gap: 4px; margin-top: 4px; }
+.plane-create-row button { min-height: 30px; padding: 4px; font-size: 10px; }
+.shape-create-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; margin-top: 5px; }
 .shape-create-row button { min-height: 30px; padding: 4px; font-size: 10px; }
 
 .segmented { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; }
@@ -94,6 +99,25 @@ output { color: var(--accent); font-variant-numeric: tabular-nums; }
 .normal-outset-settings legend { padding: 0 5px; color: var(--accent); font-size: 11px; }
 .normal-outset-settings .checkbox-label { display: flex; align-items: center; gap: 7px; }
 .normal-outset-settings input[type="range"] { width: 100%; }
+.snap-settings { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: end; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #191c1e; }
+.snap-settings .check-row { align-self: center; white-space: nowrap; }
+.snap-settings input[type="number"] { min-width: 0; }
+.terrain-operation-buttons, .terrain-axis-buttons { display: grid; grid-template-columns: repeat(3, 42px); gap: 6px; }
+.terrain-operation-buttons button { width: 42px; min-height: 38px; padding: 0; font-size: 17px; }
+.terrain-axis-buttons button { width: 42px; min-height: 34px; padding: 0; font-weight: 750; }
+.terrain-tools { display: grid; grid-template-columns: repeat(3, 54px); gap: 6px; }
+.terrain-tool { display: grid; place-items: center; width: 54px; min-height: 48px; padding: 0; }
+.tile-icon-svg { display: block; width: 46px; height: 34px; overflow: visible; filter: drop-shadow(0 1px 0 #0003); }
+.tile-icon-top { fill: #f8fbff; }
+.tile-icon-left { fill: #dce4ec; }
+.tile-icon-right { fill: #c7d1dc; }
+.tile-icon-line { fill: none; stroke: #8f9daa; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.terrain-direction-pad { display: grid; grid-template: repeat(3, 38px) / repeat(3, 38px); gap: 3px; width: max-content; }
+.terrain-direction-pad button { width: 38px; min-height: 38px; padding: 0; font-size: 18px; }
+.terrain-direction-pad .north { grid-area: 1 / 2; }
+.terrain-direction-pad .west { grid-area: 2 / 1; }
+.terrain-direction-pad .east { grid-area: 2 / 3; }
+.terrain-direction-pad .south { grid-area: 3 / 2; }
 .pico-palette { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
 .pico-palette button { min-width: 0; min-height: 24px; padding: 0; border: 2px solid #111; }
 .pico-palette button.active { border-color: #fff; box-shadow: 0 0 0 1px var(--accent); }

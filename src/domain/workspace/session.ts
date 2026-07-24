@@ -3,10 +3,12 @@ import { DEFAULT_INK_FILL_BRUSH_SIZE, DEFAULT_INK_STROKE_COLOR, DEFAULT_INK_STRO
 import { DEFAULT_TILE_COLOR, isPico8ColorId, type Pico8ColorId } from '../terrain/pico8';
 import type { TileKind, TileRotation } from '../terrain/terrain';
 
-export type WorkspaceMode = 'navigate' | 'terrain' | 'select' | 'shape' | 'draw';
+export type WorkspaceMode = 'terrain' | 'select' | 'shape' | 'draw';
 export type InkDrawTool = 'outline' | 'outline-eraser' | 'fill-brush' | 'fill-eraser' | 'fill-bucket' | 'picker';
 export type TransformMode = 'translate' | 'rotate';
 export type TerrainAction = 'place' | 'erase';
+export type TerrainOperation = 'brush' | 'rectangle';
+export type TerrainWorkAxis = 'x' | 'y' | 'z';
 
 export type StudioEditorSession = {
   mode: WorkspaceMode;
@@ -24,11 +26,14 @@ export type StudioEditorSession = {
   fillBrushShape: InkFillBrushShape;
   terrainKind: TileKind;
   terrainAction: TerrainAction;
+  terrainOperation: TerrainOperation;
+  terrainAxis: TerrainWorkAxis;
   terrainRotation: TileRotation;
   terrainColor: Pico8ColorId;
-  terrainLayer: number;
   planeOrientation: InkPlaneOrientation;
   transformMode: TransformMode;
+  snapEnabled: boolean;
+  transformSnapUnit: number;
   showTerrainEdges: boolean;
   showInfiniteGrid: boolean;
   showAxes: boolean;
@@ -55,11 +60,14 @@ export function createStudioEditorSession(): StudioEditorSession {
     fillBrushShape: 'circle',
     terrainKind: 'block',
     terrainAction: 'place',
+    terrainOperation: 'brush',
+    terrainAxis: 'y',
     terrainRotation: 0,
     terrainColor: DEFAULT_TILE_COLOR,
-    terrainLayer: 0,
     planeOrientation: 'camera',
     transformMode: 'translate',
+    snapEnabled: false,
+    transformSnapUnit: 0.5,
     showTerrainEdges: true,
     showInfiniteGrid: true,
     showAxes: true,
@@ -71,13 +79,13 @@ export function createStudioEditorSession(): StudioEditorSession {
 export function normalizeStudioEditorSession(value: unknown): StudioEditorSession {
   const fallback = createStudioEditorSession();
   if (!value || typeof value !== 'object') return fallback;
-  const source = value as Partial<StudioEditorSession> & { showGrid?: unknown };
+  const source = value as Partial<StudioEditorSession> & { showGrid?: unknown; terrainLayer?: unknown };
   const color = (candidate: unknown, defaultValue: string): string => typeof candidate === 'string' && /^#[0-9a-f]{6}$/i.test(candidate) ? candidate : defaultValue;
   const number = (candidate: unknown, defaultValue: number, minimum: number, maximum: number): number => typeof candidate === 'number' && Number.isFinite(candidate)
     ? Math.min(maximum, Math.max(minimum, candidate))
     : defaultValue;
   return {
-    mode: isOneOf(source.mode, ['navigate', 'terrain', 'select', 'shape', 'draw']) ? source.mode : fallback.mode,
+    mode: isOneOf(source.mode, ['terrain', 'select', 'shape', 'draw']) ? source.mode : fallback.mode,
     drawTool: isOneOf(source.drawTool, ['outline', 'outline-eraser', 'fill-brush', 'fill-eraser', 'fill-bucket', 'picker']) ? source.drawTool : fallback.drawTool,
     activeReferenceId: typeof source.activeReferenceId === 'string' || source.activeReferenceId === null ? source.activeReferenceId : fallback.activeReferenceId,
     activeShapeId: typeof source.activeShapeId === 'string' || source.activeShapeId === null ? source.activeShapeId : fallback.activeShapeId,
@@ -94,11 +102,14 @@ export function normalizeStudioEditorSession(value: unknown): StudioEditorSessio
     fillBrushShape: isOneOf(source.fillBrushShape, ['circle', 'square']) ? source.fillBrushShape : fallback.fillBrushShape,
     terrainKind: isOneOf(source.terrainKind, ['block', 'slope', 'corner-slope']) ? source.terrainKind : fallback.terrainKind,
     terrainAction: isOneOf(source.terrainAction, ['place', 'erase']) ? source.terrainAction : fallback.terrainAction,
+    terrainOperation: isOneOf(source.terrainOperation, ['brush', 'rectangle']) ? source.terrainOperation : fallback.terrainOperation,
+    terrainAxis: isOneOf(source.terrainAxis, ['x', 'y', 'z']) ? source.terrainAxis : fallback.terrainAxis,
     terrainRotation: isOneOf(source.terrainRotation, [0, 90, 180, 270]) ? source.terrainRotation : fallback.terrainRotation,
     terrainColor: isPico8ColorId(source.terrainColor) ? source.terrainColor : fallback.terrainColor,
-    terrainLayer: Math.round(number(source.terrainLayer, fallback.terrainLayer, -1_000, 1_000)),
     planeOrientation: isOneOf(source.planeOrientation, ['x', 'y', 'z', 'camera']) ? source.planeOrientation : fallback.planeOrientation,
     transformMode: isOneOf(source.transformMode, ['translate', 'rotate']) ? source.transformMode : fallback.transformMode,
+    snapEnabled: typeof source.snapEnabled === 'boolean' ? source.snapEnabled : fallback.snapEnabled,
+    transformSnapUnit: number(source.transformSnapUnit, fallback.transformSnapUnit, 0.001, 1_000),
     showTerrainEdges: typeof source.showTerrainEdges === 'boolean'
       ? source.showTerrainEdges
       : typeof source.showGrid === 'boolean'
