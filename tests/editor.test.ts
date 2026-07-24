@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createInkOutlineStroke, createInkPlaneShape } from '../src/domain/ink/ink';
-import { eraseInkOutline, resolveInkGesturePoint } from '../src/editor/InkEditorController';
+import { createInkOutlineStroke, createInkPlaneShape, getCameraFacingInkPlaneRotation } from '../src/domain/ink/ink';
+import { chooseInkFallbackPlane, eraseInkOutline, resolveInkGesturePoint } from '../src/editor/InkEditorController';
 import { closestRayLineParameter } from '../src/editor/PencilTransformController';
 import { isApplePencilPointer, isFingerNavigationPointer } from '../src/editor/pointerInput';
-import { Vector3 } from 'three';
+import { Euler, Quaternion, Vector3 } from 'three';
 
 describe('outline eraser', () => {
   it('uses the complete eraser path and preserves editable stroke fragments', () => {
@@ -36,6 +36,24 @@ describe('Ink gesture sampling', () => {
 
     expect(moving).not.toEqual(raw);
     expect(released).toBe(raw);
+  });
+
+  it('keeps an infinite Plane fallback only until the gesture reaches a non-Plane Shape', () => {
+    const active = { referenceId: 'reference-active', shapeId: 'plane-active' };
+    expect(chooseInkFallbackPlane(null, active)).toEqual(active);
+    expect(chooseInkFallbackPlane({ referenceId: 'reference-a', shapeId: 'plane-a', shapeKind: 'plane' }, active)).toEqual({
+      referenceId: 'reference-a',
+      shapeId: 'plane-a',
+    });
+    expect(chooseInkFallbackPlane({ referenceId: 'reference-a', shapeId: 'box-a', shapeKind: 'cuboid' }, active)).toBeNull();
+  });
+
+  it('creates a Camera Plane in Group-local space while preserving the camera world orientation', () => {
+    const camera = new Quaternion().setFromEuler(new Euler(-0.35, 0.7, 0.08, 'YXZ'));
+    const local = getCameraFacingInkPlaneRotation(camera, 90);
+    const group = new Quaternion().setFromEuler(new Euler(0, Math.PI * 0.5, 0, 'YXZ'));
+    const reconstructed = group.multiply(new Quaternion().setFromEuler(new Euler(local.x, local.y, local.z, 'YXZ')));
+    expect(Math.abs(reconstructed.dot(camera))).toBeCloseTo(1, 6);
   });
 });
 

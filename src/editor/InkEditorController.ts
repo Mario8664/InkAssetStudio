@@ -142,7 +142,11 @@ export class InkEditorController {
       return;
     }
     if (event.pointerId !== this.pointerId) return;
-    if (!shouldAppendCoalescedPointerMove(this.usesRawPointerUpdates, this.receivedRawPointerUpdate)) return;
+    const appendCoalesced = shouldAppendCoalescedPointerMove(this.usesRawPointerUpdates, this.receivedRawPointerUpdate);
+    // Raw samples only replace the matching coalesced pointermove interval.
+    // Reset here so one isolated raw update cannot suppress the rest of the gesture.
+    this.receivedRawPointerUpdate = false;
+    if (!appendCoalesced) return;
     this.appendEventSamples(event);
   };
 
@@ -320,11 +324,13 @@ export class InkEditorController {
 
   private getFallbackPlane(): { referenceId: string; shapeId: string } | null {
     const segment = this.pendingInk.at(-1);
-    if (segment?.shape.kind === 'plane') return { referenceId: segment.referenceId, shapeId: segment.shapeId };
     const session = this.options.getSession();
-    return session.activeReferenceId && session.activeShapeId
+    return chooseInkFallbackPlane(
+      segment ? { referenceId: segment.referenceId, shapeId: segment.shapeId, shapeKind: segment.shape.kind } : null,
+      session.activeReferenceId && session.activeShapeId
       ? { referenceId: session.activeReferenceId, shapeId: session.activeShapeId }
-      : null;
+        : null,
+    );
   }
 
   private endGesture(restorePreview: boolean): void {
@@ -369,9 +375,20 @@ export function resolvePointerPressure(
   return Math.min(1, Math.max(0.05, event.pressure));
 }
 
-/** Pen falls back to coalesced pointermove samples until this gesture actually receives raw input. */
+/** A raw update replaces only the next matching coalesced pointermove interval. */
 export function shouldAppendCoalescedPointerMove(prefersRawInput: boolean, receivedRawInput: boolean): boolean {
   return !prefersRawInput || !receivedRawInput;
+}
+
+/** Once a stroke reaches a non-Plane Shape, it must not jump back to the selected Plane behind it. */
+export function chooseInkFallbackPlane(
+  preceding: { referenceId: string; shapeId: string; shapeKind: InkShape['kind'] } | null,
+  active: { referenceId: string; shapeId: string } | null,
+): { referenceId: string; shapeId: string } | null {
+  if (preceding) return preceding.shapeKind === 'plane'
+    ? { referenceId: preceding.referenceId, shapeId: preceding.shapeId }
+    : null;
+  return active;
 }
 
 /** The real release point closes a stroke without allowing the streaming stabilizer to shorten it. */

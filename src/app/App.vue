@@ -5,6 +5,7 @@ import {
   createInkCuboidShape,
   createInkPlaneShape,
   createInkSphereShape,
+  getCameraFacingInkPlaneRotation,
   type InkShape,
   type InkVector3,
 } from '../domain/ink/ink';
@@ -314,9 +315,11 @@ function setReferenceRotation(event: Event): void {
 
 function createShape(kind: InkShape['kind'], orientation = session.planeOrientation): void {
   if (!store || !session.activeReferenceId) return;
-  const cameraRotation = renderer?.camera.rotation;
+  const cameraRotation = orientation === 'camera' && renderer
+    ? getCameraFacingInkPlaneRotation(renderer.camera.quaternion, activeReference.value?.rotation ?? 0)
+    : { x: 0, y: 0, z: 0 };
   const shape = kind === 'plane'
-    ? createInkPlaneShape(orientation, cameraRotation ? { x: cameraRotation.x, y: cameraRotation.y, z: cameraRotation.z } : { x: 0, y: 0, z: 0 })
+    ? createInkPlaneShape(orientation, cameraRotation)
     : kind === 'cuboid' ? createInkCuboidShape() : createInkSphereShape();
   store.transact(`Create ${kind} Shape`, (value) => addInkShape(value, session.activeReferenceId!, shape));
   session.activeShapeId = shape.id;
@@ -357,6 +360,18 @@ function showTerrainToolPreview(): void {
     0,
     session.terrainColor,
   ));
+}
+
+function setTransformSnapUnit(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  const raw = Number(input.value);
+  const fallback = Number.isFinite(session.transformSnapUnit) && session.transformSnapUnit > 0
+    ? session.transformSnapUnit
+    : 0.5;
+  session.transformSnapUnit = Number.isFinite(raw)
+    ? Math.min(1_000, Math.max(0.001, raw))
+    : fallback;
+  input.value = String(session.transformSnapUnit);
 }
 
 function setShapeVector(field: 'position' | 'rotation', axis: keyof InkVector3, event: Event): void {
@@ -676,7 +691,7 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
             <div class="segmented"><button :class="{ active: session.transformMode === 'translate' }" @click="session.transformMode = 'translate'">Move XYZ</button><button :class="{ active: session.transformMode === 'rotate' }" @click="session.transformMode = 'rotate'">{{ session.mode === 'select' ? 'Rotate Y' : 'Rotate XYZ' }}</button></div>
             <div class="snap-settings">
               <label class="check-row"><input v-model="session.snapEnabled" type="checkbox" /> Snap</label>
-              <label>Translation Unit <input v-model.number="session.transformSnapUnit" type="number" min="0.001" max="1000" step="0.01" /></label>
+              <label>Translation Unit <input type="number" min="0.001" max="1000" step="0.01" :value="session.transformSnapUnit" @change="setTransformSnapUnit" /></label>
             </div>
           </template>
           <label>Group Name</label><input :value="activeGroup.name" @change="setGroupName" />

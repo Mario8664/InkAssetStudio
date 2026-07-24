@@ -61,6 +61,7 @@ import { MapReferenceLayer } from './MapReferenceLayer';
 import { TerrainRenderer } from './TerrainRenderer';
 import { createTerrainBatchGeometry } from './terrainGeometry';
 import { disposeObjectTree } from './dispose';
+import { isFingerNavigationPointer } from '../editor/pointerInput';
 
 type InkRenderEntry = {
   source: InkGroupData;
@@ -165,6 +166,13 @@ export class WorkspaceRenderer {
     this.camera.position.set(8, 8, 8);
     this.camera.lookAt(0, 0, 0);
     this.controls = new OrbitControls(this.camera, canvas);
+    // OrbitControls records every PointerEvent before it branches on pointerType.
+    // A capture-phase gate keeps Pencil/mouse out of its multi-touch bookkeeping.
+    canvas.addEventListener('pointerdown', this.gateOrbitPointer, { capture: true });
+    canvas.addEventListener('pointermove', this.gateOrbitPointer, { capture: true });
+    canvas.addEventListener('pointerup', this.gateOrbitPointer, { capture: true });
+    canvas.addEventListener('pointercancel', this.gateOrbitPointer, { capture: true });
+    canvas.addEventListener('wheel', this.blockMouseWheelNavigation, { capture: true, passive: false });
     this.controls.target.set(0, 0.5, 0);
     this.controls.enableDamping = false;
     this.controls.minDistance = 1.5;
@@ -533,6 +541,11 @@ export class WorkspaceRenderer {
     this.resizeObserver.disconnect();
     this.controls.removeEventListener('change', this.handleControlsChange);
     this.controls.dispose();
+    this.canvas.removeEventListener('pointerdown', this.gateOrbitPointer, { capture: true });
+    this.canvas.removeEventListener('pointermove', this.gateOrbitPointer, { capture: true });
+    this.canvas.removeEventListener('pointerup', this.gateOrbitPointer, { capture: true });
+    this.canvas.removeEventListener('pointercancel', this.gateOrbitPointer, { capture: true });
+    this.canvas.removeEventListener('wheel', this.blockMouseWheelNavigation, { capture: true });
     if (this.terrainPreviewFrame) cancelAnimationFrame(this.terrainPreviewFrame);
     if (this.terrainToolPreviewTimer !== null) window.clearTimeout(this.terrainToolPreviewTimer);
     this.hardShadow.dispose();
@@ -879,6 +892,15 @@ export class WorkspaceRenderer {
   }
 
   private readonly handleControlsChange = (): void => { this.requestRender(); };
+
+  private readonly gateOrbitPointer = (event: PointerEvent): void => {
+    this.controls.enabled = isFingerNavigationPointer(event);
+  };
+
+  private readonly blockMouseWheelNavigation = (event: WheelEvent): void => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
 
   private readonly handleResize = (): void => {
     const bounds = this.canvas.getBoundingClientRect();

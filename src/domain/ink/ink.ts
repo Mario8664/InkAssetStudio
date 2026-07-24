@@ -1,4 +1,4 @@
-import { BufferGeometry, Euler, Float32BufferAttribute, Matrix4, Vector3 } from 'three';
+import { BufferGeometry, Euler, Float32BufferAttribute, Matrix4, Quaternion, Vector3 } from 'three';
 import { hashDerivedAssetSource } from './derivedAssets';
 
 export const INK_MANAGER_OBJECT_TYPE = 'painting.ink-manager';
@@ -248,6 +248,19 @@ export function createInkPlaneShape(
     fill: createEmptyInkFillLayer(),
     lastOutlineEnd: null,
   };
+}
+
+/** Converts the editor camera's world orientation into an Ink Group's local YXZ rotation. */
+export function getCameraFacingInkPlaneRotation(
+  cameraQuaternion: Readonly<{ x: number; y: number; z: number; w: number }>,
+  groupRotationDegrees: number,
+): InkVector3 {
+  const camera = new Quaternion(cameraQuaternion.x, cameraQuaternion.y, cameraQuaternion.z, cameraQuaternion.w).normalize();
+  const inverseGroup = new Quaternion()
+    .setFromEuler(new Euler(0, groupRotationDegrees * Math.PI / 180, 0, 'YXZ'))
+    .invert();
+  const local = new Euler().setFromQuaternion(inverseGroup.multiply(camera), 'YXZ');
+  return { x: local.x, y: local.y, z: local.z };
 }
 
 export function createInkCuboidShape(): InkCuboidShape {
