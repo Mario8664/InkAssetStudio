@@ -1,0 +1,140 @@
+# Ink Asset Studio 实现与验收记录
+
+更新日期：2026-07-24
+
+## 1. 当前结论
+
+`InkAssetStudio_Plan.md` 中阶段 A 至 D 的可在 Windows 开发环境内实现部分已经完成。Studio 是独立的 Vue 3 + Three.js + TypeScript 静态 PWA，全部源码、构建配置、测试、PWA 文件和工作数据格式均位于 `E:\MyDemo\InkAssetStudio`。
+
+本次实现没有修改 `E:\MyDemo\Painting`。Studio 不从 Painting 源目录做运行时导入，也不会写入 Painting 的场景、资产、文档或构建配置。
+
+## 2. 已完成功能
+
+### 2.1 PWA 与离线外壳
+
+- Vite 生产构建、Web App Manifest、iPad standalone 元数据和 Service Worker 已建立。
+- 构建时自动枚举生产文件并生成预缓存清单；缓存版本随构建产物哈希变化。
+- Service Worker 对带 `Vary` 的静态资源使用可靠缓存匹配，只对页面导航回退 `index.html`，不会把 HTML 错误返回给 JS/CSS 请求。
+- 浏览器自动验收已确认：应用首次加载后切断网络并刷新，仍可打开完整工作场景。
+- 当前阶段没有部署地址、HTTPS 证书、局域网配对流程或常驻服务器。
+
+### 2.2 工作场景、持久化与文件交换
+
+- 工作文件格式：`ink-asset-studio-work`，`formatVersion: 1`。
+- Painting Ink 作者数据兼容版本：资产 schema 3、编译格式 11。
+- Terrain schema：1。
+- 一个工作场景可内嵌多个独立 Ink 源和多个摆放引用。
+- IndexedDB 保存当前场景和独立 Editor Session；作者内容修改使用 600 ms 节流自动保存，工具状态使用独立低频保存。
+- 顶栏显示保存中、本地已保存、最近保存时间和未导出提醒，并明确提示本地草稿不等于备份。
+- `.inkstudio-work.json` 支持随时导出和重新导入。
+- 导入前校验 32 MB 文件上限、格式版本、ID 唯一性、引用完整性、数值、颜色、地形、Shape、笔画点和稀疏 Fill 资源上限。
+- 导入和本地草稿恢复在一次性 Worker 中完成校验与 Ink 重编译，结束后立即终止 Worker。
+- 导入不信任文件中的派生缓存；作者源始终是权威。
+- Undo/Redo 使用结构共享快照；一次绘制、一次地形拖动或一次 Group/Shape 拖动只产生一条历史记录。连续灯光滑杆/颜色输入会合并为一条历史记录。顶栏使用带文字的 `Undo` / `Redo` 触控按钮，并在 iPad 横竖屏保持直接可见。
+
+### 2.3 Ink 作者工具
+
+- 多 Group Outliner、Group 新建/删除/改名、连续 X/Y/Z 摆放、0/90/180/270° Y 轴摆放旋转。
+- Group Pivot 视口选择和 XZ 拖动摆放。
+- 每个 Group 支持任意多个 Plane、Cuboid、Sphere。
+- Shape 支持选择、删除、位置、XYZ 旋转、Cuboid 固有尺寸、Sphere 固有半径；不提供通用 Transform Scale。
+- Shape 视口拖动支持 XZ 移动和 Y 轴旋转，手势结束后才提交一次作者事务。
+- Shape 编辑辅助已与 Painting 当前视觉一致：选中 Surface 使用 `#63c7fa / 0.34`，未选中及 Draw 模式 Surface 使用 `#548097 / 0.16`；相应参考网格使用 `#b9ebff / 0.84` 与 `#7aa0ae / 0.42`。辅助面读取深度但不写入深度，不再使用黄色 wireframe。
+- Plane 辅助面按 Outline 与稀疏 Fill 内容动态扩展并保留最小 `1×1` 范围；Cuboid 显示六面世界单位网格，Sphere 显示每面 `4×4` 的球化六面体网格。辅助面及其网格仅属于编辑器视口，不进入作者源或导出文件。
+- Outline、Outline Eraser、Fill Paint、Fill Eraser、Bucket Fill、Fill Picker 全部可通过触控 UI 选择。
+- Outline 保留带压力的可编辑表面点，并编译为世界宽度 Ribbon。
+- Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。
+- Plane、Cuboid、Sphere 均使用 Painting 当前的表面坐标和编译规则。
+- 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。
+- 支持直线辅助；其端点状态保存在作者数据中，不进入编译几何哈希。
+- 调色板可新增、删除、直接改色和触控排序，最多 32 色，并作为 Editor Session 独立保存。
+- Apple Pencil 使用 Pointer Events、合并事件和可用时的 `pointerrawupdate`；手势取消、失焦和 Pointer Capture 丢失都会丢弃未提交临时数据并清理状态。
+- 自适应稳定器在采样阶段平滑表面点，不在提交后重解释作者轨迹。
+- 压感默认开启且始终有可见开关。关闭时新 Outline 点写入 `pressure: 1`；旧笔画不会被回写。
+- 正式落笔后的 Ink 编译在常驻编译 Worker 中完成。编译器复用未改变 Shape 的 Ribbon/Fill；Worker 结果作为派生缓存协调回主文档，不增加历史或内容 revision。
+
+### 2.4 简化地形与编辑参照
+
+- 支持 Painting 兼容的 Block、45° Slope 和 Corner Slope。
+- 地形格保存整数 `x/y/z`、0/90/180/270° 旋转和 PICO-8 基础颜色。
+- 支持按层放置、拖动连续放置、拖动擦除、类型/旋转/颜色切换。
+- 地形 Reference 几何携带 barycentric 与真实边界掩码，边缘暗化不会显示内部三角形对角线；描边使用与地块协调的深色并设有非纯黑下限。
+- 无限网格与 X/Y/Z 坐标轴是 Studio 所有的编辑器视口辅助，可分别开关；地块边缘也有独立开关。三个设置仅进入 Editor Session，不进入工作场景、Ink 作者源或导出文件。
+- Terrain、Group、Shape 和 Draw 模式不会同时驱动 OrbitControls；相机只在显式 Navigate 模式中导航，避免一边绘制一边转动相机。
+
+### 2.5 渲染与灯光
+
+- Map Reference 在 Three.js 展开灯光 ShaderChunk 前注入有效 Half-Lambert，显示地形体积和基础颜色，背光坡面不再退化为接近纯黑。
+- Ink Ribbon 和 Fill 使用真实深度遮挡。
+- Ink Fill 保留当前硬分档光照和专属最近采样硬阴影。
+- Ink 阴影目标密度固定为 64 px/世界单位；普通 Three.js PCF 阴影保持关闭。
+- 阴影深度只在地形、Ink 几何/Transform、摆放或光照方向变化时失效；灯光颜色和强度不会触发阴影深度重建。
+- 阴影相机范围变化后显式更新投影矩阵。
+- GPU 最大纹理不足时不修改作品数据，界面会显示所需尺寸、设备上限和恢复办法。
+- 预览灯光的初值已与 Painting 当前实际保存的 Global Lighting 对齐：相位 `0`、太阳路径 `-12° / 15°`、全局地形反弹 `0.5`，以及完整 Day/Night Profile。所有参数均可编辑，并提供 Reset 恢复该基线；昼夜相位使用重点 `-1～1` 触控滑杆。
+- 太阳/月亮 Profile 选择、地平线强度衰减、环境光/背景线性色彩插值均与 Painting 当前算法一致。Reference、Ink 与编辑器辅助先进入 Half Float Composer，再由最终 `OutputPass` 统一执行 sRGB、ACES Filmic 和 `1.05` 曝光，避免线性 RenderTarget 被直接显示；默认背景输出像素与所给 Painting 参考图同为 `(227, 222, 215)`。
+- 首版默认灯光未被自定义的旧草稿会迁移到 Painting 当前基线并保留原昼夜相位；存在任意其它自定义灯光值的草稿保持原样。
+- Sky、Ground、Reflection、地形反弹强度和 Profile 反弹亮度均可编辑、保存和交换；当前 Map Reference 范围不启用 PMREM 或地形色反弹，因此这些字段不会虚构移动端预览效果。
+- Map PBR、PCF 软阴影、GTAO、PMREM、环境反射和效果型后处理未启用；只保留最终颜色管理必需的 `OutputPass`。
+- Three.js 几何、材质、纹理、RenderTarget、监听器、ResizeObserver、Worker 和 UI 计时器均有明确 dispose/terminate/clear 路径。
+
+## 3. 自动验收结果
+
+生产构建命令：
+
+```powershell
+npm.cmd run build
+```
+
+当前结果：
+
+- Vue/TypeScript 类型检查通过。
+- 8 个 Vitest 文件、30 项测试通过。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere 网格密度，以及地形几何与边界掩码、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、格式往返和限制、多个 Group、Plane/Cuboid/Sphere Outline/Fill 编译、压感策略、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存语义、Undo/Redo 和连续输入合并。
+- Vite 生产构建和 Service Worker 生成通过。
+
+真实 Chrome 自动验收命令：
+
+```powershell
+npm.cmd run visual-check
+```
+
+验收脚本实际执行以下行为：
+
+1. 新建第二个 Group；
+2. 切换压感关闭并真实拖动画 Outline；
+3. 真实拖动画 Fill；
+4. 重新开启压感；
+5. 切换到 Shape 模式截取 Painting 风格浅蓝半透明辅助面，再切回 Draw 模式继续编辑；
+6. 打开调色板编辑器并排序颜色；
+7. 核对 Painting 当前完整灯光初值、全部参数输入和重点昼夜滑杆，修改预览灯光并执行 Undo/Redo/Reset；
+8. 核对 Navigate 模式不会残留 Shape 辅助面；
+9. 核对地块边缘、无限网格和坐标轴三个开关默认开启，并逐个关闭、重新开启；
+10. 进入 Terrain 模式拖动擦除地形；
+11. 导出 JSON，检查 Group、描边点、压力、Fill 块和地形结果；
+12. 新建场景后重新导入刚导出的文件；
+13. 等待 IndexedDB 保存完成；
+14. 断网刷新并确认完整工作场景与 Editor Session 恢复；
+15. 在 1366×900、1024×768 和 768×1024 三种视口检查布局、画布、Group、工具、三个视口辅助开关和页面溢出；
+16. 收集控制台和页面错误。
+
+最近一次结果：2 个 Group、15 个可编辑 Outline 点、4 个稀疏 Fill 块、22 个剩余地形格；三种视口均无页面溢出，Undo/Redo、重点昼夜控件和三个视口辅助开关在 iPad 横竖屏可见，模式切换、开关交互、断网恢复均成功，控制台和页面错误为 0。截图确认 Shape 模式使用浅蓝半透明辅助面与参考网格、Draw 模式使用低透明度版本、Navigate 模式不残留辅助面；地块暗面、真实边缘、无限网格和坐标轴仍与 Painting 参考风格一致。
+
+视觉验收图位于：
+
+- `studio-preview.png`
+- `studio-shape-preview.png`
+- `studio-lighting.png`
+- `studio-ipad-landscape.png`
+- `studio-ipad-portrait.png`
+
+## 4. 仍需真实设备或后续授权的事项
+
+以下事项不是当前 Windows 实现中的缺失功能，但无法在本阶段环境内完成最终结论：
+
+- 使用真实 iPad Safari / 主屏幕 Web App 和 Apple Pencil 验证硬件压力曲线、Pencil 采样频率、长时间绘制温度与内存表现。
+- 选择并实施可信 HTTPS 静态托管或局域网 HTTPS 证书方案，再验证 iPad 首次安装和更新流程。
+- 在不同 iPad GPU 上验证超大、分散工作场景的 64 px/世界单位硬阴影纹理上限提示。
+- Painting 侧 `.inkstudio-work.json` 导入器仍需在 Painting 仓库中单独设计、确认和实现；当前 Studio 不写入 Painting。
+
+在上述部署/硬件阶段开始前，不需要启动或保留任何 Studio 常驻服务。

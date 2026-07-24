@@ -1,0 +1,27 @@
+{
+  "name": "ink-asset-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "typecheck": "vue-tsc -b --pretty false",
+    "test": "vitest run",
+    "build": "npm run typecheck && npm run test && vite build && node tools/generate-service-worker.mjs",
+    "visual-check": "node tools/visual-check.mjs",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "three": "^0.185.0",
+    "vue": "^3.5.39"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.0",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "playwright-core": "^1.61.1",
+    "typescript": "~6.0.3",
+    "vite": "^8.1.4",
+    "vitest": "^4.0.18",
+    "vue-tsc": "^3.3.7"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Ink Asset Studio",
+  "short_name": "Ink Studio",
+  "description": "Offline Ink authoring studio for iPad and Apple Pencil.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#151719",
+  "theme_color": "#151719",
+  "icons": [
+    {
+      "src": "./icons/studio-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

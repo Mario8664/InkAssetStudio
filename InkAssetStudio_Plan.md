@@ -1,0 +1,333 @@
+# Ink Asset Studio 计划
+
+## 1. 文档目的与状态
+
+本文定义 `E:\MyDemo\InkAssetStudio` 中的独立软件项目 **Ink Asset Studio**（下称 Studio）的确认方向。Studio 是一个以 iPad 为主要设备的离线 Ink 创作工具，用于以与 Painting 项目兼容的 Ink 规则制作、检查和整理可编辑的 Ink 工作场景。
+
+本文件是 Studio 后续开发的源计划。Studio 的源代码、构建配置、测试、PWA 文件和文档均放在本目录中；当前阶段**不得修改** `E:\MyDemo\Painting` 的源码、数据、文档、构建配置或依赖。
+
+Studio 后续与 Painting 的文件导入对接是一个单独的、需在 Painting 仓库中另行确认的工作。本项目先定义稳定交换格式、导出和验证规则，不在本项目阶段向 Painting 写入任何文件。
+
+## 2. 产品定位
+
+Studio 不是图片画板、Procreate 导入器、远程桌面，也不是完整游戏地图编辑器。它是一个安装到 iPad 主屏幕、以 Apple Pencil 为主输入的 **移动 Ink 编辑器**。
+
+它让作者在离线状态下完成以下闭环：
+
+1. 建立一个带格子、方块和坡面的工作场景；
+2. 在场景中创建、摆放并编辑多个 Ink Group；
+3. 用与 Painting Ink 一致的 Shape、描边、Fill 和填充规则制作可编辑内容；
+4. 在 Map Reference、Ink、Ink 硬阴影和可调灯光下检查结果；
+5. 自动保存本地草稿，并导出工作场景文件；
+6. 以后将工作场景文件交给 Painting 的桌面导入功能，作为可继续编辑的场景内容而不是位图。
+
+`InkGroup` 仍是基本创作单位。一个 Group 表达一株植物、一组书架、一个店面立面、一个路口图案或其他完整视觉组合；一个工作场景可包含任意多个 Group 及其摆放引用。
+
+## 3. 已确认目标
+
+### 3.1 核心创作能力
+
+- 一个工作场景可包含多个 Ink Group、每个 Group 多个 Shape。
+- Group 保留稳定 `id`、名称、局部 Pivot、连续世界坐标摆放和 `0 / 90 / 180 / 270` 度离散 Y 轴旋转。
+- Shape 保留与 Painting 一致的 `plane`、`cuboid`、`sphere` 三类，以及位置、YXZ 旋转和固有尺寸/半径；不提供通用 Transform Scale。
+- 提供完整 Ink 工具：描边绘制、描边擦除、填色绘制、填色擦除、Bucket Fill、吸色、颜色调整、可编辑色板、笔刷尺寸、直线辅助、Group/Shape 选择、Undo/Redo。
+- Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。
+- 描边仍是带压力点的可编辑表面坐标序列，并编译为世界宽度 Ribbon。
+
+### 3.2 压感开关
+
+Studio 的 Ink 工具状态必须提供始终可见、可随时切换的 `压感：开 / 关` 控件。
+
+- 默认开启，Apple Pencil 压力按当前 Ink 规则写入新描边点。
+- 关闭时，新描边采样统一写入 `pressure: 1`，忽略 Pencil 的原始压力。
+- 切换仅影响切换之后开始采样的新点；不得回写、归一化或重新解释已提交笔画的历史压力。
+- 该设置属于 Studio Editor Session，不属于 Ink Group、公开资产或交换文件中的作者内容。
+- Fill、Bucket Fill 和橡皮的尺寸继续由各自的工具数值决定，压感开关不改变它们的既有语义。
+
+### 3.3 简化格子地图
+
+Studio 提供真实的地形几何参照，而不是二维背景图。它只包含 Paintng 首版已定义的三种格子地形：
+
+- `block`：实体方块；
+- `slope`：单个 45° 坡面；
+- `corner-slope`：两个 45° 坡面组成的角坡。
+
+每个地形格保留 `x/y/z` 格子坐标、类型、`0 / 90 / 180 / 270` 度旋转和基础颜色。地形形状、坡面高度、旋转方向与 Painting 的 `TileCell` 语义完全一致；Studio 不得另行发明近似的坡面或坐标系。
+
+Studio 只提供放置、删除、工具切换、旋转和必要的颜色编辑。它不包含玩家、碰撞、出口、NPC、剧情、地图切换、Game Window、游戏运行时或地形玩法规则。
+
+### 3.4 预览渲染
+
+Studio 只提供下列渲染路径：
+
+| 路径 | 状态 | 用途 |
+| --- | --- | --- |
+| Map PBR | 关闭 | 不在移动端运行生产级地形材质、GTAO 或环境反射。 |
+| Map Reference | 开启 | 使用当前 Half-Lambert 风格显示地形颜色、体积和坡面。 |
+| 编辑期格子与坡向辅助 | 开启 | 地块真实边缘、近似无限网格与 X/Y/Z 坐标轴可分别开关，清楚显示单元边界、坡向、选择状态和绘制落点；永不作为最终资产内容。 |
+| Ink Ribbon / Fill | 开启 | 显示最终 Ink 描边、填色和真实深度遮挡。 |
+| Ink 专属硬阴影 | 开启 | 保留 Ink 视觉表现必须的硬阴影。 |
+| 常规 PCF 阴影、GTAO、PMREM | 关闭 | 不运行与移动端 Ink 创作无关的重型路径。 |
+
+Ink 硬阴影复用 Painting 已确认的语义：最近采样深度图、目标密度 `64 px / 世界单位`、不改变 Three.js 的常规 PCF 阴影配置。它只在投射/接收对象的 Transform、地形几何或灯光方向等真实输入改变时失效；灯光颜色和强度的变化不得无故重建阴影深度图。若设备最大纹理尺寸不足，Studio 必须显示清晰的可恢复提示，而不是悄悄改变作品数据。
+
+### 3.5 灯光预览
+
+Studio 提供与 Painting 当前 Global Lighting 相同语义的灯光调节，用于实时检查 Reference 与 Ink 的视觉效果。
+
+新建工作场景的完整灯光初值必须复制自 Painting 当前实际保存的 `global-lighting-default-instance.json`，不能使用源代码中的历史默认常量。当前基线为：昼夜位置 `0`、太阳路径 X 倾角 `-12°`、Z 偏移 `15°`、全局地形反弹 `0.5`；Day 与 Night 的主光、环境光、背景、反射天空/地面、反射强度和地形反弹亮度也全部使用该实例的保存值。
+
+所有 Global Lighting 参数均可编辑并随工作场景保存。`-1～1` 的昼夜位置是最高频参数，界面必须将它作为重点触控滑杆直接呈现；太阳路径、全局反弹和完整 Day/Night Profile 也必须保留编辑入口，并提供一键恢复 Painting 当前基线。首次版本中未修改过其它灯光参数的旧草稿可迁移到新基线，同时保留其昼夜位置；已有自定义灯光不得被迁移覆盖。
+
+昼夜求值复用 Painting 当前规则：环境光和背景按 `abs(dayNightPhase)` 在线性工作色彩空间插值；太阳/月亮沿相同 X 倾角、Z 偏移与相位路径运行，根据天体方向选择 Day 或 Night 主光，并按地平线高度衰减强度。Reference、Ink 与编辑辅助统一先写入 Half Float Composer，再由最终 `OutputPass` 执行与 GameFramework 相同的 sRGB 输出、ACES Filmic Tone Mapping 和 `1.05` 曝光；Map Reference 的 Half-Lambert 必须在 Three.js 展开灯光 ShaderChunk 前注入，不能依赖展开后的字符串替换。由于 Studio 明确只运行 Map Reference 而不运行 Map PBR/PMREM/地形色反弹，Sky、Ground、Reflection 和 Bounce 参数在当前预览中只负责兼容保存，仍可编辑但不虚构额外渲染效果。
+
+灯光在 Studio 中首先是**工作场景预览状态**：它随工作场景保存，以便作者下次打开时看到相同效果；它不会自动改写 Painting 中由多个地图共享的 Global Lighting。未来 Painting 导入器可以明确提供一次性“应用此预览灯光”的选择，但该选择不属于本项目当前实现范围。
+
+## 4. 非目标与明确不做的内容
+
+本项目不实现以下能力，除非日后经明确确认：
+
+- 从 PNG、PSD、Procreate 或其他外部绘画软件自动生成 Ink 描边、Fill 或 Shape；
+- 完整 PBR 地图表现、实时软阴影、GTAO、环境 PMREM、除最终颜色管理 `OutputPass` 外的效果型后处理或性能降级替代视觉；
+- 玩家控制、碰撞验证、出口、NPC、剧情、Game Window、Play Mode；
+- 云同步、账号、多人协作、局域网配对、远程写入 Painting 目录；
+- 直接在 iPad 上打开或修改 Painting 工程目录；
+- App Store 发布、原生 iOS 壳、macOS/Xcode 构建链；
+- 自动把移动端多个 Group 合并进一张已有 Painting 地图。
+
+## 5. 软件形态与离线策略
+
+Studio 以 Vue + Three.js 的静态 PWA 形式构建，目标设备为支持 Apple Pencil 的 iPad Safari / 主屏幕 Web App。它在视觉上是独立的全屏应用，而不是桌面网页的缩小版。
+
+### 5.1 当前阶段
+
+- 开发、构建和本地验证均在 Windows 完成。
+- PWA manifest、Service Worker、离线应用外壳缓存和 IndexedDB 草稿存储在项目内实现。
+- 本阶段不决定 PWA 的公网地址、局域网地址、证书、部署服务或配对流程。
+- 本阶段不启动常驻服务，也不要求 iPad 与电脑存在网络连接。
+
+### 5.2 后续部署原则
+
+可靠的离线 PWA 必须至少一次从可信 HTTPS Origin 安装并预缓存应用外壳。普通 `http://192.168.x.x` 局域网地址不能作为正式的离线安装方案，因为 iPad Safari 的 Service Worker 安全上下文要求无法满足。
+
+后续可以在两种方式中选择其一：
+
+1. 无后端的免费 HTTPS 静态托管，仅用于首次安装与应用更新；资产和草稿不上传；
+2. Windows 临时局域网 HTTPS 静态服务，配合 iPad 信任本地根证书；完成预缓存验证后服务可以关闭。
+
+这两种选择均延后，不影响 Studio 的离线功能开发。
+
+### 5.3 本地数据安全
+
+- IndexedDB 是自动保存和崩溃恢复的工作副本，不是唯一长期备份。
+- 工作场景必须可随时手动导出到 iPad“文件”App。
+- 应用必须显示本地保存状态、最后保存时间和尚未导出的变更提醒。
+- 浏览器存储被系统回收、PWA 被卸载或设备故障后，未导出的本地草稿可能不可恢复；界面不得暗示 IndexedDB 等同于可靠备份。
+
+## 6. 架构边界
+
+Studio 是独立项目，**不能直接从** `E:\MyDemo\Painting\src` **导入运行时代码**。这样可确保在不修改 Painting 的前提下开发、构建和发布 Studio。
+
+Studio 可以根据已确认的兼容契约移植必要的领域逻辑；每一份移植逻辑必须有明确来源、测试和格式版本说明。长期如需消除重复，应在另行确认后抽取一个真正独立、内容无关的共享包，而不是让 Studio 反向依赖 Painting 工程。
+
+建议目录职责如下：
+
+```text
+InkAssetStudio/
+├─ Docs/                         项目计划、TODO、格式说明和验收记录
+├─ src/
+│  ├─ app/                       Vue 壳、路由、全局布局和 PWA 注册
+│  ├─ domain/
+│  │  ├─ ink/                    Ink 作者数据、验证、编译和 Worker
+│  │  ├─ terrain/                TileCell、坡面规则与编辑操作
+│  │  ├─ lighting/               预览灯光数据和验证
+│  │  └─ workspace/              工作场景、Undo/Redo、导入/导出
+│  ├─ editor/                    触摸/Pencil 工具控制器、Inspector 与 Outliner
+│  ├─ render/                    Three.js 场景、Reference、Ink、硬阴影、编辑辅助
+│  ├─ storage/                   IndexedDB 文档仓库、导出文件和恢复
+│  └─ workers/                   Ink 编译及其他异步计算入口
+├─ public/                       manifest、图标和静态 PWA 资源
+├─ tests/                        单元、格式、渲染规则和交互测试
+└─ InkAssetStudio_Plan.md        当前主计划
+```
+
+Vue 仅负责工作区 UI、Inspector、工具栏和状态展示。每帧 Three.js 变换、笔画预览、Reference 和硬阴影更新不使用 Vue 响应式循环。
+
+## 7. 工作场景与交换格式
+
+### 7.1 工作场景的职责
+
+Studio 的作者文件称为 **Ink Studio Work Scene**。它保存可以直接重建创作现场的内容：
+
+- 地形格集合；
+- 多个 Ink 私有源与摆放引用；
+- Group 的布局关系；
+- 工作场景预览灯光；
+- 必要的格式版本和来源信息。
+
+它不保存浏览器实例、GPU 资源、临时笔画预览、当前 Pointer、未提交手势或 Service Worker 缓存。
+
+相机位置、侧栏开合、当前工具、当前颜色、色板、笔刷宽度、压感开关，以及地块边缘/无限网格/坐标轴三个显示开关属于 Editor Session。它们可低频地保存到本机，但不应污染可交换的作品内容；色板等确有创作价值的工具预设可作为单独的用户设置导出能力，不能隐式绑定到每个资产。
+
+### 7.2 建议顶层格式
+
+文件扩展名暂定为 `.inkstudio-work.json`。顶层格式必须显式版本化，且只保存可验证的 JSON：
+
+```ts
+type InkStudioWorkFile = {
+  format: 'ink-asset-studio-work';
+  formatVersion: number;
+  sourceCompatibility: {
+    paintingInkAssetSchemaVersion: 3;
+    paintingInkCompiledFormatVersion: 11;
+    terrainSchemaVersion: number;
+  };
+  documentId: string;
+  name: string;
+  terrain: {
+    tiles: TileCell[];
+  };
+  ink: {
+    embeddedAssets: InkEmbeddedAsset[];
+    assetReferences: InkAssetReference[];
+  };
+  previewLighting: StudioPreviewLighting;
+};
+```
+
+其中 `InkEmbeddedAsset`、`InkAssetReference`、`InkGroupData`、`TileCell` 的字段和几何语义必须与目标 Painting 兼容版本一致。Studio 不保存已解析的冗余 `groups` 视图数组。
+
+`compiled` 数据是由作者源生成的派生缓存。Studio 可以持久化当前已验证的编译数据以缩短重开时间，但导入方绝不能信任它：导入到 Painting 时必须验证作者源、检查版本和哈希，并以目标项目的编译器重建或验证派生数据。交换文件的权威永远是作者源。
+
+### 7.3 ID、引用与冲突规则
+
+- 新建文档、Group、Shape、笔画、内嵌资产与摆放引用均生成稳定 UUID 风格 ID。
+- 同一工作场景内，资产 ID 和引用 ID 必须唯一。
+- Group 作者源 Pivot 固定在本地原点；摆放引用才保存世界 `anchorPosition` 与离散旋转。
+- 导入方不得因为名称相同而覆盖既有 Painting 资产。
+- 若目标项目已有同 ID 且内容不同，导入器必须要求选择“生成新 ID”“跳过”或显式覆盖；默认不得覆盖。
+- Group 名称可重复，但 UI 必须能通过上下文或 ID 安全区分它们。
+
+### 7.4 后续 Painting 导入契约
+
+以后在 Painting 中实现导入时，导入器应：
+
+1. 读取 `.inkstudio-work.json`；
+2. 对文件大小、嵌套深度、数组长度、数字范围、RGBA 块、ID 唯一性和 schema version 做不可信输入验证；
+3. 验证或迁移兼容的 Ink / terrain 作者数据；
+4. 在 Worker 中编译/验证 Ink 派生数据；
+5. 将结果创建为一张可编辑的项目场景或经用户确认的资产集合；
+6. 只在 Painting 的手动 Save 事务中写入项目文件。
+
+这项导入器属于未来 Painting 变更，不在 Studio 当前仓库中实现。
+
+## 8. 移动交互设计
+
+桌面 Ink 的功能语义必须保留，桌面鼠标和键盘手势不必照搬。
+
+| 当前意图 | Studio 交互 |
+| --- | --- |
+| Pencil 落笔绘制 | Apple Pencil 在激活 Draw 工具且命中 Shape 时绘制。 |
+| 视图导航 | 双指平移/缩放；必要时进入明确的 Navigate 模式。Pencil 不负责相机导航。 |
+| 选择 Group / Shape | 明确的 Select 模式，点击 Pivot 或可见的 Shape 辅助面。 |
+| 直线辅助 | 工具栏中可见的直线模式/临时按钮，不依赖键盘 `Shift`。 |
+| 吸色 | 独立吸色工具按钮，不依赖 `Ctrl`。 |
+| 调整笔刷宽度 | 底部可拖拽数值或滑杆，不依赖右键和 Pointer Lock。 |
+| 工具切换 | 拇指可触及的底栏；当前工具、颜色、笔宽、压感状态始终可识别。 |
+
+Ink Shape 辅助面必须与 Painting 当前编辑器保持一致，而不是使用移动端自定义高亮：选中 Surface 为 `#63c7fa / 0.34`，未选中 Surface 为 `#548097 / 0.16`，Draw 模式全部按未选中透明度显示；选中/未选中参考网格分别为 `#b9ebff / 0.84` 和 `#7aa0ae / 0.42`。辅助面和网格读取深度但不写入深度。Plane 范围随 Outline/Fill 内容动态扩展，Cuboid 使用六面世界单位网格，Sphere 使用每面 `4×4` 网格。这些对象只承担编辑显示与表面拾取，不进入作者数据或导出结果，并在离开 Ink 编辑模式时立即清除。
+
+界面至少包含：顶部文档栏、可收起 Group Outliner、可收起 Shape/属性面板、主视口、底部 Ink 工具栏、地形工具抽屉、Undo/Redo 和导出入口。Undo/Redo 必须是带文字、始终直接可见且能清楚表达禁用状态的触控按钮，不能只显示难以辨认的小图标。触控目标必须适合 iPad，不能把桌面 Inspector 的窄行控件简单缩放后复用。
+
+Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合并事件；`pointerrawupdate` 仅作为浏览器支持时的增强，不能假设 iPad Safari 一定提供它。无压力、非 Pencil 或压感关闭时写入稳定的 `1`。手势被取消、失焦或失去 Pointer Capture 时必须丢弃未提交的临时操作并清理输入状态。
+
+## 9. 性能、资源与可靠性要求
+
+- 指针拖动期间仅维护临时 Ribbon 或 Fill 工作副本；松手后才形成一次作者源写入和一条 Undo/Redo 记录。
+- Ink 编译在 Worker 中完成；只编译受影响 Shape，并复用未变化 Shape 的 Ribbon/Fill 编译结果。
+- 只要输入不变，普通相机导航、UI 变化和灯光颜色/强度变化不得触发全场景重编译或硬阴影深度重建。
+- Terrain 修改只重建必要的 Reference 几何与阴影深度；不得以整份文档克隆、全场景序列化或 GPU 资源重建作为普通交互的便利回退。
+- 每个 Three.js Geometry、Material、Texture、RenderTarget、Worker、事件监听、计时器和 PWA 页面 mount 都必须有单一所有者和明确 dispose 路径。
+- IndexedDB 写入必须节流并避免在 Pencil `pointermove` 中阻塞渲染；导出文件使用一致快照，不读取半提交的交互状态。
+- 原始导入文件需要设定可配置且可诊断的上限，特别是笔画点数、Shape 数量、Fill 块数量和单文件大小，避免 iPad 内存耗尽。
+
+## 10. 验收标准
+
+### 10.1 离线与持久化
+
+- 在预缓存完成后，断网/飞行模式下可以从主屏幕进入 Studio 并打开最近草稿。
+- 新建、编辑、关闭、重新打开后，工作场景作者内容完整恢复。
+- 用户可导出文件，并能重新导入同一文件得到相同的 Group、地形、灯光预览和布局。
+- 应用明确告知本地草稿不是唯一备份。
+
+### 10.2 地形与视觉
+
+- Block、Slope、Corner Slope 的世界坐标、朝向和可见坡面与 Painting 兼容。
+- Reference 路径能清楚显示格子、坡向和基础颜色。
+- Ink 与地形遵循真实深度遮挡。
+- Ink 硬阴影存在，且在不相关的灯光颜色/强度调整时不重建阴影深度图。
+- 不启用 Map PBR、PCF 阴影、GTAO 或 PMREM。
+
+### 10.3 Ink 与输入
+
+- 多个 Group 可在同一工作场景中独立选择、摆放、编辑和撤销/重做。
+- Plane、Cuboid、Sphere 都支持现有的 Ink 描边与 Fill 规则。
+- 描边/擦除/填色/Fill 擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成。
+- Apple Pencil 压感开启时记录有效压力；关闭时新描边全部记录为 `1`；切换不会改写历史笔画。
+- 失焦、取消和 Pointer Capture 丢失不会产生半条已保存笔画或卡住的工具状态。
+
+### 10.4 兼容与导出
+
+- 导出文件包含可验证的作者源和版本信息。
+- 导出文件不依赖浏览器临时状态或 GPU 对象。
+- 针对兼容版本，导出结果能被未来 Painting 导入器在不依赖图片转换的前提下恢复为可编辑数据。
+
+## 11. 开发阶段
+
+### 阶段 A：项目基础与领域契约
+
+- 创建独立 Vite + Vue + Three.js PWA 工程。
+- 建立格式版本、工作场景、验证器、IndexedDB 草稿仓库和导出/导入文件壳。
+- 移植并测试 TileCell、Ink 作者数据、哈希和基础编译逻辑的兼容契约。
+- 建立 manifest、Service Worker、离线应用外壳；不部署地址。
+
+### 阶段 B：工作场景、Reference 与简化地形
+
+- 完成移动视口、格子辅助、Block/Slope/Corner Slope 编辑和相机导航。
+- 完成 Map Reference、预览灯光和 Ink 专属硬阴影装配。
+- 证明编辑期格子不污染导出作者内容。
+
+### 阶段 C：完整 Ink 移动工具
+
+- 完成 Group Outliner、Pivot/摆放、Shape 编辑和多 Group 选择。
+- 完成所有描边、Fill、吸色、色板、直线、Undo/Redo 工具。
+- 完成 Apple Pencil 压力采样、压感开关、合并事件和取消手势处理。
+
+### 阶段 D：稳定性与导出验证
+
+- 完成文件级 schema 验证、资源上限、错误提示和损坏文件恢复路径。
+- 在实际 iPad Safari / 主屏幕 Web App 上进行 Pencil、离线、内存和长时间创作验证。
+- 完成构建、类型检查、格式兼容测试和离线缓存回归。
+
+### 阶段 E：未来、另行确认的 Painting 集成
+
+- 在 Painting 仓库中单独设计并确认移动工作场景导入器。
+- 重新编译或验证 Ink 派生数据，并接入该项目的手动 Save 原子事务。
+- 绝不在 Studio 端直接写入 Painting 项目目录。
+
+## 12. 当前决策记录
+
+| 决策 | 结论 |
+| --- | --- |
+| 项目位置 | `E:\MyDemo\InkAssetStudio`，独立于 Painting。 |
+| 主要设备 | iPad + Apple Pencil。 |
+| 应用形式 | 离线优先的静态 PWA。 |
+| 多 Group | 必须支持，使用实际世界格子坐标摆放。 |
+| 地形 | 仅 Block、Slope、Corner Slope 与基础格子编辑。 |
+| 渲染 | Map Reference + 编辑网格 + Ink + Ink 硬阴影。 |
+| 常规阴影 / PBR | 不在移动端启用。 |
+| 灯光 | 完整参数可调；初值和 Reset 使用 Painting 当前保存值，不自动影响 Painting 全局灯光。 |
+| 压感 | 默认开启，可随时关闭；只影响新描边采样。 |
+| 图片导入 | 不做。 |
+| 网络 | 当前不实现；离线能力先完成。 |
+| Painting 修改 | 当前不做；未来导入器另行确认。 |
