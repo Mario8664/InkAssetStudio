@@ -18,6 +18,8 @@ import {
   INK_FILL_BLOCK_SIZE,
   INK_FILL_PIXELS_PER_WORLD_UNIT,
   INK_SPHERE_FACE_SEGMENTS,
+  createInkCylinderGeometry,
+  createInkFrustumGeometry,
   createInkSphereGeometry,
   type InkShape,
 } from '../domain/ink/ink';
@@ -51,7 +53,11 @@ export function createInkShapePreview(shape: InkShape, active: boolean): InkShap
     ? createInkPlaneSurface(shape, material)
     : shape.kind === 'cuboid'
       ? new Mesh(new BoxGeometry(1, 1, 1), material)
-      : new Mesh(createInkSphereGeometry(1), material);
+      : shape.kind === 'sphere'
+        ? new Mesh(createInkSphereGeometry(1), material)
+        : shape.kind === 'cylinder'
+          ? new Mesh(createInkCylinderGeometry(shape.radius, shape.height), material)
+          : new Mesh(createInkFrustumGeometry(shape.topSize, shape.bottomSize, shape.height), material);
   surface.name = 'InkShapePreviewSurface';
   surface.renderOrder = active ? 4 : 3;
   const grid = createInkShapeReferenceGrid(shape, active);
@@ -112,7 +118,35 @@ function createInkPlaneSurface(shape: Extract<InkShape, { kind: 'plane' }>, mate
 function createInkShapeReferenceGrid(shape: InkShape, active: boolean): LineSegments {
   if (shape.kind === 'plane') return createInkPlaneGrid(getInkPlanePreviewBounds(shape), active);
   if (shape.kind === 'cuboid') return createInkCuboidGrid(shape, active);
-  return createInkSphereGrid(active);
+  if (shape.kind === 'sphere') return createInkSphereGrid(active);
+  if (shape.kind === 'cylinder') return createInkGeometryGrid(createInkCylinderGeometry(shape.radius, shape.height), active);
+  return createInkGeometryGrid(createInkFrustumGeometry(shape.topSize, shape.bottomSize, shape.height), active);
+}
+
+function createInkGeometryGrid(geometry: BufferGeometry, active: boolean): LineSegments {
+  const positions: number[] = [];
+  const position = geometry.getAttribute('position');
+  const index = geometry.getIndex();
+  if (index) for (let offset = 0; offset < index.count; offset += 3) {
+    appendGeometryEdge(positions, position, index.getX(offset), index.getX(offset + 1));
+    appendGeometryEdge(positions, position, index.getX(offset + 1), index.getX(offset + 2));
+    appendGeometryEdge(positions, position, index.getX(offset + 2), index.getX(offset));
+  }
+  geometry.dispose();
+  return createInkReferenceGrid(positions, active);
+}
+
+function appendGeometryEdge(
+  positions: number[],
+  attribute: BufferAttribute | InterleavedBufferAttribute,
+  from: number,
+  to: number,
+): void {
+  const offset = 1.002;
+  positions.push(
+    attribute.getX(from) * offset, attribute.getY(from) * offset, attribute.getZ(from) * offset,
+    attribute.getX(to) * offset, attribute.getY(to) * offset, attribute.getZ(to) * offset,
+  );
 }
 
 function createInkCuboidGrid(shape: Extract<InkShape, { kind: 'cuboid' }>, active: boolean): LineSegments {

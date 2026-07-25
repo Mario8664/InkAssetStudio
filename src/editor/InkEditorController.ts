@@ -2,9 +2,12 @@ import { Vector3 } from 'three';
 import {
   bucketFillInkShape,
   createInkOutlineStroke,
+  getInkCylinderSurfacePosition,
+  getInkFrustumFacePosition,
   paintInkFill,
   sampleInkFillColor,
   type InkCuboidStrokePoint,
+  type InkCylinderStrokePoint,
   type InkOutlineStroke,
   type InkShape,
   type InkSurfacePoint,
@@ -444,7 +447,7 @@ function applyInkTool(shape: InkShape, points: readonly InkSurfacePoint[], sessi
     const next = stroke ? { ...shape, strokes: [...shape.strokes, stroke] } : shape;
     if (!last) return next;
     if (next.kind === 'plane' && isPlanePoint(last)) return { ...next, lastOutlineEnd: { x: last.x, y: last.y } };
-    if (next.kind === 'cuboid' && isCuboidPoint(last)) return { ...next, lastOutlineEnd: { ...last } };
+    if ((next.kind === 'cuboid' || next.kind === 'frustum') && isCuboidPoint(last)) return { ...next, lastOutlineEnd: { ...last } };
     return next;
   }
   if (session.drawTool === 'outline-eraser') return eraseInkOutline(shape, points, session.outlineEraserWidth);
@@ -459,7 +462,7 @@ function getOutlineCommitPoints(shape: InkShape, points: readonly InkSurfacePoin
   if (shape.kind === 'plane' && isPlanePoint(end) && shape.lastOutlineEnd) {
     return [{ ...shape.lastOutlineEnd, pressure: 1 }, { ...end }];
   }
-  if (shape.kind === 'cuboid' && isCuboidPoint(end) && shape.lastOutlineEnd?.face === end.face) {
+  if ((shape.kind === 'cuboid' || shape.kind === 'frustum') && isCuboidPoint(end) && shape.lastOutlineEnd?.face === end.face) {
     return [{ ...shape.lastOutlineEnd }, { ...end }];
   }
   return [{ ...end }];
@@ -479,6 +482,8 @@ function surfaceVector(shape: InkShape, point: InkSurfacePoint): Vector3 | null 
   if (shape.kind === 'plane' && isPlanePoint(point)) return new Vector3(point.x, point.y, 0);
   if (shape.kind === 'cuboid' && isCuboidPoint(point)) return cuboidPoint(shape, point);
   if (shape.kind === 'sphere' && isSpherePoint(point)) return new Vector3(point.x, point.y, point.z).normalize().multiplyScalar(shape.radius);
+  if (shape.kind === 'cylinder' && isCylinderPoint(point)) return getInkCylinderSurfacePosition(shape, point);
+  if (shape.kind === 'frustum' && isCuboidPoint(point)) return getInkFrustumFacePosition(shape, point);
   return null;
 }
 
@@ -512,6 +517,23 @@ function stabilizeInkPoint(
     const direction = new Vector3(previous.x, previous.y, previous.z).lerp(new Vector3(raw.x, raw.y, raw.z), follow).normalize();
     return { x: direction.x, y: direction.y, z: direction.z, pressure: previous.pressure + (raw.pressure - previous.pressure) * follow };
   }
+  if (shape.kind === 'cylinder' && isCylinderPoint(previous) && isCylinderPoint(raw) && previous.surface === raw.surface) {
+    let deltaU = raw.u - previous.u;
+    if (previous.surface === 'side') {
+      if (deltaU > 0.5) deltaU -= 1;
+      if (deltaU < -0.5) deltaU += 1;
+    }
+    const u = previous.u + deltaU * follow;
+    return {
+      surface: raw.surface,
+      u: previous.surface === 'side' ? ((u + 0.5) % 1 + 1) % 1 - 0.5 : u,
+      v: previous.v + (raw.v - previous.v) * follow,
+      pressure: previous.pressure + (raw.pressure - previous.pressure) * follow,
+    };
+  }
+  if (shape.kind === 'frustum' && isCuboidPoint(previous) && isCuboidPoint(raw) && previous.face === raw.face) {
+    return { face: raw.face, u: previous.u + (raw.u - previous.u) * follow, v: previous.v + (raw.v - previous.v) * follow, pressure: previous.pressure + (raw.pressure - previous.pressure) * follow };
+  }
   return raw;
 }
 
@@ -527,6 +549,7 @@ function cuboidPoint(shape: Extract<InkShape, { kind: 'cuboid' }>, point: InkCub
 function sameSurfacePoint(left: InkSurfacePoint, right: InkSurfacePoint): boolean {
   if (isCuboidPoint(left) && isCuboidPoint(right)) return left.face === right.face && Math.abs(left.u - right.u) < 1e-6 && Math.abs(left.v - right.v) < 1e-6;
   if (isSpherePoint(left) && isSpherePoint(right)) return Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z) < 1e-6;
+  if (isCylinderPoint(left) && isCylinderPoint(right)) return left.surface === right.surface && Math.abs(left.u - right.u) < 1e-6 && Math.abs(left.v - right.v) < 1e-6;
   if (isPlanePoint(left) && isPlanePoint(right)) return Math.hypot(left.x - right.x, left.y - right.y) < 1e-6;
   return false;
 }
@@ -545,6 +568,10 @@ function isCuboidPoint(point: InkSurfacePoint): point is InkCuboidStrokePoint {
 
 function isSpherePoint(point: InkSurfacePoint): point is { x: number; y: number; z: number; pressure: number } {
   return 'x' in point && 'y' in point && 'z' in point;
+}
+
+function isCylinderPoint(point: InkSurfacePoint): point is InkCylinderStrokePoint {
+  return 'surface' in point;
 }
 
 function isFillTool(tool: StudioEditorSession['drawTool']): boolean {

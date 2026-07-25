@@ -29,8 +29,9 @@ Studio 不是图片画板、Procreate 导入器、远程桌面，也不是完整
 
 - 一个工作场景可包含多个 Ink Group、每个 Group 多个 Shape。
 - Group 保留稳定 `id`、名称、局部 Pivot、连续世界坐标摆放和 `0 / 90 / 180 / 270` 度离散 Y 轴旋转。
-- Shape 保留与 Painting 一致的 `plane`、`cuboid`、`sphere` 三类，以及位置、YXZ 旋转和固有尺寸/半径；不提供通用 Transform Scale。
-- Cuboid 与 Sphere 提供 Painting 当前的 `normalOutset` Shape 配置：可切换启用、设置壳颜色与 `0.001～1` 世界单位外扩距离；Plane 不提供该配置。壳不使用 Fill 纹理、Half-Lambert 或 Ink 硬阴影，关闭时不保留 Mesh 或 GPU 资源。
+- Shape 保留与 Painting 一致的 `plane`、`cuboid`、`sphere`、`cylinder`、`frustum` 五类，以及位置、YXZ 旋转和固有尺寸；Cuboid 使用 XYZ size，Sphere 使用 radius，Cylinder 使用 radius/height，Frustum 使用 top size/bottom size/height；不提供通用 Transform Scale。
+- Cuboid、Sphere、Cylinder 与 Frustum 提供 Painting 当前的 `normalOutset` Shape 配置：可切换启用、设置壳颜色与 `0.001～1` 世界单位外扩距离；Plane 不提供该配置。壳不使用 Fill 纹理、Half-Lambert 或 Ink 硬阴影，关闭时不保留 Mesh 或 GPU 资源。
+- Move 与 Rotate 手柄支持 Unity 风格的 World/Local 坐标空间切换；该选择只属于 Editor Session。Shape 列表在删除按钮左侧提供眼睛按钮，可将指定 Shape 临时排除出绘制、吸色与 Shape 拾取，但不隐藏其已提交 Ink 渲染结果，也不写入作者源、导出、Undo/Redo 或内容 dirty。
 - 提供完整 Ink 工具：描边绘制、描边擦除、填色绘制、填色擦除、Bucket Fill、吸色、颜色调整、可编辑色板、笔刷尺寸、直线辅助、Group/Shape 选择、Undo/Redo。
 - Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。
 - 描边仍是带压力点的可编辑表面坐标序列，并编译为世界宽度 Ribbon。
@@ -168,7 +169,7 @@ Studio 的作者文件称为 **Ink Studio Work Scene**。它保存可以直接�
 
 它不保存浏览器实例、GPU 资源、临时笔画预览、当前 Pointer、未提交手势或 Service Worker 缓存。
 
-相机位置、侧栏开合、当前工具、当前颜色、色板、笔刷宽度、压感开关，以及地块边缘/无限网格/坐标轴三个显示开关属于 Editor Session。它们可低频地保存到本机，但不应污染可交换的作品内容；色板等确有创作价值的工具预设可作为单独的用户设置导出能力，不能隐式绑定到每个资产。
+相机位置、侧栏开合、当前工具、当前颜色、色板、笔刷宽度、压感开关、Transform World/Local 空间、临时排除绘制的 Shape ID，以及地块边缘/无限网格/坐标轴三个显示开关属于 Editor Session。它们可低频地保存到本机，但不应污染可交换的作品内容；色板等确有创作价值的工具预设可作为单独的用户设置导出能力，不能隐式绑定到每个资产。
 
 ### 7.2 建议顶层格式
 
@@ -180,7 +181,7 @@ type InkStudioWorkFile = {
   formatVersion: number;
   sourceCompatibility: {
     paintingInkAssetSchemaVersion: 3;
-    paintingInkCompiledFormatVersion: 13;
+    paintingInkCompiledFormatVersion: 14;
     terrainSchemaVersion: number;
   };
   documentId: string;
@@ -236,7 +237,7 @@ type InkStudioWorkFile = {
 | 调整笔刷宽度 | 底部可拖拽数值或滑杆，不依赖右键和 Pointer Lock。 |
 | 工具切换 | 拇指可触及的底栏；当前工具、颜色、笔宽、压感状态始终可识别。 |
 
-Ink Shape 辅助面必须与 Painting 当前编辑器保持一致，而不是使用移动端自定义高亮：选中 Surface 为 `#63c7fa / 0.34`，未选中 Surface 为 `#548097 / 0.16`，Draw 模式全部按未选中透明度显示；选中/未选中参考网格分别为 `#b9ebff / 0.84` 和 `#7aa0ae / 0.42`。辅助面和网格读取深度但不写入深度。Plane 范围随 Outline/Fill 内容动态扩展，Cuboid 使用六面世界单位网格，Sphere 使用每面 `4×4` 网格。这些对象只承担编辑显示与表面拾取，不进入作者数据或导出结果，并在离开 Ink 编辑模式时立即清除。
+Ink Shape 辅助面必须与 Painting 当前编辑器保持一致，而不是使用移动端自定义高亮：选中 Surface 为 `#63c7fa / 0.34`，未选中 Surface 为 `#548097 / 0.16`，Draw 模式全部按未选中透明度显示；选中/未选中参考网格分别为 `#b9ebff / 0.84` 和 `#7aa0ae / 0.42`。辅助面和网格读取深度但不写入深度。Plane 范围随 Outline/Fill 内容动态扩展，Cuboid 与 Frustum 使用六面世界单位网格，Sphere 使用每面 `4×4` 的球化六面体网格，Cylinder 依据三角化圆柱表面显示网格。这些对象只承担编辑显示与表面拾取，不进入作者数据或导出结果，并在离开 Ink 编辑模式时立即清除。
 
 界面至少包含：顶部文档栏、可收起 Group Outliner、可收起 Shape/属性面板、主视口、底部 Ink 工具栏、地形工具抽屉、Undo/Redo 和导出入口。Undo/Redo 必须是带文字、始终直接可见且能清楚表达禁用状态的触控按钮，不能只显示难以辨认的小图标。触控目标必须适合 iPad，不能把桌面 Inspector 的窄行控件简单缩放后复用。
 
@@ -246,7 +247,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 
 - 指针拖动期间仅维护临时 Ribbon 或 Fill 工作副本；松手后才形成一次作者源写入和一条 Undo/Redo 记录。
 - Ink 编译在常驻 Worker 中完成；页面首次打开或 Group 增删 Shape 时才初始化该 Group 的作者源与轻量 Shape hash。一次笔画提交只跨线程发送受影响的作者 Shape，并只回传该 Shape 的派生缓存；未变化 Shape 的 Ribbon/Fill 数组必须留在主文档并复用。
-- Shape Position/Rotation 使用已有 Mesh Transform 更新；Cuboid size 与 Sphere radius 是固有尺寸，保存在作者 Shape 数据中，不作为通用 Transform Scale。渲染时仅在 Shape 的内部内容坐标层应用尺寸，Normal Outset 壳以实际尺寸几何独立构建，`distance` 始终保持世界单位。尺寸变化只重采样当前 Shape 的有限 Fill 图表、刷新该 Shape 的辅助面和硬阴影，不重建整个场景。
+- Shape Position/Rotation 使用已有 Mesh Transform 更新；Cuboid size、Sphere radius、Cylinder radius/height 与 Frustum top size/bottom size/height 都是固有尺寸，保存在作者 Shape 数据中，不作为通用 Transform Scale。渲染时仅在 Shape 的内部内容坐标层应用尺寸，Normal Outset 壳以实际尺寸几何独立构建，`distance` 始终保持世界单位。尺寸变化只重采样当前 Shape 的有限 Fill 图表、刷新该 Shape 的辅助面和硬阴影，不重建整个场景。
 - 只要输入不变，普通相机导航、UI 变化和灯光颜色/强度变化不得触发全场景重编译或硬阴影深度重建。
 - Ink 硬阴影捕获必须隔离 Line、Points、Sprite 和全部编辑辅助对象；纯 Outline 与 Normal Outset 编辑不得使硬阴影深度图失效。
 - Terrain 修改只重建必要的 Reference 几何与阴影深度；不得以整份文档克隆、全场景序列化或 GPU 资源重建作为普通交互的便利回退。
@@ -274,8 +275,9 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 ### 10.3 Ink 与输入
 
 - 多个 Group 可在同一工作场景中独立选择、摆放、编辑和撤销/重做。
-- Plane、Cuboid、Sphere 都支持现有的 Ink 描边与 Fill 规则。
-- Cuboid/Sphere 的 Normal Outset 开关、颜色和距离可实时预览、Undo/Redo、保存、导出和重新导入；Sphere 六面壳均保持朝外且无图表缺面。
+- Plane、Cuboid、Sphere、Cylinder、Frustum 都支持现有的 Ink 描边与 Fill 规则；Cylinder 的侧面图表在环绕方向连续，Frustum 使用六个表面图表。
+- Cuboid/Sphere/Cylinder/Frustum 的 Normal Outset 开关、颜色和距离可实时预览、Undo/Redo、保存、导出和重新导入；所有有限 Shape 的壳均保持朝外且无图表缺面。
+- 可见 Fill 使用 `DoubleSide` 并在背面翻转光照法线；专属 alpha-clip hard-shadow depth pass 固定 `BackSide`。
 - 描边/擦除/填色/Fill 擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成。
 - Apple Pencil 压感开启时记录有效压力；关闭时新描边全部记录为 `1`；切换不会改写历史笔画。
 - 失焦、取消和 Pointer Capture 丢失不会产生半条已保存笔画或卡住的工具状态。
@@ -332,7 +334,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 | 常规阴影 / PBR | 不在移动端启用。 |
 | 灯光 | 完整参数可调；初值和 Reset 使用 Painting 当前保存值，不自动影响 Painting 全局灯光。 |
 | 压感 | 默认开启，可随时关闭；只影响新描边采样。 |
-| Normal Outset | Cuboid/Sphere Shape 配置；实时预览，不进入 Ink 硬阴影。 |
+| Normal Outset | Cuboid/Sphere/Cylinder/Frustum Shape 配置；实时预览，不进入 Ink 硬阴影。 |
 | 图片导入 | 不做。 |
 | 网络 | 当前不实现；离线能力先完成。 |
 | Painting 修改 | 当前不做；未来导入器另行确认。 |
@@ -352,5 +354,5 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - Plane 在同一 Pencil 笔画中允许越出当前有限辅助面：离开有限面后继续与该 Shape 的无限作者平面求交，直到命中其它 Shape 或手势结束。
 - 一笔经过同一 Group 的多个 Shape 时，每个 Shape 的段和实时预览都保留；Fill/擦除也分别维护每个 Shape 的临时作者状态。
 - Fill 拖动只处理新增采样、只编译和上传变化 Shape 的 Fill；Terrain 只重建受影响分块；Transform 拖动只更新已有对象节点。普通 Pointer Move 不得构造完整临时文档或调用全局场景更新。
-- Group 模式提供位置和兼容数据格式的 Y 旋转手柄；Shape 模式将 Move、Rotate 与内在 Size/Radius 分为互斥的手柄模式。Cuboid 的 Size 模式只显示三轴 Size Handle，Sphere 的 Radius 模式只显示 Radius Handle；它们绝不作为通用 Transform Scale，也不与移动或旋转手柄混显。全部手柄只接收 Apple Pencil。
-- Editor Session 持久化 Snap 开关和 Translation Unit；默认单位为 `0.5`。启用后位置手柄持续吸附，不依赖 iPad 不便使用的 Ctrl 修饰键。
+- Group 模式提供位置和兼容数据格式的 Y 旋转手柄；Shape 模式将 Move、Rotate 与内在尺寸分为互斥的手柄模式。Cuboid 的 Size 模式只显示三轴 Size Handle，Sphere 显示 Radius Handle，Cylinder 显示 Radius/Height Handle，Frustum 显示 Top/Height/Bottom Handle；它们绝不作为通用 Transform Scale，也不与移动或旋转手柄混显。Move/Rotate 手柄均可在 World 与 Local 空间切换。全部手柄只接收 Apple Pencil。
+- Editor Session 持久化 Snap 开关、Translation Unit、Transform World/Local 空间和临时排除绘制的 Shape ID；默认单位为 `0.5`、默认空间为 World。启用后位置手柄持续吸附，不依赖 iPad 不便使用的 Ctrl 修饰键。临时排除只阻止新的绘制、吸色与 Shape 拾取，已提交的 Ink 仍可见且不影响作品内容。

@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch 
 import {
   createDefaultInkNormalOutsetSettings,
   createInkCuboidShape,
+  createInkCylinderShape,
+  createInkFrustumShape,
   createInkPlaneShape,
   createInkSphereShape,
   getCameraFacingInkPlaneRotation,
@@ -14,7 +16,7 @@ import { DEFAULT_PREVIEW_LIGHTING, clonePreviewLighting } from '../domain/lighti
 import { PICO_8_COLORS } from '../domain/terrain/pico8';
 import { createTerrainTile, type TileKind, type TileRotation } from '../domain/terrain/terrain';
 import type { StudioEditorSession, WorkspaceMode } from '../domain/workspace/session';
-import { createStudioEditorSession, normalizeStudioEditorSession } from '../domain/workspace/session';
+import { cloneStudioEditorSession, createStudioEditorSession, normalizeStudioEditorSession } from '../domain/workspace/session';
 import {
   addInkGroup,
   addInkShape,
@@ -144,6 +146,7 @@ watch(() => [
   session.mode,
   session.activeReferenceId,
   session.activeShapeId,
+  session.excludedShapeIds,
   session.showTerrainEdges,
   session.showInfiniteGrid,
   session.showAxes,
@@ -161,7 +164,7 @@ watch(activeShape, (shape) => {
   if (shape?.kind === 'plane' && session.transformMode === 'resize') session.transformMode = 'translate';
 });
 
-watch(() => [session.transformMode, session.snapEnabled, session.transformSnapUnit] as const, () => {
+watch(() => [session.transformMode, session.transformSpace, session.snapEnabled, session.transformSnapUnit] as const, () => {
   const current = store?.getDocument() ?? document.value;
   if (current) transformController?.sync(current, session);
 });
@@ -230,7 +233,7 @@ async function persistEditorSession(): Promise<void> {
   if (sessionTimer !== null) window.clearTimeout(sessionTimer);
   sessionTimer = null;
   try {
-    await saveEditorSession({ ...session, palette: [...session.palette] });
+    await saveEditorSession(cloneStudioEditorSession(session));
   } catch (error) {
     showMessage(error instanceof Error ? error.message : 'Unable to save the editor session.', 'error');
   }
@@ -327,7 +330,10 @@ function createShape(kind: InkShape['kind'], orientation = session.planeOrientat
     : { x: 0, y: 0, z: 0 };
   const shape = kind === 'plane'
     ? createInkPlaneShape(orientation, cameraRotation)
-    : kind === 'cuboid' ? createInkCuboidShape() : createInkSphereShape();
+    : kind === 'cuboid' ? createInkCuboidShape()
+      : kind === 'sphere' ? createInkSphereShape()
+        : kind === 'cylinder' ? createInkCylinderShape()
+          : createInkFrustumShape();
   store.transact(`Create ${kind} Shape`, (value) => addInkShape(value, session.activeReferenceId!, shape));
   session.activeShapeId = shape.id;
   session.mode = 'shape';
@@ -341,6 +347,13 @@ function createPlane(orientation: StudioEditorSession['planeOrientation']): void
 function deleteShape(shapeId: string): void {
   if (!session.activeReferenceId || !window.confirm('Delete this Shape and all of its Ink content?')) return;
   store?.transact('Delete Ink Shape', (value) => removeInkShape(value, session.activeReferenceId!, shapeId));
+  session.excludedShapeIds = session.excludedShapeIds.filter((id) => id !== shapeId);
+}
+
+function toggleShapeDrawingExclusion(shapeId: string): void {
+  session.excludedShapeIds = session.excludedShapeIds.includes(shapeId)
+    ? session.excludedShapeIds.filter((id) => id !== shapeId)
+    : [...session.excludedShapeIds, shapeId];
 }
 
 function selectTerrainKind(kind: TileKind): void {
@@ -410,6 +423,24 @@ function setShapeRadius(event: Event): void {
   const next = Math.max(0.05, finiteInput(event, shape.radius));
   store?.transact('Resize Ink Sphere', (value) => updateInkShapeAuthor(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'sphere'
     ? resampleInkShapeFill(current, { ...current, radius: next })
+    : current));
+}
+
+function setCylinderDimension(field: 'radius' | 'height', event: Event): void {
+  const shape = activeShape.value;
+  if (!shape || shape.kind !== 'cylinder' || !session.activeReferenceId) return;
+  const next = Math.max(0.05, finiteInput(event, shape[field]));
+  store?.transact('Resize Ink Cylinder', (value) => updateInkShapeAuthor(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'cylinder'
+    ? resampleInkShapeFill(current, { ...current, [field]: next })
+    : current));
+}
+
+function setFrustumDimension(field: 'topSize' | 'bottomSize' | 'height', event: Event): void {
+  const shape = activeShape.value;
+  if (!shape || shape.kind !== 'frustum' || !session.activeReferenceId) return;
+  const next = Math.max(0.05, finiteInput(event, shape[field]));
+  store?.transact('Resize Ink Frustum', (value) => updateInkShapeAuthor(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'frustum'
+    ? resampleInkShapeFill(current, { ...current, [field]: next })
     : current));
 }
 
@@ -565,9 +596,16 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
           :class="{ active: shape.id === session.activeShapeId }"
         >
           <button class="shape-row" @click="session.activeShapeId = shape.id; session.mode = 'shape'">
-            <span>{{ shape.kind === 'plane' ? '▱' : shape.kind === 'cuboid' ? '⬡' : '●' }}</span>
+            <span>{{ shape.kind === 'plane' ? '▱' : shape.kind === 'cuboid' ? '⬡' : shape.kind === 'sphere' ? '●' : shape.kind === 'cylinder' ? '▯' : '△' }}</span>
             <span>{{ shape.kind }} {{ index + 1 }}</span>
           </button>
+          <button
+            class="list-delete-button shape-visibility-button"
+            :class="{ active: !session.excludedShapeIds.includes(shape.id) }"
+            :aria-label="`${session.excludedShapeIds.includes(shape.id) ? 'Show' : 'Hide'} ${shape.kind} ${index + 1} for drawing`"
+            :title="session.excludedShapeIds.includes(shape.id) ? 'Allow drawing on Shape' : 'Temporarily hide from drawing'"
+            @click="toggleShapeDrawingExclusion(shape.id)"
+          >👁</button>
           <button class="list-delete-button" :aria-label="`Delete ${shape.kind} ${index + 1}`" title="Delete Shape" @click="deleteShape(shape.id)">⌫</button>
         </div>
         <label class="shape-create-label">Add Plane</label>
@@ -580,6 +618,8 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
         <div class="shape-create-row">
           <button @click="createShape('cuboid')">+ Box</button>
           <button @click="createShape('sphere')">+ Sphere</button>
+          <button @click="createShape('cylinder')">+ Cylinder</button>
+          <button @click="createShape('frustum')">+ Frustum</button>
         </div>
       </div>
     </aside>
@@ -699,7 +739,8 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
         <section>
           <template v-if="session.mode === 'select' || session.mode === 'shape'">
             <label>Transform Handle</label>
-            <div class="segmented"><button :class="{ active: session.transformMode === 'translate' }" @click="session.transformMode = 'translate'">Move XYZ</button><button :class="{ active: session.transformMode === 'rotate' }" @click="session.transformMode = 'rotate'">{{ session.mode === 'select' ? 'Rotate Y' : 'Rotate XYZ' }}</button><button v-if="session.mode === 'shape' && activeShape?.kind !== 'plane'" :class="{ active: session.transformMode === 'resize' }" @click="session.transformMode = 'resize'">{{ activeShape?.kind === 'cuboid' ? 'Size XYZ' : 'Radius' }}</button></div>
+            <div class="segmented"><button :class="{ active: session.transformMode === 'translate' }" @click="session.transformMode = 'translate'">Move XYZ</button><button :class="{ active: session.transformMode === 'rotate' }" @click="session.transformMode = 'rotate'">{{ session.mode === 'select' ? 'Rotate Y' : 'Rotate XYZ' }}</button><button v-if="session.mode === 'shape' && activeShape?.kind !== 'plane'" :class="{ active: session.transformMode === 'resize' }" @click="session.transformMode = 'resize'">{{ activeShape?.kind === 'cuboid' ? 'Size XYZ' : activeShape?.kind === 'sphere' ? 'Radius' : activeShape?.kind === 'cylinder' ? 'Radius / Height' : 'Top / Height / Bottom' }}</button></div>
+            <div class="segmented transform-space"><button :class="{ active: session.transformSpace === 'world' }" @click="session.transformSpace = 'world'">World</button><button :class="{ active: session.transformSpace === 'local' }" @click="session.transformSpace = 'local'">Local</button></div>
             <div class="snap-settings">
               <label class="check-row"><input v-model="session.snapEnabled" type="checkbox" /> Snap</label>
               <label>Translation Unit <input type="number" min="0.001" max="1000" step="0.01" :value="session.transformSnapUnit" @change="setTransformSnapUnit" /></label>
@@ -720,6 +761,8 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
             <label>Size</label><div class="vector-row"><label>X<input type="number" min="0.05" step="0.1" :value="activeShape.size.x" @change="setShapeSize('x', $event)" /></label><label>Y<input type="number" min="0.05" step="0.1" :value="activeShape.size.y" @change="setShapeSize('y', $event)" /></label><label>Z<input type="number" min="0.05" step="0.1" :value="activeShape.size.z" @change="setShapeSize('z', $event)" /></label></div>
           </template>
           <template v-else-if="activeShape.kind === 'sphere'"><label>Radius</label><input type="number" min="0.05" step="0.1" :value="activeShape.radius" @change="setShapeRadius" /></template>
+          <template v-else-if="activeShape.kind === 'cylinder'"><label>Dimensions</label><div class="vector-row"><label>Radius<input type="number" min="0.05" step="0.1" :value="activeShape.radius" @change="setCylinderDimension('radius', $event)" /></label><label>Height<input type="number" min="0.05" step="0.1" :value="activeShape.height" @change="setCylinderDimension('height', $event)" /></label></div></template>
+          <template v-else-if="activeShape.kind === 'frustum'"><label>Dimensions</label><div class="vector-row"><label>Top<input type="number" min="0.05" step="0.1" :value="activeShape.topSize" @change="setFrustumDimension('topSize', $event)" /></label><label>Bottom<input type="number" min="0.05" step="0.1" :value="activeShape.bottomSize" @change="setFrustumDimension('bottomSize', $event)" /></label><label>Height<input type="number" min="0.05" step="0.1" :value="activeShape.height" @change="setFrustumDimension('height', $event)" /></label></div></template>
           <fieldset v-if="activeNormalOutset" class="normal-outset-settings">
             <legend>Normal Outset</legend>
             <label class="checkbox-label"><input :checked="activeNormalOutset.enabled" type="checkbox" @change="setNormalOutsetEnabled" /> Enabled</label>
@@ -730,7 +773,7 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
                 <output>{{ activeNormalOutset.distance.toFixed(3) }}</output>
               </label>
             </template>
-            <p class="note">Uses averaged Cuboid corner normals or radial Sphere normals. The shell does not enter Ink hard shadows.</p>
+            <p class="note">The shell uses final-dimension Shape geometry, so its world-unit outset remains consistent. It does not enter Ink hard shadows.</p>
           </fieldset>
           <p class="note">Shape transforms use source-local coordinates. Ribbon width remains in world units.</p>
         </section>

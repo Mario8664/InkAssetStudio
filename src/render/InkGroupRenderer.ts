@@ -7,7 +7,6 @@ import {
   DynamicDrawUsage,
   DoubleSide,
   Float32BufferAttribute,
-  FrontSide,
   Group,
   Mesh,
   Object3D,
@@ -24,9 +23,13 @@ import {
 import {
   DEFAULT_INK_NORMAL_OUTSET_COLOR,
   DEFAULT_INK_NORMAL_OUTSET_DISTANCE,
+  INK_CYLINDER_SEGMENTS,
   INK_FILL_PIXELS_PER_WORLD_UNIT,
   INK_SPHERE_FACE_SEGMENTS,
+  createInkCylinderGeometry,
+  createInkFrustumGeometry,
   createInkSphereGeometry,
+  getInkFrustumFacePosition,
   type CompiledInkFillSurface,
   type CompiledInkNormalOutset,
   type CompiledInkRibbon,
@@ -343,6 +346,8 @@ function disposeInkNormalOutsetMesh(mesh: Mesh): void {
 function createInkNormalOutsetGeometry(shape: InkShape): BufferGeometry | null {
   if (shape.kind === 'cuboid') return createAveragedNormalCuboidGeometry(shape.size);
   if (shape.kind === 'sphere') return createInkSphereGeometry(shape.radius);
+  if (shape.kind === 'cylinder') return createInkCylinderGeometry(shape.radius, shape.height);
+  if (shape.kind === 'frustum') return createInkFrustumGeometry(shape.topSize, shape.bottomSize, shape.height);
   return null;
 }
 
@@ -387,6 +392,8 @@ function createAveragedNormalCuboidGeometry(size: Readonly<{ x: number; y: numbe
 function getInkNormalOutsetGeometryKey(shape: InkShape): string {
   if (shape.kind === 'cuboid') return `cuboid:${shape.size.x}:${shape.size.y}:${shape.size.z}`;
   if (shape.kind === 'sphere') return `sphere:${shape.radius}`;
+  if (shape.kind === 'cylinder') return `cylinder:${shape.radius}:${shape.height}`;
+  if (shape.kind === 'frustum') return `frustum:${shape.topSize}:${shape.bottomSize}:${shape.height}`;
   return 'plane';
 }
 
@@ -512,7 +519,7 @@ function createInkFillSurfaceMaterial(
     transparent: false,
     depthTest: true,
     depthWrite: true,
-    side: FrontSide,
+    side: DoubleSide,
     toneMapped: false,
     polygonOffset: true,
     polygonOffsetFactor: -0.5,
@@ -577,12 +584,11 @@ void main() {
 }
 
 /** The shell moves in world space and renders only its inward-facing side. */
-function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset, shape: InkShape): ShaderMaterial {
+function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset, _shape: InkShape): ShaderMaterial {
   return new ShaderMaterial({
     uniforms: {
       inkNormalOutsetColor: { value: new Color(outset.color) },
       inkNormalOutsetDistance: { value: outset.distance },
-      inkNormalOutsetSphere: { value: shape.kind === 'sphere' ? 1 : 0 },
     },
     transparent: false,
     depthTest: true,
@@ -591,15 +597,8 @@ function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset, shape: I
     toneMapped: false,
     vertexShader: `
 uniform float inkNormalOutsetDistance;
-uniform float inkNormalOutsetSphere;
 void main() {
-  vec3 localNormal = inkNormalOutsetSphere > 0.5 ? normalize(position) : normal;
-  vec3 modelScale = vec3(
-    length(modelMatrix[0].xyz),
-    length(modelMatrix[1].xyz),
-    length(modelMatrix[2].xyz)
-  );
-  vec3 outwardWorldNormal = normalize(mat3(modelMatrix) * (localNormal / max(modelScale * modelScale, vec3(0.000001))));
+  vec3 outwardWorldNormal = normalize(mat3(modelMatrix) * normal);
   vec4 worldPosition = modelMatrix * vec4(position, 1.0);
   worldPosition.xyz += outwardWorldNormal * inkNormalOutsetDistance;
   gl_Position = projectionMatrix * viewMatrix * worldPosition;
@@ -656,12 +655,13 @@ function createInkFillSurfaceGeometry(fill: CompiledInkFillSurface, shape: InkSh
     geometry.translate((fill.minX + fill.width * 0.5) / INK_FILL_PIXELS_PER_WORLD_UNIT, (fill.minY + fill.height * 0.5) / INK_FILL_PIXELS_PER_WORLD_UNIT, 0);
     return geometry;
   }
-  if (shape.kind === 'cuboid') return createCuboidFillSurfaceGeometry(fill.id);
-  return createSphereFillSurfaceGeometry(fill.id);
+  if (shape.kind === 'cuboid') return isInkCuboidFace(fill.id) ? createCuboidFillSurfaceGeometry(fill.id) : new BufferGeometry();
+  if (shape.kind === 'sphere') return isInkCuboidFace(fill.id) ? createSphereFillSurfaceGeometry(fill.id) : new BufferGeometry();
+  if (shape.kind === 'cylinder') return createCylinderFillSurfaceGeometry(shape, fill.id);
+  return createFrustumFillSurfaceGeometry(shape, fill.id);
 }
 
-function createCuboidFillSurfaceGeometry(id: InkFillSurfaceId): BufferGeometry {
-  if (id === 'plane') return new BufferGeometry();
+function createCuboidFillSurfaceGeometry(id: InkCuboidFace): BufferGeometry {
   return createSurfaceQuad(
     getCuboidFacePosition(id, -0.5, -0.5),
     getCuboidFacePosition(id, 0.5, -0.5),
@@ -671,8 +671,7 @@ function createCuboidFillSurfaceGeometry(id: InkFillSurfaceId): BufferGeometry {
   );
 }
 
-function createSphereFillSurfaceGeometry(id: InkFillSurfaceId): BufferGeometry {
-  if (id === 'plane') return new BufferGeometry();
+function createSphereFillSurfaceGeometry(id: InkCuboidFace): BufferGeometry {
   const geometry = new BufferGeometry();
   const positions: number[] = [];
   const uvs: number[] = [];
@@ -703,18 +702,93 @@ function createSphereFillSurfaceGeometry(id: InkFillSurfaceId): BufferGeometry {
   return geometry;
 }
 
+function createCylinderFillSurfaceGeometry(shape: Extract<InkShape, { kind: 'cylinder' }>, id: InkFillSurfaceId): BufferGeometry {
+  if (id === 'side') {
+    const geometry = new BufferGeometry();
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+    for (let index = 0; index <= INK_CYLINDER_SEGMENTS; index += 1) {
+      const fraction = index / INK_CYLINDER_SEGMENTS;
+      const angle = fraction * Math.PI * 2;
+      const x = Math.cos(angle) * shape.radius;
+      const z = Math.sin(angle) * shape.radius;
+      positions.push(x, -shape.height * 0.5, z, x, shape.height * 0.5, z);
+      uvs.push(fraction, 0, fraction, 1);
+    }
+    for (let index = 0; index < INK_CYLINDER_SEGMENTS; index += 1) {
+      const bottomLeft = index * 2;
+      const topLeft = bottomLeft + 1;
+      const bottomRight = bottomLeft + 2;
+      const topRight = bottomLeft + 3;
+      indices.push(bottomLeft, topLeft, bottomRight, topLeft, topRight, bottomRight);
+    }
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+  if (id === 'top' || id === 'bottom') return createCylinderCapFillGeometry(shape, id);
+  return new BufferGeometry();
+}
+
+function createCylinderCapFillGeometry(shape: Extract<InkShape, { kind: 'cylinder' }>, side: 'top' | 'bottom'): BufferGeometry {
+  const geometry = new BufferGeometry();
+  const y = side === 'top' ? shape.height * 0.5 : -shape.height * 0.5;
+  const positions: number[] = [0, y, 0];
+  const uvs: number[] = [0.5, 0.5];
+  const indices: number[] = [];
+  for (let index = 0; index < INK_CYLINDER_SEGMENTS; index += 1) {
+    const angle = index / INK_CYLINDER_SEGMENTS * Math.PI * 2;
+    const x = Math.cos(angle) * shape.radius;
+    const z = Math.sin(angle) * shape.radius;
+    positions.push(x, y, z);
+    uvs.push(x / (shape.radius * 2) + 0.5, z / (shape.radius * 2) + 0.5);
+  }
+  for (let index = 0; index < INK_CYLINDER_SEGMENTS; index += 1) {
+    const current = index + 1;
+    const next = (index + 1) % INK_CYLINDER_SEGMENTS + 1;
+    if (side === 'top') indices.push(0, next, current);
+    else indices.push(0, current, next);
+  }
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function createFrustumFillSurfaceGeometry(shape: Extract<InkShape, { kind: 'frustum' }>, id: InkFillSurfaceId): BufferGeometry {
+  if (!isInkCuboidFace(id)) return new BufferGeometry();
+  return createSurfaceQuad(
+    getInkFrustumFacePosition(shape, { face: id, u: -0.5, v: -0.5, pressure: 1 }),
+    getInkFrustumFacePosition(shape, { face: id, u: 0.5, v: -0.5, pressure: 1 }),
+    getInkFrustumFacePosition(shape, { face: id, u: -0.5, v: 0.5, pressure: 1 }),
+    getInkFrustumFacePosition(shape, { face: id, u: 0.5, v: 0.5, pressure: 1 }),
+    id === 'positive-z' || id === 'negative-z',
+  );
+}
+
 function getInkFillCrop(fill: CompiledInkFillSurface, shape: InkShape): { minX: number; minY: number; width: number; height: number } {
   if (shape.kind === 'plane') return { minX: 0, minY: 0, width: 1, height: 1 };
-  const dimensions = shape.kind === 'cuboid' && fill.id !== 'plane'
+  const dimensions = shape.kind === 'cuboid' && isInkCuboidFace(fill.id)
     ? getCuboidFaceFillDimensions(shape, fill.id)
-    : shape.kind === 'sphere'
+    : shape.kind === 'sphere' && isInkCuboidFace(fill.id)
       ? { width: Math.max(1, Math.ceil(shape.radius * 2 * INK_FILL_PIXELS_PER_WORLD_UNIT)), height: Math.max(1, Math.ceil(shape.radius * 2 * INK_FILL_PIXELS_PER_WORLD_UNIT)) }
+      : shape.kind === 'cylinder'
+        ? getCylinderFillDimensions(shape, fill.id)
+        : shape.kind === 'frustum' && isInkCuboidFace(fill.id)
+          ? getFrustumFillDimensions(shape, fill.id)
       : { width: 1, height: 1 };
   return { minX: fill.minX / dimensions.width, minY: fill.minY / dimensions.height, width: fill.width / dimensions.width, height: fill.height / dimensions.height };
 }
 
 function getInkFillGeometryKey(fill: CompiledInkFillSurface, shape: InkShape): string {
-  return shape.kind === 'plane' ? `${fill.minX}:${fill.minY}:${fill.width}:${fill.height}` : shape.kind;
+  if (shape.kind === 'plane') return `${fill.minX}:${fill.minY}:${fill.width}:${fill.height}`;
+  if (shape.kind === 'cylinder') return `cylinder:${fill.id}:${shape.radius}:${shape.height}`;
+  if (shape.kind === 'frustum') return `frustum:${fill.id}:${shape.topSize}:${shape.bottomSize}:${shape.height}`;
+  return shape.kind;
 }
 
 /** `±Z` use the opposite winding under Ink's persisted u/v chart convention. */
@@ -742,6 +816,31 @@ function getCuboidFaceFillDimensions(shape: Extract<InkShape, { kind: 'cuboid' }
   const horizontal = face === 'positive-x' || face === 'negative-x' ? shape.size.z : shape.size.x;
   const vertical = face === 'positive-y' || face === 'negative-y' ? shape.size.z : shape.size.y;
   return { width: Math.max(1, Math.ceil(horizontal * INK_FILL_PIXELS_PER_WORLD_UNIT)), height: Math.max(1, Math.ceil(vertical * INK_FILL_PIXELS_PER_WORLD_UNIT)) };
+}
+
+function isInkCuboidFace(id: InkFillSurfaceId): id is InkCuboidFace {
+  return id === 'positive-x' || id === 'negative-x' || id === 'positive-y'
+    || id === 'negative-y' || id === 'positive-z' || id === 'negative-z';
+}
+
+function getCylinderFillDimensions(shape: Extract<InkShape, { kind: 'cylinder' }>, id: InkFillSurfaceId): { width: number; height: number } {
+  if (id === 'side') return {
+    width: Math.max(1, Math.ceil(Math.PI * 2 * shape.radius * INK_FILL_PIXELS_PER_WORLD_UNIT)),
+    height: Math.max(1, Math.ceil(shape.height * INK_FILL_PIXELS_PER_WORLD_UNIT)),
+  };
+  const side = Math.max(1, Math.ceil(shape.radius * 2 * INK_FILL_PIXELS_PER_WORLD_UNIT));
+  return { width: side, height: side };
+}
+
+function getFrustumFillDimensions(shape: Extract<InkShape, { kind: 'frustum' }>, id: InkFillSurfaceId): { width: number; height: number } {
+  if (id === 'positive-y' || id === 'negative-y') {
+    const size = id === 'positive-y' ? shape.topSize : shape.bottomSize;
+    const pixels = Math.max(1, Math.ceil(size * INK_FILL_PIXELS_PER_WORLD_UNIT));
+    return { width: pixels, height: pixels };
+  }
+  const width = Math.max(1, Math.ceil((shape.topSize + shape.bottomSize) * 0.5 * INK_FILL_PIXELS_PER_WORLD_UNIT));
+  const height = Math.max(1, Math.ceil(Math.hypot(shape.height, (shape.topSize - shape.bottomSize) * 0.5) * INK_FILL_PIXELS_PER_WORLD_UNIT));
+  return { width, height };
 }
 
 /** Unit-box local coordinates match Ink's persisted Cuboid face u/v convention. */

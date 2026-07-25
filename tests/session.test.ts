@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createStudioEditorSession, normalizeStudioEditorSession } from '../src/domain/workspace/session';
+import { reactive } from 'vue';
+import { cloneStudioEditorSession, createStudioEditorSession, normalizeStudioEditorSession } from '../src/domain/workspace/session';
 
 describe('Editor viewport session', () => {
   it('enables all three independent viewport guides by default', () => {
@@ -54,5 +55,22 @@ describe('Editor viewport session', () => {
 
   it('persists the Shape-only intrinsic size handle mode', () => {
     expect(normalizeStudioEditorSession({ transformMode: 'resize' }).transformMode).toBe('resize');
+  });
+
+  it('defaults Transform handles to World and persists Local with temporary drawing exclusions', () => {
+    const defaults = createStudioEditorSession();
+    expect(defaults.transformSpace).toBe('world');
+    const session = normalizeStudioEditorSession({ transformSpace: 'local', excludedShapeIds: ['shape-a', 'shape-a', 7] });
+    expect(session.transformSpace).toBe('local');
+    expect(session.excludedShapeIds).toEqual(['shape-a']);
+  });
+
+  it('creates a structured-cloneable persistence snapshot from reactive session arrays', () => {
+    const session = reactive(createStudioEditorSession());
+    session.excludedShapeIds.push('shape-a');
+    const snapshot = cloneStudioEditorSession(session);
+    expect(snapshot.excludedShapeIds).toEqual(['shape-a']);
+    expect(snapshot.excludedShapeIds).not.toBe(session.excludedShapeIds);
+    expect(structuredClone(snapshot)).toEqual(snapshot);
   });
 });

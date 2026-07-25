@@ -31,6 +31,7 @@ import {
   compileInkShapeRibbon,
   compileInkFill,
   createInkOutlineStroke,
+  getInkCylinderSurfacePoint,
   type CompiledInkFillSurface,
   type CompiledInkShape,
   type InkCuboidFace,
@@ -262,7 +263,7 @@ export class WorkspaceRenderer {
     const lightingDirectionChanged = this.applyLighting(document);
     if (terrainChanged || inkUpdate.hardShadowChanged || lightingDirectionChanged) this.hardShadow.markDirty();
     if (terrainChanged || inkUpdate.boundsChanged) this.updateShadowBounds(document);
-    const editHelperStateKey = `${session.mode}|${session.activeReferenceId ?? ''}|${session.activeShapeId ?? ''}`;
+    const editHelperStateKey = `${session.mode}|${session.activeReferenceId ?? ''}|${session.activeShapeId ?? ''}|${session.excludedShapeIds.join('|')}`;
     const selectionChanged = this.editHelperStateKey !== editHelperStateKey || inkUpdate.changed;
     this.editHelperStateKey = editHelperStateKey;
     if (selectionChanged) this.syncEditHelpers();
@@ -312,7 +313,7 @@ export class WorkspaceRenderer {
     const source = getInkSourceByReference(this.document, candidate.referenceId);
     const shape = source?.shapes.find((entry) => entry.id === candidate.shapeId);
     const helper = this.helperEntries.get(helperKey(candidate.referenceId, candidate.shapeId));
-    if (!shape || shape.kind !== 'plane' || !helper) return null;
+    if (!shape || this.session.excludedShapeIds.includes(shape.id) || shape.kind !== 'plane' || !helper) return null;
     helper.root.updateWorldMatrix(true, false);
     const origin = helper.root.getWorldPosition(new Vector3());
     const normal = new Vector3(0, 0, 1).applyQuaternion(helper.root.getWorldQuaternion(new Quaternion())).normalize();
@@ -742,14 +743,15 @@ export class WorkspaceRenderer {
     this.helperGroupRoot.position.set(reference.anchorPosition.x, reference.anchorPosition.y, reference.anchorPosition.z);
     this.helperGroupRoot.rotation.y = reference.rotation * Math.PI / 180;
 
-    const nextShapeIds = new Set(source.shapes.map((shape) => shape.id));
+    const visibleShapes = source.shapes.filter((shape) => !this.session!.excludedShapeIds.includes(shape.id));
+    const nextShapeIds = new Set(visibleShapes.map((shape) => shape.id));
     for (const [key, entry] of this.helperEntries) {
       if (entry.referenceId === referenceId && nextShapeIds.has(entry.shapeId)) continue;
       entry.root.removeFromParent();
       disposeInkShapePreviewTree(entry.root);
       this.helperEntries.delete(key);
     }
-    for (const shape of source.shapes) this.syncSingleInkHelper(referenceId, shape);
+    for (const shape of visibleShapes) this.syncSingleInkHelper(referenceId, shape);
     this.refreshShapePickers();
   }
 
@@ -963,7 +965,9 @@ function getInkShapeHelperGeometryKey(shape: InkShape): string {
     return `plane:${bounds.minX}:${bounds.maxX}:${bounds.minY}:${bounds.maxY}`;
   }
   if (shape.kind === 'cuboid') return `cuboid:${shape.size.x}:${shape.size.y}:${shape.size.z}`;
-  return `sphere:${shape.radius}`;
+  if (shape.kind === 'sphere') return `sphere:${shape.radius}`;
+  if (shape.kind === 'cylinder') return `cylinder:${shape.radius}:${shape.height}`;
+  return `frustum:${shape.topSize}:${shape.bottomSize}:${shape.height}`;
 }
 
 function pointToTerrainCell(point: Vector3): TerrainCellPosition {
@@ -998,6 +1002,10 @@ function didInkShapeTransformChange(previous: InkShape, next: InkShape): boolean
     || !sameInkVector3(previous.rotation, next.rotation)) return true;
   if (previous.kind === 'cuboid' && next.kind === 'cuboid') return !sameInkVector3(previous.size, next.size);
   if (previous.kind === 'sphere' && next.kind === 'sphere') return previous.radius !== next.radius;
+  if (previous.kind === 'cylinder' && next.kind === 'cylinder') return previous.radius !== next.radius || previous.height !== next.height;
+  if (previous.kind === 'frustum' && next.kind === 'frustum') {
+    return previous.topSize !== next.topSize || previous.bottomSize !== next.bottomSize || previous.height !== next.height;
+  }
   return false;
 }
 
@@ -1038,7 +1046,22 @@ function getSurfacePoint(shape: InkShape, local: Vector3, normal: Vector3, press
     const direction = local.normalize();
     return { x: direction.x, y: direction.y, z: direction.z, pressure };
   }
+  if (shape.kind === 'cylinder') {
+    if (normal.y > 0.5) return getInkCylinderSurfacePoint(shape, local, 'top', pressure);
+    if (normal.y < -0.5) return getInkCylinderSurfacePoint(shape, local, 'bottom', pressure);
+    return getInkCylinderSurfacePoint(shape, local, 'side', pressure);
+  }
   const face = getCuboidFace(normal);
+  if (shape.kind === 'frustum') {
+    if (face === 'positive-y') return { face, u: local.x / shape.topSize, v: local.z / shape.topSize, pressure };
+    if (face === 'negative-y') return { face, u: local.x / shape.bottomSize, v: -local.z / shape.bottomSize, pressure };
+    const progress = Math.min(1, Math.max(0, local.y / shape.height + 0.5));
+    const halfSize = (shape.bottomSize + (shape.topSize - shape.bottomSize) * progress) * 0.5;
+    if (face === 'positive-x') return { face, u: local.z / (halfSize * 2), v: progress - 0.5, pressure };
+    if (face === 'negative-x') return { face, u: -local.z / (halfSize * 2), v: progress - 0.5, pressure };
+    if (face === 'positive-z') return { face, u: local.x / (halfSize * 2), v: progress - 0.5, pressure };
+    return { face, u: -local.x / (halfSize * 2), v: progress - 0.5, pressure };
+  }
   if (face === 'positive-x') return { face, u: local.z, v: local.y, pressure };
   if (face === 'negative-x') return { face, u: -local.z, v: local.y, pressure };
   if (face === 'positive-y') return { face, u: local.x, v: local.z, pressure };

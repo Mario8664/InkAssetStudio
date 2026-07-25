@@ -38,11 +38,13 @@ type DimensionDrag = {
   referenceId: string;
   axis: 'x' | 'y' | 'z';
   startParameter: number;
-  startShape: Extract<InkShape, { kind: 'cuboid' | 'sphere' }>;
-  currentShape: Extract<InkShape, { kind: 'cuboid' | 'sphere' }>;
+  startShape: IntrinsicInkShape;
+  currentShape: IntrinsicInkShape;
   worldOrigin: Vector3;
   worldAxis: Vector3;
 };
+
+type IntrinsicInkShape = Extract<InkShape, { kind: 'cuboid' | 'sphere' | 'cylinder' | 'frustum' }>;
 
 export type PencilTransformControllerOptions = {
   renderer: WorkspaceRenderer;
@@ -50,7 +52,7 @@ export type PencilTransformControllerOptions = {
   getSession: () => StudioEditorSession;
 };
 
-/** Painting-style TransformControls plus intrinsic Cuboid/Sphere size handles. */
+/** Painting-style TransformControls plus intrinsic finite-Shape dimension handles. */
 export class PencilTransformController {
   private readonly proxy = new Object3D();
   private readonly controls: TransformControls;
@@ -115,6 +117,7 @@ export class PencilTransformController {
     const controlMode = session.transformMode === 'resize' ? 'translate' : session.transformMode;
     this.setVisible(true, intrinsicSizeMode);
     this.controls.setMode(controlMode);
+    this.controls.setSpace(session.transformSpace);
     this.controls.setTranslationSnap(session.snapEnabled ? session.transformSnapUnit : null);
     this.controls.setRotationSnap(this.selection.kind === 'group' ? Math.PI / 2 : null);
     this.controls.showX = this.selection.kind === 'shape' || controlMode === 'translate';
@@ -262,8 +265,20 @@ export class PencilTransformController {
         },
       };
       drag.currentShape = resampleInkShapeFill(drag.startShape, resized) as typeof drag.currentShape;
-    } else {
+    } else if (drag.startShape.kind === 'sphere') {
       const resized = { ...drag.startShape, radius: Math.max(0.05, drag.startShape.radius + delta) };
+      drag.currentShape = resampleInkShapeFill(drag.startShape, resized) as typeof drag.currentShape;
+    } else if (drag.startShape.kind === 'cylinder') {
+      const resized = drag.axis === 'y'
+        ? { ...drag.startShape, height: Math.max(0.05, drag.startShape.height + delta * 2) }
+        : { ...drag.startShape, radius: Math.max(0.05, drag.startShape.radius + delta) };
+      drag.currentShape = resampleInkShapeFill(drag.startShape, resized) as typeof drag.currentShape;
+    } else {
+      const resized = drag.axis === 'x'
+        ? { ...drag.startShape, topSize: Math.max(0.05, drag.startShape.topSize + delta * 2) }
+        : drag.axis === 'y'
+          ? { ...drag.startShape, height: Math.max(0.05, drag.startShape.height + delta * 2) }
+          : { ...drag.startShape, bottomSize: Math.max(0.05, drag.startShape.bottomSize + delta * 2) };
       drag.currentShape = resampleInkShapeFill(drag.startShape, resized) as typeof drag.currentShape;
     }
     this.options.renderer.previewShapeIntrinsicSize(drag.referenceId, drag.currentShape);
@@ -278,7 +293,13 @@ export class PencilTransformController {
     this.dimensionDrag = null;
     this.claimedPointerId = null;
     if (this.options.renderer.canvas.hasPointerCapture(event.pointerId)) this.options.renderer.canvas.releasePointerCapture(event.pointerId);
-    const label = drag.currentShape.kind === 'cuboid' ? 'Resize Ink Cuboid' : 'Resize Ink Sphere';
+    const label = drag.currentShape.kind === 'cuboid'
+      ? 'Resize Ink Cuboid'
+      : drag.currentShape.kind === 'sphere'
+        ? 'Resize Ink Sphere'
+        : drag.currentShape.kind === 'cylinder'
+          ? 'Resize Ink Cylinder'
+          : 'Resize Ink Frustum';
     this.options.store.transact(label, (document) => updateInkShapeAuthor(document, drag.referenceId, drag.currentShape.id, () => drag.currentShape));
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -325,9 +346,19 @@ export class PencilTransformController {
     this.dimensionRoot.quaternion.copy(world.quaternion);
     const distance = this.options.renderer.camera.position.distanceTo(world.position);
     const handleSize = Math.min(0.22, Math.max(0.07, distance * 0.018));
-    const axes: Array<'x' | 'y' | 'z'> = shape.kind === 'cuboid' ? ['x', 'y', 'z'] : ['x'];
+    const axes: Array<'x' | 'y' | 'z'> = shape.kind === 'cuboid' || shape.kind === 'frustum'
+      ? ['x', 'y', 'z']
+      : shape.kind === 'cylinder'
+        ? ['x', 'y']
+        : ['x'];
     for (const axis of axes) {
-      const extent = shape.kind === 'cuboid' ? shape.size[axis] * 0.5 : shape.radius;
+      const extent = shape.kind === 'cuboid'
+        ? shape.size[axis] * 0.5
+        : shape.kind === 'sphere'
+          ? shape.radius
+          : shape.kind === 'cylinder'
+            ? axis === 'y' ? shape.height * 0.5 : shape.radius
+            : axis === 'x' ? shape.topSize * 0.5 : axis === 'y' ? shape.height * 0.5 : shape.bottomSize * 0.5;
       const length = extent + handleSize * 1.6;
       const color = axis === 'x' ? 0xff5b5b : axis === 'y' ? 0x63d47a : 0x5b8dff;
       const line = new Mesh(
@@ -343,7 +374,7 @@ export class PencilTransformController {
       line.renderOrder = 2100;
       const picker = new Mesh(
         new BoxGeometry(handleSize, handleSize, handleSize),
-        new MeshBasicMaterial({ color: shape.kind === 'sphere' ? 0xf4d35e : color, depthTest: false, depthWrite: false }),
+        new MeshBasicMaterial({ color: shape.kind === 'sphere' || (shape.kind === 'cylinder' && axis === 'x') ? 0xf4d35e : color, depthTest: false, depthWrite: false }),
       );
       picker.position.copy(axisVector(axis).multiplyScalar(length));
       picker.userData.dimensionAxis = axis;
@@ -412,11 +443,13 @@ function clonePendingTransform(selection: TransformSelection): PendingTransform 
 function cloneShapeTransform(shape: InkShape): InkShape {
   if (shape.kind === 'cuboid') return { ...shape, position: { ...shape.position }, rotation: { ...shape.rotation }, size: { ...shape.size } };
   if (shape.kind === 'sphere') return { ...shape, position: { ...shape.position }, rotation: { ...shape.rotation } };
+  if (shape.kind === 'cylinder') return { ...shape, position: { ...shape.position }, rotation: { ...shape.rotation } };
+  if (shape.kind === 'frustum') return { ...shape, position: { ...shape.position }, rotation: { ...shape.rotation } };
   return { ...shape, position: { ...shape.position }, rotation: { ...shape.rotation } };
 }
 
-function cloneIntrinsicShape(shape: Extract<InkShape, { kind: 'cuboid' | 'sphere' }>): Extract<InkShape, { kind: 'cuboid' | 'sphere' }> {
-  return cloneShapeTransform(shape) as Extract<InkShape, { kind: 'cuboid' | 'sphere' }>;
+function cloneIntrinsicShape(shape: IntrinsicInkShape): IntrinsicInkShape {
+  return cloneShapeTransform(shape) as IntrinsicInkShape;
 }
 
 function shapeWorldTransform(document: InkStudioWorkFile, referenceId: string, shape: InkShape): { position: Vector3; quaternion: Quaternion } {

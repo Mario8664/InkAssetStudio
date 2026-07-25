@@ -10,6 +10,8 @@ export type InkDrawTool = 'outline' | 'outline-eraser' | 'fill-brush' | 'fill-er
  * It deliberately does not map to Three.js TransformControls scale.
  */
 export type TransformMode = 'translate' | 'rotate' | 'resize';
+/** Unity-style axis space for generic Move/Rotate handles; never author content. */
+export type TransformSpace = 'world' | 'local';
 export type TerrainAction = 'place' | 'erase';
 export type TerrainOperation = 'brush' | 'rectangle';
 export type TerrainWorkAxis = 'x' | 'y' | 'z';
@@ -36,6 +38,7 @@ export type StudioEditorSession = {
   terrainColor: Pico8ColorId;
   planeOrientation: InkPlaneOrientation;
   transformMode: TransformMode;
+  transformSpace: TransformSpace;
   snapEnabled: boolean;
   transformSnapUnit: number;
   showTerrainEdges: boolean;
@@ -43,6 +46,8 @@ export type StudioEditorSession = {
   showAxes: boolean;
   leftPanelOpen: boolean;
   rightPanelOpen: boolean;
+  /** Editor-only Shape IDs skipped by drawing, colour picking and Shape selection. */
+  excludedShapeIds: string[];
 };
 
 export const DEFAULT_PALETTE = ['#000000', '#fff1e8', '#ff004d', '#ffa300', '#ffec27', '#00e436', '#29adff', '#83769c'];
@@ -70,6 +75,7 @@ export function createStudioEditorSession(): StudioEditorSession {
     terrainColor: DEFAULT_TILE_COLOR,
     planeOrientation: 'camera',
     transformMode: 'translate',
+    transformSpace: 'world',
     snapEnabled: false,
     transformSnapUnit: 0.5,
     showTerrainEdges: true,
@@ -77,6 +83,16 @@ export function createStudioEditorSession(): StudioEditorSession {
     showAxes: true,
     leftPanelOpen: true,
     rightPanelOpen: true,
+    excludedShapeIds: [],
+  };
+}
+
+/** Creates a plain, structured-cloneable persistence snapshot from Vue editor state. */
+export function cloneStudioEditorSession(session: StudioEditorSession): StudioEditorSession {
+  return {
+    ...session,
+    palette: [...session.palette],
+    excludedShapeIds: [...session.excludedShapeIds],
   };
 }
 
@@ -112,6 +128,7 @@ export function normalizeStudioEditorSession(value: unknown): StudioEditorSessio
     terrainColor: isPico8ColorId(source.terrainColor) ? source.terrainColor : fallback.terrainColor,
     planeOrientation: isOneOf(source.planeOrientation, ['x', 'y', 'z', 'camera']) ? source.planeOrientation : fallback.planeOrientation,
     transformMode: isOneOf(source.transformMode, ['translate', 'rotate', 'resize']) ? source.transformMode : fallback.transformMode,
+    transformSpace: isOneOf(source.transformSpace, ['world', 'local']) ? source.transformSpace : fallback.transformSpace,
     snapEnabled: typeof source.snapEnabled === 'boolean' ? source.snapEnabled : fallback.snapEnabled,
     transformSnapUnit: number(source.transformSnapUnit, fallback.transformSnapUnit, 0.001, 1_000),
     showTerrainEdges: typeof source.showTerrainEdges === 'boolean'
@@ -123,6 +140,9 @@ export function normalizeStudioEditorSession(value: unknown): StudioEditorSessio
     showAxes: typeof source.showAxes === 'boolean' ? source.showAxes : fallback.showAxes,
     leftPanelOpen: typeof source.leftPanelOpen === 'boolean' ? source.leftPanelOpen : fallback.leftPanelOpen,
     rightPanelOpen: typeof source.rightPanelOpen === 'boolean' ? source.rightPanelOpen : fallback.rightPanelOpen,
+    excludedShapeIds: Array.isArray(source.excludedShapeIds)
+      ? [...new Set(source.excludedShapeIds.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0))]
+      : fallback.excludedShapeIds,
   };
 }
 

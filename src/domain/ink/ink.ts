@@ -2,9 +2,10 @@ import { BufferGeometry, Euler, Float32BufferAttribute, Matrix4, Quaternion, Vec
 import { hashDerivedAssetSource } from './derivedAssets';
 
 export const INK_MANAGER_OBJECT_TYPE = 'painting.ink-manager';
-/** v13 stores normal outset as a Shape configuration rather than painted data. */
-export const INK_COMPILED_FORMAT_VERSION = 13;
+/** v14 adds finite cylinder/frustum sources and final-dimension outset geometry. */
+export const INK_COMPILED_FORMAT_VERSION = 14;
 export const INK_SPHERE_FACE_SEGMENTS = 4;
+export const INK_CYLINDER_SEGMENTS = 16;
 export const INK_FILL_PIXELS_PER_WORLD_UNIT = 64;
 export const INK_FILL_BLOCK_SIZE = 16;
 
@@ -15,7 +16,8 @@ export type InkVector2 = { x: number; y: number };
 export type InkVector3 = { x: number; y: number; z: number };
 export type InkPlaneOrientation = 'x' | 'y' | 'z' | 'camera';
 export type InkCuboidFace = 'positive-x' | 'negative-x' | 'positive-y' | 'negative-y' | 'positive-z' | 'negative-z';
-export type InkFillSurfaceId = 'plane' | InkCuboidFace;
+export type InkCylinderSurface = 'side' | 'top' | 'bottom';
+export type InkFillSurfaceId = 'plane' | InkCuboidFace | InkCylinderSurface;
 export type InkFillBrushShape = 'square' | 'circle';
 /** Grid-aligned Group placement rotation, expressed in quarter turns around Y. */
 export type InkGroupRotation = 0 | 90 | 180 | 270;
@@ -26,7 +28,9 @@ export type InkPlaneStrokePoint = InkVector2 & { pressure: number };
 export type InkCuboidStrokePoint = { face: InkCuboidFace; u: number; v: number; pressure: number };
 /** Sphere points are local unit directions, independent of radius and UV seams. */
 export type InkSphereStrokePoint = InkVector3 & { pressure: number };
-export type InkSurfacePoint = InkPlaneStrokePoint | InkCuboidStrokePoint | InkSphereStrokePoint;
+/** Cylinder points use one side chart or one of its two circular cap charts. */
+export type InkCylinderStrokePoint = { surface: InkCylinderSurface; u: number; v: number; pressure: number };
+export type InkSurfacePoint = InkPlaneStrokePoint | InkCuboidStrokePoint | InkSphereStrokePoint | InkCylinderStrokePoint;
 
 export type InkOutlineStroke = {
   id: string;
@@ -63,7 +67,7 @@ type InkShapeBase = {
   rotation: InkVector3;
   strokes: InkOutlineStroke[];
   fill: InkFillLayer;
-  /** Cuboid/Sphere-only visual configuration; omitted by older assets and Planes. */
+  /** Finite 3D Shape visual configuration; omitted by older assets and Planes. */
   normalOutset?: InkNormalOutsetSettings;
 };
 
@@ -95,7 +99,23 @@ export type InkSphereShape = InkShapeBase & {
   radius: number;
 };
 
-export type InkShape = InkPlaneShape | InkCuboidShape | InkSphereShape;
+export type InkCylinderShape = InkShapeBase & {
+  kind: 'cylinder';
+  /** Intrinsic dimensions, not a Transform scale. */
+  radius: number;
+  height: number;
+};
+
+export type InkFrustumShape = InkShapeBase & {
+  kind: 'frustum';
+  /** Side lengths of the Y-up square caps, not a Transform scale. */
+  topSize: number;
+  bottomSize: number;
+  height: number;
+  lastOutlineEnd?: InkCuboidStrokePoint | null;
+};
+
+export type InkShape = InkPlaneShape | InkCuboidShape | InkSphereShape | InkCylinderShape | InkFrustumShape;
 
 /**
  * Pre-triangulated local-space ribbon attributes. The shader only expands the
@@ -290,6 +310,36 @@ export function createInkSphereShape(): InkSphereShape {
   };
 }
 
+export function createInkCylinderShape(): InkCylinderShape {
+  return {
+    id: `ink-shape-${crypto.randomUUID()}`,
+    kind: 'cylinder',
+    position: { x: 0, y: 0, z: 0 },
+    rotation: { x: 0, y: 0, z: 0 },
+    radius: DEFAULT_INK_SPHERE_RADIUS,
+    height: 1,
+    strokes: [],
+    fill: createEmptyInkFillLayer(),
+    normalOutset: createDefaultInkNormalOutsetSettings(),
+  };
+}
+
+export function createInkFrustumShape(): InkFrustumShape {
+  return {
+    id: `ink-shape-${crypto.randomUUID()}`,
+    kind: 'frustum',
+    position: { x: 0, y: 0, z: 0 },
+    rotation: { x: 0, y: 0, z: 0 },
+    topSize: 0.5,
+    bottomSize: 1,
+    height: 1,
+    strokes: [],
+    fill: createEmptyInkFillLayer(),
+    normalOutset: createDefaultInkNormalOutsetSettings(),
+    lastOutlineEnd: null,
+  };
+}
+
 export function createEmptyInkFillLayer(): InkFillLayer { return { surfaces: [] }; }
 export function createDefaultInkNormalOutsetSettings(): InkNormalOutsetSettings {
   return { enabled: false, color: DEFAULT_INK_NORMAL_OUTSET_COLOR, distance: DEFAULT_INK_NORMAL_OUTSET_DISTANCE };
@@ -302,6 +352,60 @@ export function createInkSphereGeometry(radius: number): BufferGeometry {
   for (const vertex of INK_SPHERE_UNIT_VERTICES) positions.push(vertex.x * radius, vertex.y * radius, vertex.z * radius);
   geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
   geometry.setIndex(INK_SPHERE_TRIANGLE_INDICES);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** Final-dimension shared-vertex geometry for a cylindrical Shape and its outset shell. */
+export function createInkCylinderGeometry(radius: number, height: number): BufferGeometry {
+  const geometry = new BufferGeometry();
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const halfHeight = height * 0.5;
+  for (let index = 0; index < INK_CYLINDER_SEGMENTS; index += 1) {
+    const angle = index / INK_CYLINDER_SEGMENTS * Math.PI * 2;
+    const x = Math.cos(angle) * radius;
+    const z = Math.sin(angle) * radius;
+    positions.push(x, halfHeight, z, x, -halfHeight, z);
+  }
+  const topCenter = positions.length / 3;
+  positions.push(0, halfHeight, 0);
+  const bottomCenter = positions.length / 3;
+  positions.push(0, -halfHeight, 0);
+  for (let index = 0; index < INK_CYLINDER_SEGMENTS; index += 1) {
+    const next = (index + 1) % INK_CYLINDER_SEGMENTS;
+    const top = index * 2;
+    const bottom = top + 1;
+    const nextTop = next * 2;
+    const nextBottom = nextTop + 1;
+    indices.push(top, nextBottom, bottom, top, nextTop, nextBottom);
+    indices.push(topCenter, nextTop, top);
+    indices.push(bottomCenter, bottom, nextBottom);
+  }
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** A final-dimension, shared-corner square frustum with continuous outset normals. */
+export function createInkFrustumGeometry(topSize: number, bottomSize: number, height: number): BufferGeometry {
+  const geometry = new BufferGeometry();
+  const halfHeight = height * 0.5;
+  const top = topSize * 0.5;
+  const bottom = bottomSize * 0.5;
+  geometry.setAttribute('position', new Float32BufferAttribute([
+    -top, halfHeight, -top, top, halfHeight, -top, top, halfHeight, top, -top, halfHeight, top,
+    -bottom, -halfHeight, -bottom, bottom, -halfHeight, -bottom, bottom, -halfHeight, bottom, -bottom, -halfHeight, bottom,
+  ], 3));
+  geometry.setIndex([
+    0, 2, 1, 0, 3, 2,
+    4, 5, 6, 4, 6, 7,
+    0, 1, 5, 0, 5, 4,
+    1, 2, 6, 1, 6, 5,
+    2, 3, 7, 2, 7, 6,
+    3, 0, 4, 3, 4, 7,
+  ]);
   geometry.computeVertexNormals();
   return geometry;
 }
@@ -395,9 +499,7 @@ function getInkShapeVisualBounds(shape: InkShape): { min: Vector3; max: Vector3 
       }
     }
   } else if (hasFill || normalOutsetMargin > 0) {
-    const extent = shape.kind === 'cuboid'
-      ? new Vector3(shape.size.x * 0.5, shape.size.y * 0.5, shape.size.z * 0.5)
-      : new Vector3(shape.radius, shape.radius, shape.radius);
+    const extent = getInkShapeExtent(shape);
     points.push(extent.clone().multiplyScalar(-1), extent);
   }
   if (points.length === 0) return null;
@@ -418,7 +520,17 @@ function getInkShapePoint(shape: InkShape, point: InkSurfacePoint): Vector3 {
     return getInkCuboidFacePosition(point.face, point.u, point.v).multiply(new Vector3(shape.size.x, shape.size.y, shape.size.z));
   }
   if (shape.kind === 'sphere' && 'z' in point) return new Vector3(point.x, point.y, point.z).multiplyScalar(shape.radius);
+  if (shape.kind === 'cylinder' && isInkCylinderStrokePoint(point)) return getInkCylinderSurfacePosition(shape, point);
+  if (shape.kind === 'frustum' && isInkCuboidStrokePoint(point)) return getInkFrustumFacePosition(shape, point);
   return new Vector3();
+}
+
+function getInkShapeExtent(shape: Exclude<InkShape, InkPlaneShape>): Vector3 {
+  if (shape.kind === 'cuboid') return new Vector3(shape.size.x * 0.5, shape.size.y * 0.5, shape.size.z * 0.5);
+  if (shape.kind === 'sphere') return new Vector3(shape.radius, shape.radius, shape.radius);
+  if (shape.kind === 'cylinder') return new Vector3(shape.radius, shape.height * 0.5, shape.radius);
+  const halfSize = Math.max(shape.topSize, shape.bottomSize) * 0.5;
+  return new Vector3(halfSize, shape.height * 0.5, halfSize);
 }
 
 function transformInkShapePoint(shape: InkShape, point: Vector3): Vector3 {
@@ -626,7 +738,7 @@ export function bucketFillInkShape(shape: InkShape, point: InkSurfacePoint, colo
   return { ...shape, fill };
 }
 
-/** Moves one pixel through a Cuboid or cube-Sphere chart edge without a UV seam. */
+/** Moves one pixel through a finite Shape chart edge without introducing a UV seam. */
 function getInkFillNeighbour(shape: InkShape, current: InkFillPixelCoordinate, deltaX: number, deltaY: number): InkFillPixelCoordinate | null {
   if (current.id === 'plane') return { ...current, x: current.x + deltaX, y: current.y + deltaY };
   const dimensions = getInkFillSurfaceDimensions(shape, current.id);
@@ -634,6 +746,14 @@ function getInkFillNeighbour(shape: InkShape, current: InkFillPixelCoordinate, d
   const x = current.x + deltaX;
   const y = current.y + deltaY;
   if (x >= 0 && x < dimensions.width && y >= 0 && y < dimensions.height) return { ...current, x, y, ...dimensions };
+  if (shape.kind === 'cylinder') {
+    // The side chart is periodic around the circumference. Cap charts remain
+    // separate finite charts so a bucket cannot flow through a projected edge.
+    if (current.id !== 'side' || y < 0 || y >= dimensions.height) return null;
+    const wrappedX = ((x % dimensions.width) + dimensions.width) % dimensions.width;
+    return { ...current, x: wrappedX, y, ...dimensions };
+  }
+  if (!isCuboidFace(current.id)) return null;
   const u = (x + 0.5) / dimensions.width - 0.5;
   const v = (y + 0.5) / dimensions.height - 0.5;
   const cubePosition = getInkCuboidFacePosition(current.id, u, v);
@@ -643,13 +763,13 @@ function getInkFillNeighbour(shape: InkShape, current: InkFillPixelCoordinate, d
     const nextDimensions = getInkFillSurfaceDimensions(shape, chart.face)!;
     return { id: chart.face, x: clampInteger(Math.floor((chart.u + 0.5) * nextDimensions.width), 0, nextDimensions.width - 1), y: clampInteger(Math.floor((chart.v + 0.5) * nextDimensions.height), 0, nextDimensions.height - 1), ...nextDimensions };
   }
-  if (shape.kind !== 'cuboid') return null;
+  if (shape.kind !== 'cuboid' && shape.kind !== 'frustum') return null;
   const chart = getInkCuboidChart(cubePosition);
   const nextDimensions = getInkFillSurfaceDimensions(shape, chart.face)!;
   return { id: chart.face, x: clampInteger(Math.floor((chart.u + 0.5) * nextDimensions.width), 0, nextDimensions.width - 1), y: clampInteger(Math.floor((chart.v + 0.5) * nextDimensions.height), 0, nextDimensions.height - 1), ...nextDimensions };
 }
 
-/** Resamples only finite Fill charts after an intrinsic Cuboid/Sphere size change. */
+/** Resamples only finite Fill charts after an intrinsic dimension change. */
 export function resampleInkShapeFill(previous: InkShape, next: InkShape): InkShape {
   if (previous.kind !== next.kind || previous.fill.surfaces.length === 0) return next;
   if (next.kind === 'plane') return next;
@@ -744,6 +864,19 @@ function getInkFillPixelCoordinate(shape: InkShape, point: InkSurfacePoint): Ink
     const dimensions = getInkFillSurfaceDimensions(shape, chart.face)!;
     return { id: chart.face, x: (chart.u + 0.5) * dimensions.width, y: (chart.v + 0.5) * dimensions.height, ...dimensions };
   }
+  if (shape.kind === 'cylinder' && isInkCylinderStrokePoint(point)) {
+    const dimensions = getInkFillSurfaceDimensions(shape, point.surface)!;
+    return {
+      id: point.surface,
+      x: (point.u + 0.5) * dimensions.width,
+      y: (point.v + 0.5) * dimensions.height,
+      ...dimensions,
+    };
+  }
+  if (shape.kind === 'frustum' && isInkCuboidStrokePoint(point)) {
+    const dimensions = getInkFillSurfaceDimensions(shape, point.face)!;
+    return { id: point.face, x: (point.u + 0.5) * dimensions.width, y: (point.v + 0.5) * dimensions.height, ...dimensions };
+  }
   return null;
 }
 
@@ -753,7 +886,33 @@ function getInkFillSurfaceDimensions(shape: InkShape, id: InkFillSurfaceId): { w
     const side = Math.max(1, Math.ceil(shape.radius * 2 * INK_FILL_PIXELS_PER_WORLD_UNIT));
     return { width: side, height: side };
   }
+  if (shape.kind === 'cylinder') {
+    if (id === 'side') {
+      return {
+        width: Math.max(1, Math.ceil(Math.PI * 2 * shape.radius * INK_FILL_PIXELS_PER_WORLD_UNIT)),
+        height: Math.max(1, Math.ceil(shape.height * INK_FILL_PIXELS_PER_WORLD_UNIT)),
+      };
+    }
+    if (id === 'top' || id === 'bottom') {
+      const side = Math.max(1, Math.ceil(shape.radius * 2 * INK_FILL_PIXELS_PER_WORLD_UNIT));
+      return { width: side, height: side };
+    }
+    return null;
+  }
   if (id === 'plane') return null;
+  if (shape.kind === 'frustum') {
+    if (id === 'positive-y' || id === 'negative-y') {
+      const size = id === 'positive-y' ? shape.topSize : shape.bottomSize;
+      const pixels = Math.max(1, Math.ceil(size * INK_FILL_PIXELS_PER_WORLD_UNIT));
+      return { width: pixels, height: pixels };
+    }
+    const horizontal = (shape.topSize + shape.bottomSize) * 0.5;
+    const vertical = Math.hypot(shape.height, (shape.topSize - shape.bottomSize) * 0.5);
+    return {
+      width: Math.max(1, Math.ceil(horizontal * INK_FILL_PIXELS_PER_WORLD_UNIT)),
+      height: Math.max(1, Math.ceil(vertical * INK_FILL_PIXELS_PER_WORLD_UNIT)),
+    };
+  }
   const horizontal = id === 'positive-x' || id === 'negative-x' ? shape.size.z : shape.size.x;
   const vertical = id === 'positive-y' || id === 'negative-y' ? shape.size.z : shape.size.y;
   return {
@@ -815,6 +974,45 @@ function getInkCuboidFacePosition(face: InkCuboidFace, u: number, v: number): Ve
   if (face === 'negative-y') return new Vector3(u, -0.5, -v);
   if (face === 'positive-z') return new Vector3(u, v, 0.5);
   return new Vector3(-u, v, -0.5);
+}
+
+export function getInkCylinderSurfacePosition(shape: InkCylinderShape, point: InkCylinderStrokePoint): Vector3 {
+  if (point.surface === 'side') {
+    const angle = (point.u + 0.5) * Math.PI * 2;
+    return new Vector3(Math.cos(angle) * shape.radius, point.v * shape.height, Math.sin(angle) * shape.radius);
+  }
+  const y = point.surface === 'top' ? shape.height * 0.5 : -shape.height * 0.5;
+  return new Vector3(point.u * shape.radius * 2, y, point.v * shape.radius * 2);
+}
+
+/** Converts a picked local cylinder surface position back to its authored chart point. */
+export function getInkCylinderSurfacePoint(
+  shape: InkCylinderShape,
+  position: Vector3,
+  surface: InkCylinderSurface,
+  pressure: number,
+): InkCylinderStrokePoint {
+  if (surface === 'side') {
+    const angle = Math.atan2(position.z, position.x);
+    const wrappedAngle = angle < 0 ? angle + Math.PI * 2 : angle;
+    return { surface, u: wrappedAngle / (Math.PI * 2) - 0.5, v: position.y / shape.height, pressure };
+  }
+  return { surface, u: position.x / (shape.radius * 2), v: position.z / (shape.radius * 2), pressure };
+}
+
+export function getInkFrustumFacePosition(shape: InkFrustumShape, point: InkCuboidStrokePoint): Vector3 {
+  const halfHeight = shape.height * 0.5;
+  const topHalf = shape.topSize * 0.5;
+  const bottomHalf = shape.bottomSize * 0.5;
+  if (point.face === 'positive-y') return new Vector3(point.u * shape.topSize, halfHeight, point.v * shape.topSize);
+  if (point.face === 'negative-y') return new Vector3(point.u * shape.bottomSize, -halfHeight, -point.v * shape.bottomSize);
+  const progress = point.v + 0.5;
+  const halfSize = bottomHalf + (topHalf - bottomHalf) * progress;
+  const y = -halfHeight + shape.height * progress;
+  if (point.face === 'positive-x') return new Vector3(halfSize, y, point.u * halfSize * 2);
+  if (point.face === 'negative-x') return new Vector3(-halfSize, y, -point.u * halfSize * 2);
+  if (point.face === 'positive-z') return new Vector3(point.u * halfSize * 2, y, halfSize);
+  return new Vector3(-point.u * halfSize * 2, y, -halfSize);
 }
 
 function ensureInkFillSurface(fill: InkFillLayer, id: InkFillSurfaceId, width?: number, height?: number): InkFillSurface {
@@ -1145,7 +1343,7 @@ function upgradeShapes(value: unknown): InkShape[] | null {
     const withNormalOutset = upgradeLegacyNormalOutset(rawShape);
     if (withNormalOutset && isInkShape(withNormalOutset)) {
       const withFill = withNormalOutset.fill ? withNormalOutset : { ...withNormalOutset, fill: createEmptyInkFillLayer() };
-      shapes.push((withFill.kind === 'plane' || withFill.kind === 'cuboid') && withFill.lastOutlineEnd === undefined
+      shapes.push((withFill.kind === 'plane' || withFill.kind === 'cuboid' || withFill.kind === 'frustum') && withFill.lastOutlineEnd === undefined
         ? { ...withFill, lastOutlineEnd: null }
         : withFill);
       continue;
@@ -1439,6 +1637,8 @@ function resolveInkShapePointLocal(shape: InkShape, point: InkSurfacePoint): { p
   }
   if (shape.kind === 'cuboid' && isInkCuboidStrokePoint(point)) return resolveCuboidPoint(point);
   if (shape.kind === 'sphere' && isInkSphereStrokePoint(point)) return resolveSpherePoint(point);
+  if (shape.kind === 'cylinder' && isInkCylinderStrokePoint(point)) return resolveCylinderPoint(shape, point);
+  if (shape.kind === 'frustum' && isInkCuboidStrokePoint(point)) return resolveFrustumPoint(shape, point);
   return null;
 }
 
@@ -1456,6 +1656,24 @@ function resolveCuboidPoint(point: InkCuboidStrokePoint): { position: Vector3; n
 function resolveSpherePoint(point: InkSphereStrokePoint): { position: Vector3; normal: Vector3 } {
   const direction = new Vector3(point.x, point.y, point.z).normalize();
   return projectInkSphereDirection(direction);
+}
+
+function resolveCylinderPoint(shape: InkCylinderShape, point: InkCylinderStrokePoint): { position: Vector3; normal: Vector3 } {
+  const position = getInkCylinderSurfacePosition(shape, point);
+  if (point.surface === 'top') return { position, normal: new Vector3(0, 1, 0) };
+  if (point.surface === 'bottom') return { position, normal: new Vector3(0, -1, 0) };
+  return { position, normal: new Vector3(position.x, 0, position.z).normalize() };
+}
+
+function resolveFrustumPoint(shape: InkFrustumShape, point: InkCuboidStrokePoint): { position: Vector3; normal: Vector3 } {
+  const position = getInkFrustumFacePosition(shape, point);
+  if (point.face === 'positive-y') return { position, normal: new Vector3(0, 1, 0) };
+  if (point.face === 'negative-y') return { position, normal: new Vector3(0, -1, 0) };
+  const rise = (shape.bottomSize - shape.topSize) * 0.5;
+  if (point.face === 'positive-x') return { position, normal: new Vector3(shape.height, rise, 0).normalize() };
+  if (point.face === 'negative-x') return { position, normal: new Vector3(-shape.height, rise, 0).normalize() };
+  if (point.face === 'positive-z') return { position, normal: new Vector3(0, rise, shape.height).normalize() };
+  return { position, normal: new Vector3(0, rise, -shape.height).normalize() };
 }
 
 function projectInkSphereDirection(direction: Vector3): { position: Vector3; normal: Vector3 } {
@@ -1620,6 +1838,18 @@ function isInkShape(value: unknown): value is InkShape {
     && isShapeStrokes(candidate.strokes, isInkSphereStrokePoint)
     && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
     && (candidate.normalOutset === undefined || isInkNormalOutsetSettings(candidate.normalOutset));
+  if (candidate.kind === 'cylinder') return isFiniteRange(candidate.radius, 0.05, 64)
+    && isFiniteRange(candidate.height, 0.05, 64)
+    && isShapeStrokes(candidate.strokes, isInkCylinderStrokePoint)
+    && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
+    && (candidate.normalOutset === undefined || isInkNormalOutsetSettings(candidate.normalOutset));
+  if (candidate.kind === 'frustum') return isFiniteRange(candidate.topSize, 0.05, 64)
+    && isFiniteRange(candidate.bottomSize, 0.05, 64)
+    && isFiniteRange(candidate.height, 0.05, 64)
+    && isShapeStrokes(candidate.strokes, isInkCuboidStrokePoint)
+    && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
+    && (candidate.normalOutset === undefined || isInkNormalOutsetSettings(candidate.normalOutset))
+    && (candidate.lastOutlineEnd === undefined || candidate.lastOutlineEnd === null || isInkCuboidStrokePoint(candidate.lastOutlineEnd));
   return false;
 }
 
@@ -1646,7 +1876,7 @@ function isInkFillSurface(value: unknown): value is InkFillSurface {
   const finiteSize = (candidate.width === undefined && candidate.height === undefined)
     || (Number.isInteger(candidate.width) && candidate.width! > 0 && Number.isInteger(candidate.height) && candidate.height! > 0);
   const ids = new Set<string>();
-  return (candidate.id === 'plane' || isCuboidFace(candidate.id))
+  return (candidate.id === 'plane' || isCuboidFace(candidate.id) || isInkCylinderSurface(candidate.id))
     && finiteSize
     && Array.isArray(candidate.blocks)
     && candidate.blocks.every((block) => isInkFillBlock(block) && !ids.has(`${block.x},${block.y}`) && !!ids.add(`${block.x},${block.y}`));
@@ -1702,6 +1932,19 @@ function isInkSphereStrokePoint(value: unknown): value is InkSphereStrokePoint {
   return lengthSquared >= 0.999 && lengthSquared <= 1.001;
 }
 
+function isInkCylinderStrokePoint(value: unknown): value is InkCylinderStrokePoint {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<InkCylinderStrokePoint>;
+  return isInkCylinderSurface(candidate.surface)
+    && isFiniteRange(candidate.u, -0.5, 0.5)
+    && isFiniteRange(candidate.v, -0.5, 0.5)
+    && isFiniteRange(candidate.pressure, 0.05, 8);
+}
+
+function isInkCylinderSurface(value: unknown): value is InkCylinderSurface {
+  return value === 'side' || value === 'top' || value === 'bottom';
+}
+
 function isLegacyInkSphereStrokePoint(value: unknown): value is { u: number; v: number; pressure: number } {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as { u?: unknown; v?: unknown; pressure?: unknown };
@@ -1739,7 +1982,7 @@ function isCompiledInkNormalOutset(value: unknown): value is CompiledInkNormalOu
 function isCompiledInkFillSurface(value: unknown): value is CompiledInkFillSurface {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<CompiledInkFillSurface>;
-  return (candidate.id === 'plane' || isCuboidFace(candidate.id))
+  return (candidate.id === 'plane' || isCuboidFace(candidate.id) || isInkCylinderSurface(candidate.id))
     && Number.isInteger(candidate.minX)
     && Number.isInteger(candidate.minY)
     && Number.isInteger(candidate.width) && candidate.width! > 0
@@ -1787,6 +2030,8 @@ export function hashInkGroupSource(
       ...(shape.kind === 'plane' ? { orientation: shape.orientation } : {}),
       ...(shape.kind === 'cuboid' ? { size: shape.size } : {}),
       ...(shape.kind === 'sphere' ? { radius: shape.radius } : {}),
+      ...(shape.kind === 'cylinder' ? { radius: shape.radius, height: shape.height } : {}),
+      ...(shape.kind === 'frustum' ? { topSize: shape.topSize, bottomSize: shape.bottomSize, height: shape.height } : {}),
       geometrySourceHash: geometryHashByShapeId.get(shape.id) ?? hashInkShapeSource(shape),
     })),
   });
@@ -1795,10 +2040,26 @@ export function hashInkGroupSource(
 /** Stroke, Fill, and normal-outset configuration changes require a new canonical Shape payload. */
 /** Full author-data hash for one Shape; Worker compilation owns this hot path. */
 export function hashInkShapeSource(shape: InkShape): string {
-  return hashInkData({ id: shape.id, kind: shape.kind, strokes: shape.strokes, fill: shape.fill, normalOutset: shape.normalOutset });
+  return hashInkData({
+    id: shape.id,
+    kind: shape.kind,
+    strokes: shape.strokes,
+    fill: shape.fill,
+    normalOutset: shape.normalOutset,
+    ...(shape.kind === 'cylinder' ? { radius: shape.radius, height: shape.height } : {}),
+    ...(shape.kind === 'frustum' ? { topSize: shape.topSize, bottomSize: shape.bottomSize, height: shape.height } : {}),
+  });
 }
 
-function hashInkRibbonSource(shape: InkShape): string { return hashInkData({ id: shape.id, kind: shape.kind, strokes: shape.strokes }); }
+function hashInkRibbonSource(shape: InkShape): string {
+  return hashInkData({
+    id: shape.id,
+    kind: shape.kind,
+    strokes: shape.strokes,
+    ...(shape.kind === 'cylinder' ? { radius: shape.radius, height: shape.height } : {}),
+    ...(shape.kind === 'frustum' ? { topSize: shape.topSize, bottomSize: shape.bottomSize, height: shape.height } : {}),
+  });
+}
 function hashInkData(source: unknown): string { return hashDerivedAssetSource(source); }
 
 function parseInkColor(value: string): { r: number; g: number; b: number } {

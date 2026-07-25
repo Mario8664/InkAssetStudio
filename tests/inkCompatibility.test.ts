@@ -3,9 +3,13 @@ import {
   INK_COMPILED_FORMAT_VERSION,
   compileInkShape,
   createInkCuboidShape,
+  createInkCylinderShape,
+  createInkFrustumShape,
   createInkOutlineStroke,
   createInkPlaneShape,
   createInkSphereShape,
+  getInkCylinderSurfacePoint,
+  getInkCylinderSurfacePosition,
   paintInkFill,
   resampleInkShapeFill,
   type InkShape,
@@ -36,6 +40,22 @@ describe('Painting-compatible Ink Shapes', () => {
         { x: 0.9238795325, y: 0.3826834324, z: 0, pressure: 0.9 },
       ],
     },
+    {
+      label: 'Cylinder',
+      shape: createInkCylinderShape(),
+      points: [
+        { surface: 'side', u: -0.25, v: 0, pressure: 0.4 },
+        { surface: 'side', u: 0.25, v: 0.1, pressure: 0.9 },
+      ],
+    },
+    {
+      label: 'Frustum',
+      shape: createInkFrustumShape(),
+      points: [
+        { face: 'positive-z', u: -0.25, v: 0, pressure: 0.4 },
+        { face: 'positive-z', u: 0.25, v: 0.1, pressure: 0.9 },
+      ],
+    },
   ];
 
   for (const entry of cases) {
@@ -53,7 +73,7 @@ describe('Painting-compatible Ink Shapes', () => {
     });
   }
 
-  it('compiles Normal Outset as v13 Shape configuration without rebuilding Ribbon data', () => {
+  it('compiles Normal Outset as v14 Shape configuration without rebuilding Ribbon data', () => {
     const shape = createInkCuboidShape();
     const outlined = {
       ...shape,
@@ -69,7 +89,7 @@ describe('Painting-compatible Ink Shapes', () => {
     } as InkShape;
     const after = compileInkShape(enabled, undefined, before);
 
-    expect(INK_COMPILED_FORMAT_VERSION).toBe(13);
+    expect(INK_COMPILED_FORMAT_VERSION).toBe(14);
     expect(after.normalOutset).toEqual({ color: '#5a3e16', distance: 0.075 });
     expect(after.ribbon).toBe(before.ribbon);
     expect(compileInkShape({ ...enabled, normalOutset: { ...enabled.normalOutset!, enabled: false } }).normalOutset).toBeNull();
@@ -92,5 +112,50 @@ describe('Painting-compatible Ink Shapes', () => {
     expect(after.height).toBe(before.height! * 3);
     expect(after.blocks).not.toHaveLength(0);
     expect(resized.strokes).toBe(painted.strokes);
+  });
+
+  it('resamples Cylinder and Frustum Fill charts while preserving their editable strokes', () => {
+    const cylinder = paintInkFill(
+      createInkCylinderShape(),
+      [{ surface: 'side', u: 0, v: 0, pressure: 1 }],
+      '#29adff',
+      0.12,
+      'circle',
+      false,
+    ) as Extract<InkShape, { kind: 'cylinder' }>;
+    const cylinderResized = resampleInkShapeFill(cylinder, { ...cylinder, radius: 1, height: 2 });
+    expect(cylinderResized.fill.surfaces.find((surface) => surface.id === 'side')!.width).toBeGreaterThan(
+      cylinder.fill.surfaces.find((surface) => surface.id === 'side')!.width!,
+    );
+    const frustum = paintInkFill(
+      createInkFrustumShape(),
+      [{ face: 'positive-y', u: 0, v: 0, pressure: 1 }],
+      '#29adff',
+      0.12,
+      'circle',
+      false,
+    ) as Extract<InkShape, { kind: 'frustum' }>;
+    const frustumResized = resampleInkShapeFill(frustum, { ...frustum, topSize: 2, bottomSize: 1.5, height: 2 });
+    expect(frustumResized.fill.surfaces.find((surface) => surface.id === 'positive-y')!.width).toBeGreaterThan(
+      frustum.fill.surfaces.find((surface) => surface.id === 'positive-y')!.width!,
+    );
+    expect(frustumResized.strokes).toBe(frustum.strokes);
+  });
+
+  it('round-trips Cylinder side and cap chart coordinates for picking', () => {
+    const shape = createInkCylinderShape();
+    for (const point of [
+      { surface: 'side' as const, u: -0.5, v: -0.2, pressure: 1 },
+      { surface: 'side' as const, u: -0.25, v: 0.1, pressure: 1 },
+      { surface: 'side' as const, u: 0.25, v: 0.3, pressure: 1 },
+      { surface: 'side' as const, u: 0.5, v: 0, pressure: 1 },
+      { surface: 'top' as const, u: 0.25, v: -0.15, pressure: 1 },
+      { surface: 'bottom' as const, u: -0.2, v: 0.4, pressure: 1 },
+    ]) {
+      const restored = getInkCylinderSurfacePoint(shape, getInkCylinderSurfacePosition(shape, point), point.surface, point.pressure);
+      expect(restored.surface).toBe(point.surface);
+      expect(restored.u).toBeCloseTo(point.u);
+      expect(restored.v).toBeCloseTo(point.v);
+    }
   });
 });

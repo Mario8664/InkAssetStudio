@@ -4,7 +4,6 @@ import {
   Color,
   DirectionalLight,
   DoubleSide,
-  FrontSide,
   Group,
   LineBasicMaterial,
   LineSegments,
@@ -20,7 +19,19 @@ import {
   type WebGLRenderTarget,
   type WebGLRenderer,
 } from 'three';
-import { compileInkShape, createInkCuboidShape, createInkOutlineStroke, createInkPlaneShape, createInkSphereGeometry, createInkSphereShape, paintInkFill } from '../src/domain/ink/ink';
+import {
+  compileInkShape,
+  createInkCuboidShape,
+  createInkCylinderGeometry,
+  createInkCylinderShape,
+  createInkFrustumGeometry,
+  createInkFrustumShape,
+  createInkOutlineStroke,
+  createInkPlaneShape,
+  createInkSphereGeometry,
+  createInkSphereShape,
+  paintInkFill,
+} from '../src/domain/ink/ink';
 import type { InkCuboidFace, InkShape } from '../src/domain/ink/ink';
 import { createTerrainTile } from '../src/domain/terrain/terrain';
 import { EditorViewportGuides } from '../src/render/EditorViewportGuides';
@@ -180,7 +191,7 @@ describe('Reference rendering', () => {
     disposeInkShapePreviewTree(sphere.root);
   });
 
-  it('keeps all Sphere faces outward and uses front-visible/back-shadow Fill sides', () => {
+  it('keeps all Sphere faces outward and uses double-visible/back-shadow Fill sides', () => {
     const sphereGeometry = createInkSphereGeometry(1);
     const positions = sphereGeometry.getAttribute('position');
     const indices = sphereGeometry.getIndex()!;
@@ -204,7 +215,7 @@ describe('Reference rendering', () => {
     );
     const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState(), { useSourceNormalOutset: true });
     const fill = root.getObjectByName('InkFillSurface') as Mesh;
-    expect((fill.material as ShaderMaterial).side).toBe(FrontSide);
+    expect((fill.material as ShaderMaterial).side).toBe(DoubleSide);
     expect((fill.userData.inkHardShadowDepthMaterial as ShaderMaterial).side).toBe(BackSide);
     const fillPositions = fill.geometry.getAttribute('position');
     const fillIndices = fill.geometry.getIndex()!;
@@ -213,6 +224,42 @@ describe('Reference rendering', () => {
     const third = new Vector3().fromBufferAttribute(fillPositions, fillIndices.getX(2));
     expect(second.clone().sub(first).cross(third.clone().sub(first)).z).toBeGreaterThan(0);
     disposeObjectTree(root);
+  });
+
+  it('builds outward Cylinder and Frustum geometry with double-visible Fill and live Normal Outset shells', () => {
+    for (const geometry of [createInkCylinderGeometry(0.75, 1.5), createInkFrustumGeometry(0.6, 1.2, 1.5)]) {
+      const positions = geometry.getAttribute('position');
+      const indices = geometry.getIndex()!;
+      for (let index = 0; index < indices.count; index += 3) {
+        const first = new Vector3().fromBufferAttribute(positions, indices.getX(index));
+        const second = new Vector3().fromBufferAttribute(positions, indices.getX(index + 1));
+        const third = new Vector3().fromBufferAttribute(positions, indices.getX(index + 2));
+        const normal = second.clone().sub(first).cross(third.clone().sub(first));
+        const centroid = first.clone().add(second).add(third).multiplyScalar(1 / 3);
+        expect(normal.dot(centroid)).toBeGreaterThan(0);
+      }
+      geometry.dispose();
+    }
+
+    const cylinder = createInkCylinderShape();
+    cylinder.normalOutset = { enabled: true, color: '#5a3e16', distance: 0.08 };
+    const frustum = createInkFrustumShape();
+    frustum.normalOutset = { enabled: true, color: '#5a3e16', distance: 0.08 };
+    const samples: Array<{ shape: InkShape; point: Parameters<typeof paintInkFill>[1][number] }> = [
+      { shape: cylinder, point: { surface: 'side', u: 0, v: 0, pressure: 1 } },
+      { shape: frustum, point: { face: 'positive-z', u: 0, v: 0, pressure: 1 } },
+    ];
+    for (const sample of samples) {
+      const painted = paintInkFill(sample.shape, [sample.point], '#29adff', 0.12, 'circle', false);
+      const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState(), { useSourceNormalOutset: true });
+      const fill = root.getObjectByName('InkFillSurface') as Mesh;
+      const shell = root.getObjectByName('InkNormalOutsetShell') as Mesh;
+      expect((fill.material as ShaderMaterial).side).toBe(DoubleSide);
+      expect((fill.userData.inkHardShadowDepthMaterial as ShaderMaterial).side).toBe(BackSide);
+      expect(shell).toBeInstanceOf(Mesh);
+      expect(shell.castShadow).toBe(false);
+      disposeObjectTree(root);
+    }
   });
 
   it('keeps Fill triangles outward on all six Cuboid charts', () => {

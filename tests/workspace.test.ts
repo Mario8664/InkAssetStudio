@@ -47,7 +47,7 @@ describe('Ink Studio work files', () => {
     expect(parsed.document.ink.embeddedAssets[0]!.group.compiled.shapes[0]!.ribbon.positions.length).toBeGreaterThan(0);
   });
 
-  it('upgrades v11 work files to v13 and treats missing Normal Outset as disabled', () => {
+  it('upgrades v11 work files to v14 and treats missing Normal Outset as disabled', () => {
     const legacy = structuredClone(createStudioDocument('Legacy v11')) as any;
     legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 11;
     const shape = legacy.ink.embeddedAssets[0].group.shapes[0];
@@ -59,8 +59,8 @@ describe('Ink Studio work files', () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const upgraded = parsed.document.ink.embeddedAssets[0]!.group;
-    expect(parsed.document.sourceCompatibility.paintingInkCompiledFormatVersion).toBe(13);
-    expect(upgraded.compiled.formatVersion).toBe(13);
+    expect(parsed.document.sourceCompatibility.paintingInkCompiledFormatVersion).toBe(14);
+    expect(upgraded.compiled.formatVersion).toBe(14);
     expect(upgraded.compiled.shapes[0]?.normalOutset).toBeNull();
   });
 
@@ -79,7 +79,7 @@ describe('Ink Studio work files', () => {
     if (!parsed.ok) return;
     const upgraded = parsed.document.ink.embeddedAssets[0]!.group;
     expect(upgraded.shapes[0]?.normalOutset).toEqual({ enabled: false, color: '#000000', distance: 0.22 });
-    expect(upgraded.compiled.formatVersion).toBe(13);
+    expect(upgraded.compiled.formatVersion).toBe(14);
     expect(upgraded.compiled.shapes[0]?.normalOutset).toBeNull();
   });
 
