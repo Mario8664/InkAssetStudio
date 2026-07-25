@@ -345,6 +345,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - Terrain、Ink、Group/Shape 选择与全部 Transform/尺寸手柄只接收 Apple Pencil。手指不得修改作者内容，鼠标不得作为移动端编辑输入的替代品。
 - Terrain 优先射线命中已有地块并按命中面放置相邻格，从而可以向上或向侧面搭建；空白处使用 X/Y/Z 三个零坐标工作面。一次 Brush 或 Rectangle 手势锁定工作轴和工作面。
 - Terrain 保留 Brush 与 Rectangle、Block/Slope/Corner Slope、Place/Erase 和四向旋转。Tile 类型与四向旋转都使用直接按钮；点选类型或方向后在主画面显示一秒半透明形状预览，实际绘制期间持续显示半透明落点或范围预览。
+- Terrain 放置预览沿用 Painting 的固定浅蓝色 `#74c7f7 / 0.42`；工具选择后的单块预览固定在世界坐标原点、关闭深度测试并置于最上层，不随相机移动。
 - Terrain 颜色只能从固定的 PICO-8 16 色集合中选择。它没有可编辑色板、任意颜色输入或取色器；只有 Ink 支持任意颜色和可编辑色板。
 - Group 与 Shape 的删除按钮位于左侧列表各自对应项右侧，并只删除该项。删除仍需确认，并作为一条 Undo 事务提交。
 - 新建 Plane 的方向可直接选择 X、Y、Z 或 Camera，与 Painting 当前 Ink Plane 语义一致。

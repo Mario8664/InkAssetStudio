@@ -50,8 +50,28 @@ import {
 } from '../src/render/InkGroupRenderer';
 import { hasRendererMaterial, InkHardShadowMap } from '../src/render/InkHardShadowMap';
 import { disposeObjectTree } from '../src/render/dispose';
+import { createTerrainPreviewMaterial, TERRAIN_PREVIEW_COLOR, TERRAIN_PREVIEW_OPACITY } from '../src/render/WorkspaceRenderer';
 
 describe('Reference rendering', () => {
+  it('uses the Painting fixed blue placement preview for both depth-tested and overlay previews', () => {
+    expect(TERRAIN_PREVIEW_COLOR).toBe('#74c7f7');
+    expect(TERRAIN_PREVIEW_OPACITY).toBe(0.42);
+    const placement = createTerrainPreviewMaterial(false);
+    expect(placement.color.getHexString()).toBe('74c7f7');
+    expect(placement.opacity).toBe(0.42);
+    expect(placement.depthTest).toBe(true);
+    expect(placement.depthWrite).toBe(false);
+    expect(placement.vertexColors).toBe(false);
+    const overlay = createTerrainPreviewMaterial(true);
+    expect(overlay.color.getHexString()).toBe('74c7f7');
+    expect(overlay.opacity).toBe(0.42);
+    expect(overlay.depthTest).toBe(false);
+    expect(overlay.depthWrite).toBe(false);
+    expect(overlay.vertexColors).toBe(false);
+    placement.dispose();
+    overlay.dispose();
+  });
+
   it('rebuilds only changed Terrain chunks and preserves triangle-to-tile raycast mapping', () => {
     const first = createTerrainTile('block', 0, 0, 0, 0, 'blue');
     const distant = createTerrainTile('slope', 90, 20, 0, 0, 'green');

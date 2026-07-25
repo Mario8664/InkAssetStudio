@@ -63,6 +63,9 @@ import { createTerrainBatchGeometry } from './terrainGeometry';
 import { disposeObjectTree } from './dispose';
 import { isFingerNavigationPointer } from '../editor/pointerInput';
 
+export const TERRAIN_PREVIEW_COLOR = '#74c7f7';
+export const TERRAIN_PREVIEW_OPACITY = 0.42;
+
 type InkRenderEntry = {
   source: InkGroupData;
   anchorKey: string;
@@ -401,11 +404,12 @@ export class WorkspaceRenderer {
     this.terrainToolPreviewRoot.clear();
     const mesh = new Mesh(
       createTerrainBatchGeometry([{ ...tile, x: 0, y: 0, z: 0 }]),
-      new MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.72, depthTest: false, depthWrite: false }),
+      createTerrainPreviewMaterial(true),
     );
     mesh.renderOrder = 3000;
+    this.terrainToolPreviewRoot.position.set(0, 0, 0);
+    this.terrainToolPreviewRoot.quaternion.identity();
     this.terrainToolPreviewRoot.add(mesh);
-    this.updateTerrainToolPreviewTransform();
     this.terrainToolPreviewTimer = window.setTimeout(() => {
       this.terrainToolPreviewTimer = null;
       disposeObjectTree(this.terrainToolPreviewRoot);
@@ -811,20 +815,13 @@ export class WorkspaceRenderer {
     this.terrainPreviewRoot.clear();
     if (!preview || preview.tiles.length === 0 || this.disposed) return;
     const material = preview.mode === 'place'
-      ? new MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.48, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })
+      ? createTerrainPreviewMaterial(false)
       : new MeshBasicMaterial({ color: 0xd35f5f, transparent: true, opacity: 0.5, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
     const mesh = new Mesh(createTerrainBatchGeometry(preview.tiles), material);
     mesh.renderOrder = 20;
     this.terrainPreviewRoot.add(mesh);
     this.requestRender();
   };
-
-  private updateTerrainToolPreviewTransform(): void {
-    if (this.terrainToolPreviewRoot.children.length === 0) return;
-    const local = new Vector3(0.68, -0.52, -3.2);
-    this.terrainToolPreviewRoot.position.copy(local.applyMatrix4(this.camera.matrixWorld));
-    this.terrainToolPreviewRoot.quaternion.copy(this.camera.quaternion);
-  }
 
   private intersectTerrainWorkPlane(axis: TerrainWorkAxis, coordinate: number): Vector3 | null {
     const normal = new Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
@@ -919,7 +916,6 @@ export class WorkspaceRenderer {
     this.frameRequested = false;
     if (this.disposed) return;
     this.camera.updateMatrixWorld();
-    this.updateTerrainToolPreviewTransform();
     this.editorGuides.update();
     this.referenceLayer.render(this.scene, this.camera, new Set<Object3D>([this.terrain.referenceRoot]));
     const previousTerrainVisibility = this.terrain.referenceRoot.visible;
@@ -928,6 +924,17 @@ export class WorkspaceRenderer {
     this.terrain.referenceRoot.visible = previousTerrainVisibility;
     this.composer.render();
   };
+}
+
+export function createTerrainPreviewMaterial(overlay: boolean): MeshBasicMaterial {
+  return new MeshBasicMaterial({
+    color: TERRAIN_PREVIEW_COLOR,
+    transparent: true,
+    opacity: TERRAIN_PREVIEW_OPACITY,
+    depthTest: !overlay,
+    depthWrite: false,
+    ...(overlay ? {} : { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
+  });
 }
 
 function helperKey(referenceId: string, shapeId: string): string {
