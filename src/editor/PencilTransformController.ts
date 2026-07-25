@@ -11,7 +11,7 @@ import {
   Vector3,
 } from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import type { InkShape, InkVector3 } from '../domain/ink/ink';
+import { resampleInkShapeFill, type InkShape, type InkVector3 } from '../domain/ink/ink';
 import type { StudioEditorSession } from '../domain/workspace/session';
 import {
   getInkReference,
@@ -249,17 +249,19 @@ export class PencilTransformController {
     const parameter = closestRayLineParameter(this.raycaster.ray.origin, this.raycaster.ray.direction, drag.worldOrigin, drag.worldAxis);
     const delta = parameter - drag.startParameter;
     if (drag.startShape.kind === 'cuboid') {
-      drag.currentShape = {
+      const resized = {
         ...drag.startShape,
         size: {
           ...drag.startShape.size,
           [drag.axis]: Math.max(0.05, drag.startShape.size[drag.axis] + delta * 2),
         },
       };
+      drag.currentShape = resampleInkShapeFill(drag.startShape, resized) as typeof drag.currentShape;
     } else {
-      drag.currentShape = { ...drag.startShape, radius: Math.max(0.05, drag.startShape.radius + delta) };
+      const resized = { ...drag.startShape, radius: Math.max(0.05, drag.startShape.radius + delta) };
+      drag.currentShape = resampleInkShapeFill(drag.startShape, resized) as typeof drag.currentShape;
     }
-    this.options.renderer.previewShapeTransform(drag.referenceId, drag.currentShape);
+    this.options.renderer.previewShapeIntrinsicSize(drag.referenceId, drag.currentShape);
     this.refreshDimensionHandles(this.options.store.getDocument(), drag.referenceId, drag.currentShape);
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -364,7 +366,7 @@ export class PencilTransformController {
     this.dimensionDrag = null;
     this.claimedPointerId = null;
     if (!drag) return;
-    this.options.renderer.previewShapeTransform(drag.referenceId, drag.startShape);
+    this.options.renderer.previewShapeIntrinsicSize(drag.referenceId, drag.startShape);
     if (this.options.renderer.canvas.hasPointerCapture(drag.pointerId)) this.options.renderer.canvas.releasePointerCapture(drag.pointerId);
     this.refreshDimensionHandles(this.options.store.getDocument(), drag.referenceId, drag.startShape);
   }

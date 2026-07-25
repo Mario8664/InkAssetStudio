@@ -246,7 +246,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 
 - 指针拖动期间仅维护临时 Ribbon 或 Fill 工作副本；松手后才形成一次作者源写入和一条 Undo/Redo 记录。
 - Ink 编译在 Worker 中完成；只编译受影响 Shape，并复用未变化 Shape 的 Ribbon/Fill 编译结果。
-- Shape Position/Rotation、Cuboid size 与 Sphere radius 使用已有 Mesh Transform 更新；Normal Outset 直接使用当前源配置预览。只有描边、Fill 或 Shape 拓扑的真实变化才替换相应渲染资源。
+- Shape Position/Rotation 使用已有 Mesh Transform 更新；Cuboid size 与 Sphere radius 是固有尺寸，保存在作者 Shape 数据中，不作为通用 Transform Scale。渲染时仅在 Shape 的内部内容坐标层应用尺寸，Normal Outset 壳以实际尺寸几何独立构建，`distance` 始终保持世界单位。尺寸变化只重采样当前 Shape 的有限 Fill 图表、刷新该 Shape 的辅助面和硬阴影，不重建整个场景。
 - 只要输入不变，普通相机导航、UI 变化和灯光颜色/强度变化不得触发全场景重编译或硬阴影深度重建。
 - Ink 硬阴影捕获必须隔离 Line、Points、Sprite 和全部编辑辅助对象；纯 Outline 与 Normal Outset 编辑不得使硬阴影深度图失效。
 - Terrain 修改只重建必要的 Reference 几何与阴影深度；不得以整份文档克隆、全场景序列化或 GPU 资源重建作为普通交互的便利回退。

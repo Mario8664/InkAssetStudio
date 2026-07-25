@@ -522,6 +522,19 @@ export class WorkspaceRenderer {
     this.requestRender();
   }
 
+  /** Updates only one Shape's intrinsic dimensions and finite Fill chart preview. */
+  previewShapeIntrinsicSize(referenceId: string, shape: InkShape): void {
+    const root = this.inkEntries.get(referenceId)?.shapes.get(shape.id);
+    const fills = compileInkFill(shape);
+    if (root) {
+      updateInkShapeFillSurfaces(root, fills, null, shape, this.inkLighting, INK_SHAPE_RENDER_OPTIONS);
+      applyInkShapeRenderTransform(root, shape);
+    }
+    this.syncSingleInkHelper(referenceId, shape);
+    if (fills.length > 0) this.hardShadow.markDirty();
+    this.requestRender();
+  }
+
   focusSelection(): void {
     if (!this.document || !this.session?.activeReferenceId) return;
     const reference = this.document.ink.assetReferences.find((candidate) => candidate.id === this.session!.activeReferenceId);

@@ -229,7 +229,10 @@ describe('Reference rendering', () => {
       shape = paintInkFill(shape, [{ face, u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
     }
     const root = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState(), { useSourceNormalOutset: true });
-    const fills = root.children.filter((child): child is Mesh => child instanceof Mesh && child.name === 'InkFillSurface');
+    const fills: Mesh[] = [];
+    root.traverse((child) => {
+      if (child instanceof Mesh && child.name === 'InkFillSurface') fills.push(child);
+    });
     expect(fills).toHaveLength(6);
     for (const fill of fills) {
       const face = fill.userData.inkFillSurfaceId as InkCuboidFace;
@@ -259,6 +262,38 @@ describe('Reference rendering', () => {
     expect(root.getObjectByName('InkNormalOutsetShell')).toBeUndefined();
     expect(disposeGeometry).toHaveBeenCalledOnce();
     expect(disposeMaterial).toHaveBeenCalledOnce();
+    disposeObjectTree(root);
+  });
+
+  it('keeps Cuboid dimensions intrinsic while Normal Outset remains a fixed world-unit distance', () => {
+    const shape = createInkCuboidShape();
+    shape.normalOutset = { enabled: true, color: '#5a3e16', distance: 0.08 };
+    const compiled = compileInkShape(shape);
+    const root = createInkShapeRenderRoot(compiled, shape, createInkFillLightingState(), { useSourceNormalOutset: true });
+    const content = root.getObjectByName('InkShapeContent') as Group;
+    const shell = root.getObjectByName('InkNormalOutsetShell') as Mesh;
+    const originalGeometry = shell.geometry;
+    const resized = { ...shape, size: { x: 3, y: 2, z: 0.5 } };
+
+    applyInkShapeRenderTransform(root, resized);
+    updateInkShapeNormalOutset(root, compiled.normalOutset, resized, { useSourceNormalOutset: true });
+    root.updateMatrixWorld(true);
+
+    expect(root.scale.toArray()).toEqual([1, 1, 1]);
+    expect(content.scale.toArray()).toEqual([3, 2, 0.5]);
+    expect(shell.geometry).not.toBe(originalGeometry);
+    expect(Array.from(shell.geometry.getAttribute('position').array)).toEqual([
+      -1.5, -1, -0.25,
+      1.5, -1, -0.25,
+      1.5, 1, -0.25,
+      -1.5, 1, -0.25,
+      -1.5, -1, 0.25,
+      1.5, -1, 0.25,
+      1.5, 1, 0.25,
+      -1.5, 1, 0.25,
+    ]);
+    expect(shell.getWorldScale(new Vector3()).toArray()).toEqual([1, 1, 1]);
+    expect((shell.material as ShaderMaterial).uniforms.inkNormalOutsetDistance!.value).toBe(0.08);
     disposeObjectTree(root);
   });
 

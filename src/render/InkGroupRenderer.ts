@@ -96,11 +96,13 @@ export function createInkShapeRenderRoot(
   const root = new Group();
   root.name = 'InkShape';
   root.userData.inkShapeId = shape.shapeId;
+  root.add(createInkShapeContentRoot());
   applyInkShapeRenderTransform(root, source);
-  for (const fill of shape.fill) root.add(createInkFillSurfaceMesh(fill, source, lighting));
+  const content = getInkShapeContentRoot(root);
+  for (const fill of shape.fill) content.add(createInkFillSurfaceMesh(fill, source, lighting));
   updateInkShapeNormalOutset(root, shape.normalOutset, source, options);
   const outline = createInkShapeRenderMesh(shape, source, false);
-  if (outline) root.add(outline);
+  if (outline) content.add(outline);
   return root;
 }
 
@@ -113,8 +115,9 @@ export function updateInkShapeFillSurfaces(
   lighting = createInkFillLightingState(),
   options: InkShapeRenderOptions = {},
 ): void {
+  const content = getInkShapeContentRoot(root);
   const existing = new Map<InkFillSurfaceId, Mesh>();
-  for (const child of root.children) if (child instanceof Mesh && child.name === 'InkFillSurface' && typeof child.userData.inkFillSurfaceId === 'string') {
+  for (const child of content.children) if (child instanceof Mesh && child.name === 'InkFillSurface' && typeof child.userData.inkFillSurfaceId === 'string') {
     existing.set(child.userData.inkFillSurfaceId as InkFillSurfaceId, child);
   }
   const nextIds = new Set(fills.map((fill) => fill.id));
@@ -127,7 +130,7 @@ export function updateInkShapeFillSurfaces(
   for (const fill of fills) {
     const mesh = existing.get(fill.id);
     if (mesh) updateInkFillSurfaceMesh(mesh, fill, source);
-    else root.add(createInkFillSurfaceMesh(fill, source, lighting));
+    else content.add(createInkFillSurfaceMesh(fill, source, lighting));
   }
 
   updateInkShapeNormalOutset(root, normalOutset, source, options);
@@ -135,7 +138,8 @@ export function updateInkShapeFillSurfaces(
 
 /** Replaces only one Shape's compiled Ribbon while preserving its Fill resources. */
 export function updateInkShapeRibbon(root: Group, ribbon: CompiledInkRibbon): void {
-  const existing = root.children.find((child) => child instanceof Mesh && child.name === 'InkShapeRibbon') as Mesh | undefined;
+  const content = getInkShapeContentRoot(root);
+  const existing = content.children.find((child) => child instanceof Mesh && child.name === 'InkShapeRibbon') as Mesh | undefined;
   if (existing) {
     existing.removeFromParent();
     existing.geometry.dispose();
@@ -145,7 +149,7 @@ export function updateInkShapeRibbon(root: Group, ribbon: CompiledInkRibbon): vo
   if (ribbon.indices.length === 0) return;
   const replacement = createInkRibbonMesh(ribbon);
   replacement.name = 'InkShapeRibbon';
-  root.add(replacement);
+  content.add(replacement);
 }
 
 /** Creates, updates, or removes the whole-Shape shell from live source settings. */
@@ -165,7 +169,7 @@ export function updateInkShapeNormalOutset(
     return;
   }
   if (existing) {
-    updateInkNormalOutsetMesh(existing, next);
+    updateInkNormalOutsetMesh(existing, next, source);
     return;
   }
   root.add(createInkNormalOutsetMesh(next, source));
@@ -261,13 +265,21 @@ export class InkRibbonPreview {
   }
 }
 
-/** Applies source Transform and intrinsic surface dimensions without scaling Ribbon width. */
+/**
+ * Applies the authored Shape transform. Intrinsic dimensions live on the
+ * content-coordinate child rather than the Shape transform itself, leaving
+ * Normal Outset geometry in true world units.
+ */
 export function applyInkShapeRenderTransform(target: Object3D, shape: InkShape): void {
   target.position.set(shape.position.x, shape.position.y, shape.position.z);
   target.rotation.set(shape.rotation.x, shape.rotation.y, shape.rotation.z, 'YXZ');
-  if (shape.kind === 'cuboid') target.scale.set(shape.size.x, shape.size.y, shape.size.z);
-  else if (shape.kind === 'sphere') target.scale.setScalar(shape.radius);
-  else target.scale.set(1, 1, 1);
+  const content = target instanceof Group ? findInkShapeContentRoot(target) : null;
+  if (content) {
+    target.scale.set(1, 1, 1);
+    applyInkShapeContentDimensions(content, shape);
+    return;
+  }
+  applyInkShapeContentDimensions(target, shape);
 }
 
 /** Creates one independently replaceable Ink Shape render mesh. */
@@ -302,12 +314,21 @@ function createInkNormalOutsetMesh(outset: InkNormalOutsetRenderSettings, shape:
   if (!geometry) throw new Error(`Normal outset is unsupported for Ink ${shape.kind}.`);
   const mesh = new Mesh(geometry, createInkNormalOutsetMaterial(outset, shape));
   mesh.name = 'InkNormalOutsetShell';
+  mesh.userData.inkNormalOutsetGeometryKey = getInkNormalOutsetGeometryKey(shape);
   mesh.visible = outset.enabled;
   mesh.castShadow = false;
   return mesh;
 }
 
-function updateInkNormalOutsetMesh(mesh: Mesh, outset: InkNormalOutsetRenderSettings): void {
+function updateInkNormalOutsetMesh(mesh: Mesh, outset: InkNormalOutsetRenderSettings, shape: InkShape): void {
+  const geometryKey = getInkNormalOutsetGeometryKey(shape);
+  if (mesh.userData.inkNormalOutsetGeometryKey !== geometryKey) {
+    mesh.geometry.dispose();
+    const geometry = createInkNormalOutsetGeometry(shape);
+    if (!geometry) throw new Error(`Normal outset is unsupported for Ink ${shape.kind}.`);
+    mesh.geometry = geometry;
+    mesh.userData.inkNormalOutsetGeometryKey = geometryKey;
+  }
   const uniforms = (mesh.material as ShaderMaterial).uniforms;
   (uniforms.inkNormalOutsetColor!.value as Color).set(outset.color);
   uniforms.inkNormalOutsetDistance!.value = outset.distance;
@@ -320,23 +341,26 @@ function disposeInkNormalOutsetMesh(mesh: Mesh): void {
 }
 
 function createInkNormalOutsetGeometry(shape: InkShape): BufferGeometry | null {
-  if (shape.kind === 'cuboid') return createAveragedNormalCuboidGeometry();
-  if (shape.kind === 'sphere') return createInkSphereGeometry(1);
+  if (shape.kind === 'cuboid') return createAveragedNormalCuboidGeometry(shape.size);
+  if (shape.kind === 'sphere') return createInkSphereGeometry(shape.radius);
   return null;
 }
 
 /** Shared corners and equal-weight corner normals keep the Cuboid shell continuous. */
-function createAveragedNormalCuboidGeometry(): BufferGeometry {
+function createAveragedNormalCuboidGeometry(size: Readonly<{ x: number; y: number; z: number }>): BufferGeometry {
+  const halfX = size.x * 0.5;
+  const halfY = size.y * 0.5;
+  const halfZ = size.z * 0.5;
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new Float32BufferAttribute([
-    -0.5, -0.5, -0.5,
-    0.5, -0.5, -0.5,
-    0.5, 0.5, -0.5,
-    -0.5, 0.5, -0.5,
-    -0.5, -0.5, 0.5,
-    0.5, -0.5, 0.5,
-    0.5, 0.5, 0.5,
-    -0.5, 0.5, 0.5,
+    -halfX, -halfY, -halfZ,
+    halfX, -halfY, -halfZ,
+    halfX, halfY, -halfZ,
+    -halfX, halfY, -halfZ,
+    -halfX, -halfY, halfZ,
+    halfX, -halfY, halfZ,
+    halfX, halfY, halfZ,
+    -halfX, halfY, halfZ,
   ], 3));
   geometry.setIndex([
     4, 5, 7, 5, 6, 7,
@@ -358,6 +382,35 @@ function createAveragedNormalCuboidGeometry(): BufferGeometry {
     -cornerNormal, cornerNormal, cornerNormal,
   ], 3));
   return geometry;
+}
+
+function getInkNormalOutsetGeometryKey(shape: InkShape): string {
+  if (shape.kind === 'cuboid') return `cuboid:${shape.size.x}:${shape.size.y}:${shape.size.z}`;
+  if (shape.kind === 'sphere') return `sphere:${shape.radius}`;
+  return 'plane';
+}
+
+function createInkShapeContentRoot(): Group {
+  const content = new Group();
+  content.name = 'InkShapeContent';
+  return content;
+}
+
+function findInkShapeContentRoot(root: Group): Group | null {
+  const content = root.children.find((child) => child instanceof Group && child.name === 'InkShapeContent');
+  return content instanceof Group ? content : null;
+}
+
+function getInkShapeContentRoot(root: Group): Group {
+  const content = findInkShapeContentRoot(root);
+  if (!content) throw new Error('Ink Shape render root is missing its content coordinate space.');
+  return content;
+}
+
+function applyInkShapeContentDimensions(target: Object3D, shape: InkShape): void {
+  if (shape.kind === 'cuboid') target.scale.set(shape.size.x, shape.size.y, shape.size.z);
+  else if (shape.kind === 'sphere') target.scale.setScalar(shape.radius);
+  else target.scale.set(1, 1, 1);
 }
 
 function createInkFillSurfaceMesh(fill: CompiledInkFillSurface, shape: InkShape, lighting: InkFillLightingState): Mesh {

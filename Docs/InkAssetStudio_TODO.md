@@ -38,7 +38,7 @@
 - 多 Group Outliner、Group 新建/删除/改名、连续 X/Y/Z 摆放、0/90/180/270° Y 轴摆放旋转。
 - Group Pivot 视口选择和 XZ 拖动摆放。
 - 每个 Group 支持任意多个 Plane、Cuboid、Sphere。
-- Shape 支持选择、删除、位置、XYZ 旋转、Cuboid 固有尺寸、Sphere 固有半径；不提供通用 Transform Scale。
+- Shape 支持选择、删除、位置、XYZ 旋转、Cuboid 固有尺寸、Sphere 固有半径；不提供通用 Transform Scale。Cuboid/Sphere 尺寸变更会只重采样当前 Shape 的有限 Fill 图表，Normal Outset 壳以真实尺寸几何渲染，外扩距离保持世界单位。
 - Cuboid/Sphere 支持 Painting 当前的 Normal Outset Shape 配置：启用、壳颜色与世界单位外扩距离可实时调整、Undo/Redo、保存和交换；Plane 不开放该设置。关闭时立即移除并释放壳资源。
 - Shape 视口拖动支持 XZ 移动和 Y 轴旋转，手势结束后才提交一次作者事务。
 - Shape 编辑辅助已与 Painting 当前视觉一致：选中 Surface 使用 `#63c7fa / 0.34`，未选中及 Draw 模式 Surface 使用 `#548097 / 0.16`；相应参考网格使用 `#b9ebff / 0.84` 与 `#7aa0ae / 0.42`。辅助面读取深度但不写入深度，不再使用黄色 wireframe。
@@ -94,8 +94,8 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 8 个 Vitest 文件、54 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
-- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere 网格密度，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、格式往返和限制、多个 Group、Plane/Cuboid/Sphere Outline/Fill 编译、Normal Outset v13 编译与资源释放、Shape GPU 资源复用、Sphere 与 Cuboid 六面朝外绕序、Fill 正面/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v11/v12 工作文件升级、篡改派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存语义、Undo/Redo 和连续输入合并。
+- 8 个 Vitest 文件、56 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere 网格密度，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、格式往返和限制、多个 Group、Plane/Cuboid/Sphere Outline/Fill 编译、Cuboid 固有尺寸与固定世界单位 Normal Outset 壳、Normal Outset v13 编译与资源释放、Shape GPU 资源复用、Sphere 与 Cuboid 六面朝外绕序、Fill 正面/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v11/v12 工作文件升级、篡改派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存语义、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
 真实 Chrome 自动验收命令：

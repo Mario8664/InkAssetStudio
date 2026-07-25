@@ -7,6 +7,7 @@ import {
   createInkPlaneShape,
   createInkSphereShape,
   paintInkFill,
+  resampleInkShapeFill,
   type InkShape,
   type InkSurfacePoint,
 } from '../src/domain/ink/ink';
@@ -72,5 +73,24 @@ describe('Painting-compatible Ink Shapes', () => {
     expect(after.normalOutset).toEqual({ color: '#5a3e16', distance: 0.075 });
     expect(after.ribbon).toBe(before.ribbon);
     expect(compileInkShape({ ...enabled, normalOutset: { ...enabled.normalOutset!, enabled: false } }).normalOutset).toBeNull();
+  });
+
+  it('resamples only finite Cuboid Fill charts when intrinsic size changes', () => {
+    const painted = paintInkFill(
+      createInkCuboidShape(),
+      [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }],
+      '#29adff',
+      0.12,
+      'circle',
+      false,
+    ) as Extract<InkShape, { kind: 'cuboid' }>;
+    const before = painted.fill.surfaces.find((surface) => surface.id === 'positive-z')!;
+    const resized = resampleInkShapeFill(painted, { ...painted, size: { x: 2, y: 3, z: 1 } });
+    const after = resized.fill.surfaces.find((surface) => surface.id === 'positive-z')!;
+
+    expect(after.width).toBe(before.width! * 2);
+    expect(after.height).toBe(before.height! * 3);
+    expect(after.blocks).not.toHaveLength(0);
+    expect(resized.strokes).toBe(painted.strokes);
   });
 });

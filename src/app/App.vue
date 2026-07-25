@@ -6,6 +6,7 @@ import {
   createInkPlaneShape,
   createInkSphereShape,
   getCameraFacingInkPlaneRotation,
+  resampleInkShapeFill,
   type InkShape,
   type InkVector3,
 } from '../domain/ink/ink';
@@ -392,14 +393,18 @@ function setShapeSize(axis: keyof InkVector3, event: Event): void {
   const shape = activeShape.value;
   if (!shape || shape.kind !== 'cuboid' || !session.activeReferenceId) return;
   const next = Math.max(0.05, finiteInput(event, shape.size[axis]));
-  store?.transact('Resize Ink Cuboid', (value) => updateInkShape(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'cuboid' ? { ...current, size: { ...current.size, [axis]: next } } : current));
+  store?.transact('Resize Ink Cuboid', (value) => updateInkShape(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'cuboid'
+    ? resampleInkShapeFill(current, { ...current, size: { ...current.size, [axis]: next } })
+    : current));
 }
 
 function setShapeRadius(event: Event): void {
   const shape = activeShape.value;
   if (!shape || shape.kind !== 'sphere' || !session.activeReferenceId) return;
   const next = Math.max(0.05, finiteInput(event, shape.radius));
-  store?.transact('Resize Ink Sphere', (value) => updateInkShape(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'sphere' ? { ...current, radius: next } : current));
+  store?.transact('Resize Ink Sphere', (value) => updateInkShape(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'sphere'
+    ? resampleInkShapeFill(current, { ...current, radius: next })
+    : current));
 }
 
 function setNormalOutsetEnabled(event: Event): void {

@@ -430,9 +430,9 @@ function forEachBoundsCorner(minimum: Vector3, maximum: Vector3, visit: (corner:
 }
 
 /**
- * Reuses every Shape whose local surface geometry is unchanged. Group anchors,
- * Shape transforms, Cuboid dimensions and Sphere radius are Mesh transforms,
- * so none of them invalidate the compiled local Ribbon.
+ * Reuses every Shape whose normalized local Ribbon is unchanged. Group anchors,
+ * Shape transforms, Cuboid dimensions and Sphere radius do not invalidate that
+ * Ribbon, although intrinsic dimension changes do rebuild their finite Fill chart.
  */
 export function compileInkGroup(
   source: Pick<InkGroupData, 'anchorPosition' | 'shapes'>,
