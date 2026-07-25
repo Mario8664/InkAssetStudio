@@ -155,6 +155,10 @@ export class InkEditorController {
       || !isApplePencilPointer(event)
       || event.pointerId !== this.pointerId
       || !this.usesRawPointerUpdates) return;
+    // iPad Safari can dispatch raw pen positions with a zero pressure while
+    // the following coalesced pointermove contains the actual Pencil force.
+    // Do not let such a raw event suppress the pressure-bearing fallback.
+    if (this.options.getSession().pressureEnabled && !hasUsablePencilPressure(event)) return;
     this.receivedRawPointerUpdate = true;
     this.appendEventSamples(event, false);
   };
@@ -373,6 +377,10 @@ export function resolvePointerPressure(
   if (!enabled || event.pointerType !== 'pen') return 1;
   if (!Number.isFinite(event.pressure) || event.pressure <= 0) return previousPressure ?? 1;
   return Math.min(1, Math.max(0.05, event.pressure));
+}
+
+export function hasUsablePencilPressure(event: Pick<PointerEvent, 'pointerType' | 'pressure'>): boolean {
+  return event.pointerType === 'pen' && Number.isFinite(event.pressure) && event.pressure > 0;
 }
 
 /** A raw update replaces only the next matching coalesced pointermove interval. */

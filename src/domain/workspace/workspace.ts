@@ -27,7 +27,9 @@ export const STUDIO_WORK_FORMAT = 'ink-asset-studio-work';
 export const STUDIO_WORK_FORMAT_VERSION = 1;
 export const PAINTING_INK_ASSET_SCHEMA_VERSION = 3;
 export const STUDIO_TERRAIN_SCHEMA_VERSION = 1;
-export const MAX_WORK_FILE_BYTES = 32 * 1024 * 1024;
+/** iPad import budget; author-content limits below remain the primary safety guard. */
+export const MAX_WORK_FILE_BYTES = 512 * 1024 * 1024;
+export const MAX_WORK_FILE_SIZE_LABEL = '512 MiB';
 export const MAX_TERRAIN_TILES = 20_000;
 export const MAX_INK_GROUPS = 500;
 export const MAX_SHAPES_PER_GROUP = 500;
@@ -47,6 +49,20 @@ export type InkStudioWorkFile = {
   terrain: { tiles: TileCell[] };
   ink: Pick<InkManagerData, 'embeddedAssets' | 'assetReferences'>;
   previewLighting: StudioPreviewLighting;
+};
+
+/**
+ * Exchange and IndexedDB snapshots contain only authoritative author data.
+ * Compiled Ribbon/Fill buffers and visual footprints are rebuilt in a Worker.
+ */
+export type SerializedInkStudioWorkFile = Omit<InkStudioWorkFile, 'ink'> & {
+  ink: {
+    embeddedAssets: Array<{
+      assetId: string;
+      group: Omit<InkGroupData, 'compiled' | 'visualFootprint'>;
+    }>;
+    assetReferences: InkAssetReference[];
+  };
 };
 
 export type WorkspaceValidationResult =
@@ -83,8 +99,8 @@ export function createEmptyStudioDocument(name = 'Untitled Ink Scene'): InkStudi
   };
 }
 
-export function parseStudioWorkFile(text: string): WorkspaceValidationResult {
-  if (new Blob([text]).size > MAX_WORK_FILE_BYTES) return { ok: false, error: 'The work file exceeds the 32 MB safety limit.' };
+export function parseStudioWorkFile(text: string, byteLength = new Blob([text]).size): WorkspaceValidationResult {
+  if (byteLength > MAX_WORK_FILE_BYTES) return { ok: false, error: `The work file exceeds the ${MAX_WORK_FILE_SIZE_LABEL} safety limit.` };
   let value: unknown;
   try { value = JSON.parse(text) as unknown; }
   catch { return { ok: false, error: 'The selected file is not valid JSON.' }; }
@@ -169,7 +185,20 @@ export function normalizeStudioDocument(value: unknown): WorkspaceValidationResu
 }
 
 export function serializeStudioDocument(document: InkStudioWorkFile): string {
-  return `${JSON.stringify(document, null, 2)}\n`;
+  return `${JSON.stringify(createStudioDocumentSourceSnapshot(document), null, 2)}\n`;
+}
+
+export function createStudioDocumentSourceSnapshot(document: InkStudioWorkFile): SerializedInkStudioWorkFile {
+  return {
+    ...document,
+    ink: {
+      embeddedAssets: document.ink.embeddedAssets.map((asset) => {
+        const { compiled: _compiled, visualFootprint: _visualFootprint, ...group } = asset.group;
+        return { assetId: asset.assetId, group };
+      }),
+      assetReferences: document.ink.assetReferences,
+    },
+  };
 }
 
 export function addInkGroup(

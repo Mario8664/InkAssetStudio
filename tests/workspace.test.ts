@@ -24,8 +24,31 @@ describe('Ink Studio work files', () => {
     expect(parsed.document.ink.assetReferences[1]?.anchorPosition).toEqual({ x: 2, y: 1, z: -1 });
   });
 
+  it('exports only authoritative Ink author data and reconstructs derived caches on import', () => {
+    const document = createStudioDocument('Source only');
+    const group = document.ink.embeddedAssets[0]!.group;
+    const shape = group.shapes[0]!;
+    document.ink.embeddedAssets[0]!.group = withCompiledInkGroup({
+      ...group,
+      shapes: [{
+        ...shape,
+        strokes: [createInkOutlineStroke([
+          { x: -0.25, y: 0, pressure: 0.4 },
+          { x: 0.25, y: 0, pressure: 0.8 },
+        ], '#ff004d', 0.04)],
+      }],
+    });
+    const serialized = JSON.parse(serializeStudioDocument(document)) as any;
+    expect(serialized.ink.embeddedAssets[0].group.compiled).toBeUndefined();
+    expect(serialized.ink.embeddedAssets[0].group.visualFootprint).toBeUndefined();
+    const parsed = parseStudioWorkFile(JSON.stringify(serialized));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.document.ink.embeddedAssets[0]!.group.compiled.shapes[0]!.ribbon.positions.length).toBeGreaterThan(0);
+  });
+
   it('upgrades v11 work files to v13 and treats missing Normal Outset as disabled', () => {
-    const legacy = JSON.parse(serializeStudioDocument(createStudioDocument('Legacy v11'))) as any;
+    const legacy = structuredClone(createStudioDocument('Legacy v11')) as any;
     legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 11;
     const shape = legacy.ink.embeddedAssets[0].group.shapes[0];
     delete shape.normalOutset;
@@ -42,7 +65,7 @@ describe('Ink Studio work files', () => {
   });
 
   it('retires v12 painted Normal Outset data into a disabled editable setting', () => {
-    const legacy = JSON.parse(serializeStudioDocument(createStudioDocument('Legacy v12'))) as any;
+    const legacy = structuredClone(createStudioDocument('Legacy v12')) as any;
     legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 12;
     const shape = legacy.ink.embeddedAssets[0].group.shapes[0];
     shape.kind = 'cuboid';
@@ -72,7 +95,7 @@ describe('Ink Studio work files', () => {
       ], '#ff004d', 0.04)],
     };
     document.ink.embeddedAssets[0]!.group = withCompiledInkGroup({ ...group, shapes: [authored] });
-    const untrusted = JSON.parse(serializeStudioDocument(document)) as any;
+    const untrusted = structuredClone(document) as any;
     const persisted = untrusted.ink.embeddedAssets[0].group.compiled.shapes[0];
     expect(persisted.ribbon.positions.length).toBeGreaterThan(0);
     persisted.ribbon.positions = persisted.ribbon.positions.map(() => 999);

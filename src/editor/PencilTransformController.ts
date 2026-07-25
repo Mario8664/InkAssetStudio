@@ -109,13 +109,17 @@ export class PencilTransformController {
       this.setVisible(false);
       return;
     }
-    this.setVisible(true);
-    this.controls.setMode(session.transformMode);
+    const intrinsicSizeMode = this.selection.kind === 'shape'
+      && this.selection.shape.kind !== 'plane'
+      && session.transformMode === 'resize';
+    const controlMode = session.transformMode === 'resize' ? 'translate' : session.transformMode;
+    this.setVisible(true, intrinsicSizeMode);
+    this.controls.setMode(controlMode);
     this.controls.setTranslationSnap(session.snapEnabled ? session.transformSnapUnit : null);
     this.controls.setRotationSnap(this.selection.kind === 'group' ? Math.PI / 2 : null);
-    this.controls.showX = this.selection.kind === 'shape' || session.transformMode === 'translate';
+    this.controls.showX = this.selection.kind === 'shape' || controlMode === 'translate';
     this.controls.showY = true;
-    this.controls.showZ = this.selection.kind === 'shape' || session.transformMode === 'translate';
+    this.controls.showZ = this.selection.kind === 'shape' || controlMode === 'translate';
     if (this.selection.kind === 'group') {
       this.proxy.position.set(this.selection.position.x, this.selection.position.y, this.selection.position.z);
       this.proxy.rotation.set(0, this.selection.rotation * Math.PI / 180, 0, 'YXZ');
@@ -124,7 +128,8 @@ export class PencilTransformController {
       const world = shapeWorldTransform(document, this.selection.referenceId, this.selection.shape);
       this.proxy.position.copy(world.position);
       this.proxy.quaternion.copy(world.quaternion);
-      this.refreshDimensionHandles(document, this.selection.referenceId, this.selection.shape);
+      if (intrinsicSizeMode) this.refreshDimensionHandles(document, this.selection.referenceId, this.selection.shape);
+      else this.clearDimensionHandles();
     }
     this.proxy.updateMatrixWorld(true);
     this.options.renderer.requestRender();
@@ -288,7 +293,9 @@ export class PencilTransformController {
 
   private readonly handleCameraChange = (): void => {
     const selection = this.selection;
-    if (selection?.kind === 'shape') this.refreshDimensionHandles(this.options.store.getDocument(), selection.referenceId, this.dimensionDrag?.currentShape ?? selection.shape);
+    if (selection?.kind === 'shape' && this.options.getSession().transformMode === 'resize') {
+      this.refreshDimensionHandles(this.options.store.getDocument(), selection.referenceId, this.dimensionDrag?.currentShape ?? selection.shape);
+    }
   };
 
   private pickDimensionHandle(clientX: number, clientY: number): { axis: 'x' | 'y' | 'z' } | null {
@@ -310,7 +317,9 @@ export class PencilTransformController {
 
   private refreshDimensionHandles(document: InkStudioWorkFile, referenceId: string, shape: InkShape): void {
     this.clearDimensionHandles();
-    if (shape.kind === 'plane' || this.options.getSession().mode !== 'shape') return;
+    if (shape.kind === 'plane'
+      || this.options.getSession().mode !== 'shape'
+      || this.options.getSession().transformMode !== 'resize') return;
     const world = shapeWorldTransform(document, referenceId, shape);
     this.dimensionRoot.position.copy(world.position);
     this.dimensionRoot.quaternion.copy(world.quaternion);
@@ -353,9 +362,9 @@ export class PencilTransformController {
     this.dimensionRoot.visible = false;
   }
 
-  private setVisible(visible: boolean): void {
+  private setVisible(visible: boolean, intrinsicSizeMode = false): void {
     this.visible = visible;
-    this.helper.visible = visible;
+    this.helper.visible = visible && !intrinsicSizeMode;
     this.controls.enabled = false;
     if (!visible) this.clearDimensionHandles();
     this.options.renderer.requestRender();

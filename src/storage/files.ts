@@ -1,4 +1,10 @@
-import { MAX_WORK_FILE_BYTES, serializeStudioDocument, type InkStudioWorkFile, type WorkspaceValidationResult } from '../domain/workspace/workspace';
+import {
+  MAX_WORK_FILE_BYTES,
+  MAX_WORK_FILE_SIZE_LABEL,
+  serializeStudioDocument,
+  type InkStudioWorkFile,
+  type WorkspaceValidationResult,
+} from '../domain/workspace/workspace';
 import { parseStudioWorkFileInWorker } from '../workers/workspaceLoader';
 
 export function downloadStudioDocument(document: InkStudioWorkFile): void {
@@ -12,8 +18,10 @@ export function downloadStudioDocument(document: InkStudioWorkFile): void {
 }
 
 export async function readStudioDocumentFile(file: File): Promise<WorkspaceValidationResult> {
-  if (file.size > MAX_WORK_FILE_BYTES) return { ok: false, error: 'The work file exceeds the 32 MB safety limit.' };
-  return parseStudioWorkFileInWorker(await file.text());
+  if (file.size > MAX_WORK_FILE_BYTES) return { ok: false, error: `The work file exceeds the ${MAX_WORK_FILE_SIZE_LABEL} safety limit.` };
+  // Blob/File structured cloning is cheap. Reading the UTF-8 text and parsing
+  // it inside the Worker keeps a large import off the interactive PWA thread.
+  return parseStudioWorkFileInWorker(file);
 }
 
 function sanitizeFileName(name: string): string {

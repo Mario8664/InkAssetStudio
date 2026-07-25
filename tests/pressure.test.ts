@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolvePointerPressure, shouldAppendCoalescedPointerMove } from '../src/editor/InkEditorController';
+import { hasUsablePencilPressure, resolvePointerPressure, shouldAppendCoalescedPointerMove } from '../src/editor/InkEditorController';
 import { normalizeStudioEditorSession } from '../src/domain/workspace/session';
 
 describe('Apple Pencil pressure option', () => {
@@ -20,6 +20,12 @@ describe('Apple Pencil pressure option', () => {
     expect(shouldAppendCoalescedPointerMove(true, false)).toBe(true);
     expect(shouldAppendCoalescedPointerMove(true, true)).toBe(false);
     expect(shouldAppendCoalescedPointerMove(false, true)).toBe(true);
+  });
+
+  it('does not treat zero-pressure raw Pencil events as a replacement for coalesced pressure samples', () => {
+    expect(hasUsablePencilPressure({ pointerType: 'pen', pressure: 0 })).toBe(false);
+    expect(hasUsablePencilPressure({ pointerType: 'pen', pressure: 0.37 })).toBe(true);
+    expect(hasUsablePencilPressure({ pointerType: 'touch', pressure: 0.37 })).toBe(false);
   });
 
   it('recovers invalid local session values without changing the default pressure policy', () => {

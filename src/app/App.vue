@@ -25,7 +25,6 @@ import {
   removeInkShape,
   renameInkGroup,
   updateInkReference,
-  updateInkShape,
   updateInkShapeAuthor,
   type InkStudioWorkFile,
 } from '../domain/workspace/workspace';
@@ -156,6 +155,12 @@ watch(() => [
   terrainController?.syncSession();
 });
 
+watch(activeShape, (shape) => {
+  // Planes have no intrinsic dimensions. Do not leave their inspector in a
+  // hidden Size/Radius mode after selecting one from a non-planar Shape.
+  if (shape?.kind === 'plane' && session.transformMode === 'resize') session.transformMode = 'translate';
+});
+
 watch(() => [session.transformMode, session.snapEnabled, session.transformSnapUnit] as const, () => {
   const current = store?.getDocument() ?? document.value;
   if (current) transformController?.sync(current, session);
@@ -190,6 +195,7 @@ function updateSession(update: Partial<StudioEditorSession>): void { Object.assi
 
 function setMode(mode: WorkspaceMode): void {
   session.mode = mode;
+  if (mode !== 'shape' && session.transformMode === 'resize') session.transformMode = 'translate';
   lightingPanelOpen.value = false;
   if (mode === 'draw' && !session.activeReferenceId && document.value?.ink.assetReferences[0]) {
     session.activeReferenceId = document.value.ink.assetReferences[0].id;
@@ -381,7 +387,7 @@ function setShapeVector(field: 'position' | 'rotation', axis: keyof InkVector3, 
   const shown = field === 'rotation' ? shape[field][axis] * 180 / Math.PI : shape[field][axis];
   const raw = finiteInput(event, shown);
   const next = field === 'rotation' ? raw * Math.PI / 180 : raw;
-  store?.transact(field === 'position' ? 'Move Ink Shape' : 'Rotate Ink Shape', (value) => updateInkShape(
+  store?.transact(field === 'position' ? 'Move Ink Shape' : 'Rotate Ink Shape', (value) => updateInkShapeAuthor(
     value,
     session.activeReferenceId!,
     shape.id,
@@ -393,7 +399,7 @@ function setShapeSize(axis: keyof InkVector3, event: Event): void {
   const shape = activeShape.value;
   if (!shape || shape.kind !== 'cuboid' || !session.activeReferenceId) return;
   const next = Math.max(0.05, finiteInput(event, shape.size[axis]));
-  store?.transact('Resize Ink Cuboid', (value) => updateInkShape(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'cuboid'
+  store?.transact('Resize Ink Cuboid', (value) => updateInkShapeAuthor(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'cuboid'
     ? resampleInkShapeFill(current, { ...current, size: { ...current.size, [axis]: next } })
     : current));
 }
@@ -402,7 +408,7 @@ function setShapeRadius(event: Event): void {
   const shape = activeShape.value;
   if (!shape || shape.kind !== 'sphere' || !session.activeReferenceId) return;
   const next = Math.max(0.05, finiteInput(event, shape.radius));
-  store?.transact('Resize Ink Sphere', (value) => updateInkShape(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'sphere'
+  store?.transact('Resize Ink Sphere', (value) => updateInkShapeAuthor(value, session.activeReferenceId!, shape.id, (current) => current.kind === 'sphere'
     ? resampleInkShapeFill(current, { ...current, radius: next })
     : current));
 }
@@ -693,7 +699,7 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
         <section>
           <template v-if="session.mode === 'select' || session.mode === 'shape'">
             <label>Transform Handle</label>
-            <div class="segmented"><button :class="{ active: session.transformMode === 'translate' }" @click="session.transformMode = 'translate'">Move XYZ</button><button :class="{ active: session.transformMode === 'rotate' }" @click="session.transformMode = 'rotate'">{{ session.mode === 'select' ? 'Rotate Y' : 'Rotate XYZ' }}</button></div>
+            <div class="segmented"><button :class="{ active: session.transformMode === 'translate' }" @click="session.transformMode = 'translate'">Move XYZ</button><button :class="{ active: session.transformMode === 'rotate' }" @click="session.transformMode = 'rotate'">{{ session.mode === 'select' ? 'Rotate Y' : 'Rotate XYZ' }}</button><button v-if="session.mode === 'shape' && activeShape?.kind !== 'plane'" :class="{ active: session.transformMode === 'resize' }" @click="session.transformMode = 'resize'">{{ activeShape?.kind === 'cuboid' ? 'Size XYZ' : 'Radius' }}</button></div>
             <div class="snap-settings">
               <label class="check-row"><input v-model="session.snapEnabled" type="checkbox" /> Snap</label>
               <label>Translation Unit <input type="number" min="0.001" max="1000" step="0.01" :value="session.transformSnapUnit" @change="setTransformSnapUnit" /></label>

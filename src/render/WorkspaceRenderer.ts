@@ -180,7 +180,10 @@ export class WorkspaceRenderer {
     this.controls.enableDamping = false;
     this.controls.minDistance = 1.5;
     this.controls.maxDistance = 80;
-    this.controls.maxPolarAngle = Math.PI * 0.49;
+    // Match Painting's editor-camera pitch range: orbit may pass the target
+    // into negative Y, while small pole margins prevent an inverted singularity.
+    this.controls.minPolarAngle = 0.01;
+    this.controls.maxPolarAngle = Math.PI - 0.01;
     // OrbitControls already separates Touch from mouse-like Pointer Events.
     // Null mouse bindings leave one/two-finger navigation intact while making
     // Apple Pencil and desktop mouse inert for camera movement.

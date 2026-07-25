@@ -1,18 +1,37 @@
-import type { InkGroupData } from '../domain/ink/ink';
+import type {
+  CompiledInkShape,
+  InkGroupData,
+  InkShape,
+  InkVisualFootprint,
+} from '../domain/ink/ink';
 
-export type InkCompileRequest = {
-  type: 'compile-group';
-  requestId: number;
-  assetId: string;
-  group: InkGroupData;
-};
+/** Author data retained by the compiler Worker; no GPU-ready arrays are copied here. */
+export type InkCompilerGroupSource = Pick<InkGroupData, 'id' | 'name' | 'anchorPosition' | 'placementRotation' | 'shapes'>;
+export type InkCompiledShapeMetadata = Pick<CompiledInkShape, 'shapeId' | 'sourceHash' | 'ribbonSourceHash'>;
+
+export type InkCompileRequest =
+  | {
+      type: 'initialize-group';
+      assetId: string;
+      group: InkCompilerGroupSource;
+      compiledShapes: InkCompiledShapeMetadata[];
+    }
+  | {
+      type: 'compile-shape';
+      requestId: number;
+      assetId: string;
+      shape: InkShape;
+    };
 
 export type InkCompileResponse =
   | {
-      type: 'compiled-group';
+      type: 'compiled-shape';
       requestId: number;
       assetId: string;
-      group: InkGroupData;
+      shapeId: string;
+      compiledShape: CompiledInkShape;
+      groupSourceHash: string;
+      visualFootprint: InkVisualFootprint;
     }
   | {
       type: 'compile-error';

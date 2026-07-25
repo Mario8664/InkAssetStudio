@@ -198,7 +198,7 @@ type InkStudioWorkFile = {
 
 其中 `InkEmbeddedAsset`、`InkAssetReference`、`InkGroupData`、`TileCell` 的字段和几何语义必须与目标 Painting 兼容版本一致。Studio 不保存已解析的冗余 `groups` 视图数组。
 
-`compiled` 数据是由作者源生成的派生缓存。Studio 可以持久化当前已验证的编译数据以缩短重开时间，但导入方绝不能信任它：导入到 Painting 时必须验证作者源、检查版本和哈希，并以目标项目的编译器重建或验证派生数据。交换文件的权威永远是作者源。
+`compiled` 数据是由作者源生成的派生缓存。`.inkstudio-work.json` 导出与 IndexedDB 草稿快照只保存作者源，不保存 Ribbon 顶点、Fill 上传数组、源哈希或 `visualFootprint`；重新打开、导入或未来进入 Painting 时均在 Worker 中重建派生数据。这样交换文件保持为可编辑的场景数据而非位图，避免重复保存渲染缓存。导入方绝不能信任旧文件可能携带的派生缓存：必须验证作者源、检查版本和哈希，并以目标项目的编译器重建或验证派生数据。交换文件的权威永远是作者源。
 
 ### 7.3 ID、引用与冲突规则
 
@@ -240,19 +240,19 @@ Ink Shape 辅助面必须与 Painting 当前编辑器保持一致，而不是使
 
 界面至少包含：顶部文档栏、可收起 Group Outliner、可收起 Shape/属性面板、主视口、底部 Ink 工具栏、地形工具抽屉、Undo/Redo 和导出入口。Undo/Redo 必须是带文字、始终直接可见且能清楚表达禁用状态的触控按钮，不能只显示难以辨认的小图标。触控目标必须适合 iPad，不能把桌面 Inspector 的窄行控件简单缩放后复用。
 
-Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合并事件；`pointerrawupdate` 仅作为浏览器支持时的增强，不能假设 iPad Safari 一定提供它。无压力、非 Pencil 或压感关闭时写入稳定的 `1`。手势被取消、失焦或失去 Pointer Capture 时必须丢弃未提交的临时操作并清理输入状态。
+Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合并事件；`pointerrawupdate` 仅作为浏览器支持时的增强，不能假设 iPad Safari 一定提供它。压感开启时，只有带有效非零压力的 raw 样本才能替代合并事件；零压力 raw 样本必须继续回退到合并事件，避免 iPad Safari 丢失真实 Pencil 压力。无压力、非 Pencil 或压感关闭时写入稳定的 `1`。手势被取消、失焦或失去 Pointer Capture 时必须丢弃未提交的临时操作并清理输入状态。
 
 ## 9. 性能、资源与可靠性要求
 
 - 指针拖动期间仅维护临时 Ribbon 或 Fill 工作副本；松手后才形成一次作者源写入和一条 Undo/Redo 记录。
-- Ink 编译在 Worker 中完成；只编译受影响 Shape，并复用未变化 Shape 的 Ribbon/Fill 编译结果。
+- Ink 编译在常驻 Worker 中完成；页面首次打开或 Group 增删 Shape 时才初始化该 Group 的作者源与轻量 Shape hash。一次笔画提交只跨线程发送受影响的作者 Shape，并只回传该 Shape 的派生缓存；未变化 Shape 的 Ribbon/Fill 数组必须留在主文档并复用。
 - Shape Position/Rotation 使用已有 Mesh Transform 更新；Cuboid size 与 Sphere radius 是固有尺寸，保存在作者 Shape 数据中，不作为通用 Transform Scale。渲染时仅在 Shape 的内部内容坐标层应用尺寸，Normal Outset 壳以实际尺寸几何独立构建，`distance` 始终保持世界单位。尺寸变化只重采样当前 Shape 的有限 Fill 图表、刷新该 Shape 的辅助面和硬阴影，不重建整个场景。
 - 只要输入不变，普通相机导航、UI 变化和灯光颜色/强度变化不得触发全场景重编译或硬阴影深度重建。
 - Ink 硬阴影捕获必须隔离 Line、Points、Sprite 和全部编辑辅助对象；纯 Outline 与 Normal Outset 编辑不得使硬阴影深度图失效。
 - Terrain 修改只重建必要的 Reference 几何与阴影深度；不得以整份文档克隆、全场景序列化或 GPU 资源重建作为普通交互的便利回退。
 - 每个 Three.js Geometry、Material、Texture、RenderTarget、Worker、事件监听、计时器和 PWA 页面 mount 都必须有单一所有者和明确 dispose 路径。
-- IndexedDB 写入必须节流并避免在 Pencil `pointermove` 中阻塞渲染；导出文件使用一致快照，不读取半提交的交互状态。
-- 原始导入文件需要设定可配置且可诊断的上限，特别是笔画点数、Shape 数量、Fill 块数量和单文件大小，避免 iPad 内存耗尽。
+- IndexedDB 写入必须节流并避免在 Pencil `pointermove` 中阻塞渲染；它与导出均使用一致的作者源快照，不读取半提交的交互状态或复制派生 GPU 上传数组。
+- 原始导入文件的当前上限为 `512 MiB`，并保留笔画点数、Shape 数量和 Fill 块数量等独立、可诊断的资源上限。`File`/`Blob` 必须直接交给导入 Worker 读取和解析，避免大文件文本先在 PWA 主线程复制；超过可用设备内存时导入必须明确失败，绝不写入半份草稿。
 
 ## 10. 验收标准
 
@@ -352,5 +352,5 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - Plane 在同一 Pencil 笔画中允许越出当前有限辅助面：离开有限面后继续与该 Shape 的无限作者平面求交，直到命中其它 Shape 或手势结束。
 - 一笔经过同一 Group 的多个 Shape 时，每个 Shape 的段和实时预览都保留；Fill/擦除也分别维护每个 Shape 的临时作者状态。
 - Fill 拖动只处理新增采样、只编译和上传变化 Shape 的 Fill；Terrain 只重建受影响分块；Transform 拖动只更新已有对象节点。普通 Pointer Move 不得构造完整临时文档或调用全局场景更新。
-- Group 模式提供位置和兼容数据格式的 Y 旋转手柄；Shape 模式提供 XYZ 位置/旋转手柄，Cuboid 另有三轴 Size Handle，Sphere 另有 Radius Handle。全部手柄只接收 Apple Pencil。
+- Group 模式提供位置和兼容数据格式的 Y 旋转手柄；Shape 模式将 Move、Rotate 与内在 Size/Radius 分为互斥的手柄模式。Cuboid 的 Size 模式只显示三轴 Size Handle，Sphere 的 Radius 模式只显示 Radius Handle；它们绝不作为通用 Transform Scale，也不与移动或旋转手柄混显。全部手柄只接收 Apple Pencil。
 - Editor Session 持久化 Snap 开关和 Translation Unit；默认单位为 `0.5`。启用后位置手柄持续吸附，不依赖 iPad 不便使用的 Ctrl 修饰键。

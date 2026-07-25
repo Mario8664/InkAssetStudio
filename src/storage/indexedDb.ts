@@ -1,5 +1,5 @@
 import type { StudioEditorSession } from '../domain/workspace/session';
-import type { InkStudioWorkFile } from '../domain/workspace/workspace';
+import { createStudioDocumentSourceSnapshot, type InkStudioWorkFile } from '../domain/workspace/workspace';
 
 const DATABASE_NAME = 'ink-asset-studio';
 const DATABASE_VERSION = 1;
@@ -14,18 +14,18 @@ export async function saveDocument(document: InkStudioWorkFile): Promise<number>
   const database = await openDatabase();
   const savedAt = Date.now();
   await transactionComplete(database, [DOCUMENT_STORE, SETTINGS_STORE], 'readwrite', (transaction) => {
-    transaction.objectStore(DOCUMENT_STORE).put(document, document.documentId);
+    transaction.objectStore(DOCUMENT_STORE).put(createStudioDocumentSourceSnapshot(document), document.documentId);
     transaction.objectStore(SETTINGS_STORE).put(document.documentId, CURRENT_DOCUMENT_KEY);
     transaction.objectStore(SETTINGS_STORE).put(savedAt, `${SAVED_AT_PREFIX}${document.documentId}`);
   });
   return savedAt;
 }
 
-export async function loadCurrentDocument(): Promise<InkStudioWorkFile | null> {
+export async function loadCurrentDocument(): Promise<unknown | null> {
   const database = await openDatabase();
   const id = await requestValue<string | undefined>(database.transaction(SETTINGS_STORE).objectStore(SETTINGS_STORE).get(CURRENT_DOCUMENT_KEY));
   if (!id) return null;
-  return (await requestValue<InkStudioWorkFile | undefined>(database.transaction(DOCUMENT_STORE).objectStore(DOCUMENT_STORE).get(id))) ?? null;
+  return (await requestValue<unknown | undefined>(database.transaction(DOCUMENT_STORE).objectStore(DOCUMENT_STORE).get(id))) ?? null;
 }
 
 export async function loadDocumentSavedAt(documentId: string): Promise<number | null> {

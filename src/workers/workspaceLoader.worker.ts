@@ -2,7 +2,7 @@ import { normalizeStudioDocument, parseStudioWorkFile, type WorkspaceValidationR
 
 type WorkspaceLoadRequest =
   | { operation: 'normalize'; value: unknown }
-  | { operation: 'parse'; text: string };
+  | { operation: 'parse-file'; file: File };
 
 type WorkerScope = {
   onmessage: ((event: MessageEvent<WorkspaceLoadRequest>) => void) | null;
@@ -11,10 +11,10 @@ type WorkerScope = {
 
 const workerScope = self as unknown as WorkerScope;
 
-workerScope.onmessage = (event): void => {
+workerScope.onmessage = async (event): Promise<void> => {
   try {
-    const result = event.data.operation === 'parse'
-      ? parseStudioWorkFile(event.data.text)
+    const result = event.data.operation === 'parse-file'
+      ? parseStudioWorkFile(await event.data.file.text(), event.data.file.size)
       : normalizeStudioDocument(event.data.value);
     workerScope.postMessage(result);
   } catch (error) {

@@ -337,7 +337,7 @@ export function withInkGroupCompiledSourceHash(data: InkGroupData): InkGroupData
     ...data,
     compiled: {
       ...data.compiled,
-      sourceHash: hashInkSource({ anchorPosition: data.anchorPosition, shapes: data.shapes }, data.compiled.shapes),
+      sourceHash: hashInkGroupSource({ anchorPosition: data.anchorPosition, shapes: data.shapes }, data.compiled.shapes),
     },
   };
 }
@@ -448,7 +448,7 @@ export function compileInkGroup(
   });
   return {
     formatVersion: INK_COMPILED_FORMAT_VERSION,
-    sourceHash: hashInkSource(source, shapes),
+    sourceHash: hashInkGroupSource(source, shapes),
     shapes,
   };
 }
@@ -986,7 +986,7 @@ export function isInkGroupData(value: unknown): value is InkGroupData {
   if (!isInkGroupSource(value)) return false;
   const candidate = value as Partial<InkGroupData>;
   return isCompiledInkGroup(candidate.compiled)
-    && candidate.compiled.sourceHash === hashInkSource(
+    && candidate.compiled.sourceHash === hashInkGroupSource(
       { anchorPosition: candidate.anchorPosition!, shapes: candidate.shapes! },
       candidate.compiled.shapes,
     )
@@ -1768,9 +1768,10 @@ function isCompiledInkRibbon(value: unknown): value is CompiledInkRibbon {
     && candidate.positions!.length === candidate.colors!.length;
 }
 
-function hashInkSource(
+/** Hashes Group transform metadata plus precomputed per-Shape source hashes. */
+export function hashInkGroupSource(
   source: Pick<InkGroupData, 'anchorPosition' | 'shapes'>,
-  compiledShapes?: readonly CompiledInkShape[],
+  compiledShapes?: readonly Pick<CompiledInkShape, 'shapeId' | 'sourceHash'>[],
 ): string {
   const geometryHashByShapeId = new Map(compiledShapes?.map((shape) => [shape.shapeId, shape.sourceHash]));
   // The Group hash preserves all Shape parameters while folding each immutable
@@ -1792,7 +1793,8 @@ function hashInkSource(
 }
 
 /** Stroke, Fill, and normal-outset configuration changes require a new canonical Shape payload. */
-function hashInkShapeSource(shape: InkShape): string {
+/** Full author-data hash for one Shape; Worker compilation owns this hot path. */
+export function hashInkShapeSource(shape: InkShape): string {
   return hashInkData({ id: shape.id, kind: shape.kind, strokes: shape.strokes, fill: shape.fill, normalOutset: shape.normalOutset });
 }
 

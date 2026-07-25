@@ -1,6 +1,6 @@
 # Ink Asset Studio 实现与验收记录
 
-更新日期：2026-07-25
+更新日期：2026-07-26
 
 ## 1. 当前结论
 
@@ -25,10 +25,10 @@
 - Painting Ink 作者数据兼容版本：资产 schema 3、编译格式 13；旧 v11 Studio 文件从作者源重建派生数据，缺少 Normal Outset 时按关闭处理；v12 painted Normal Outset 会迁移为关闭的可编辑 Shape 设置。
 - Terrain schema：1。
 - 一个工作场景可内嵌多个独立 Ink 源和多个摆放引用。
-- IndexedDB 保存当前场景和独立 Editor Session；作者内容修改使用 600 ms 节流自动保存，工具状态使用独立低频保存。
+- IndexedDB 保存当前场景的作者源快照和独立 Editor Session；作者内容修改使用 600 ms 节流自动保存，工具状态使用独立低频保存。Ribbon/Fill 派生缓存不进入该保存事务，恢复时在 Worker 中重建。
 - 顶栏显示保存中、本地已保存、最近保存时间和未导出提醒，并明确提示本地草稿不等于备份。
-- `.inkstudio-work.json` 支持随时导出和重新导入。
-- 导入前校验 32 MB 文件上限、格式版本、ID 唯一性、引用完整性、数值、颜色、地形、Shape、笔画点和稀疏 Fill 资源上限。
+- `.inkstudio-work.json` 支持随时导出和重新导入；导出只包含可编辑作者源、摆放、地形、灯光和兼容版本，不携带可重建的 Ribbon/Fill/footprint 缓存。
+- 导入前校验 `512 MiB` 文件上限、格式版本、ID 唯一性、引用完整性、数值、颜色、地形、Shape、笔画点和稀疏 Fill 资源上限；`File` 直接交给 Worker 读取、解析和编译，不在 PWA 主线程先复制完整文本。
 - 导入和本地草稿恢复在一次性 Worker 中完成校验与 Ink 重编译，结束后立即终止 Worker。
 - 导入和 IndexedDB 恢复不信任文件中的派生缓存，即使持久化哈希仍然匹配也会从作者源重编译；作者源始终是权威。
 - Undo/Redo 使用结构共享快照；一次绘制、一次地形拖动或一次 Group/Shape 拖动只产生一条历史记录。连续灯光滑杆/颜色输入会合并为一条历史记录。顶栏使用带文字的 `Undo` / `Redo` 触控按钮，并在 iPad 横竖屏保持直接可见。
@@ -38,7 +38,7 @@
 - 多 Group Outliner、Group 新建/删除/改名、连续 X/Y/Z 摆放、0/90/180/270° Y 轴摆放旋转。
 - Group Pivot 视口选择和 XZ 拖动摆放。
 - 每个 Group 支持任意多个 Plane、Cuboid、Sphere。
-- Shape 支持选择、删除、位置、XYZ 旋转、Cuboid 固有尺寸、Sphere 固有半径；不提供通用 Transform Scale。Cuboid/Sphere 尺寸变更会只重采样当前 Shape 的有限 Fill 图表，Normal Outset 壳以真实尺寸几何渲染，外扩距离保持世界单位。
+- Shape 支持选择、删除、位置、XYZ 旋转、Cuboid 固有尺寸、Sphere 固有半径；不提供通用 Transform Scale。Move、Rotate 与 Cuboid Size/Sphere Radius 是互斥视口手柄模式，尺寸手柄不会与移动或旋转手柄混显。Cuboid/Sphere 尺寸变更会只重采样当前 Shape 的有限 Fill 图表，Normal Outset 壳以真实尺寸几何渲染，外扩距离保持世界单位。
 - Cuboid/Sphere 支持 Painting 当前的 Normal Outset Shape 配置：启用、壳颜色与世界单位外扩距离可实时调整、Undo/Redo、保存和交换；Plane 不开放该设置。关闭时立即移除并释放壳资源。
 - Shape 视口拖动支持 XZ 移动和 Y 轴旋转，手势结束后才提交一次作者事务。
 - Shape 编辑辅助已与 Painting 当前视觉一致：选中 Surface 使用 `#63c7fa / 0.34`，未选中及 Draw 模式 Surface 使用 `#548097 / 0.16`；相应参考网格使用 `#b9ebff / 0.84` 与 `#7aa0ae / 0.42`。辅助面读取深度但不写入深度，不再使用黄色 wireframe。
@@ -50,10 +50,10 @@
 - 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。
 - 支持直线辅助；其端点状态保存在作者数据中，不进入编译几何哈希。
 - 调色板可新增、删除、直接改色和触控排序，最多 32 色，并作为 Editor Session 独立保存。
-- Apple Pencil 使用 Pointer Events、合并事件和可用时的 `pointerrawupdate`；手势取消、失焦和 Pointer Capture 丢失都会丢弃未提交临时数据并清理状态。
+- Apple Pencil 使用 Pointer Events、合并事件和可用时的 `pointerrawupdate`；压感开启时只有非零 raw 压力才取代合并事件，避免 iPad Safari 的零压力 raw 更新使压感失效。手势取消、失焦和 Pointer Capture 丢失都会丢弃未提交临时数据并清理状态。
 - 自适应稳定器在采样阶段平滑表面点，不在提交后重解释作者轨迹。
 - 压感默认开启且始终有可见开关。关闭时新 Outline 点写入 `pressure: 1`；旧笔画不会被回写。
-- 正式落笔后的 Ink 编译在常驻编译 Worker 中完成。编译器复用未改变 Shape 的 Ribbon/Fill；Worker 结果作为派生缓存协调回主文档，不增加历史或内容 revision。
+- 正式落笔后的 Ink 编译在常驻编译 Worker 中完成。Worker 在初始载入或 Shape 集合改变时保存 Group 作者源和轻量 Shape hash；每次提交只接收受影响 Shape、只回传该 Shape 的派生缓存，未变 Shape 的 Ribbon/Fill 留在主文档复用。Worker 结果作为派生缓存协调回主文档，不增加历史或内容 revision。
 
 ### 2.4 简化地形与编辑参照
 
@@ -62,7 +62,7 @@
 - 支持已有地块射线相邻放置、X/Y/Z 零坐标工作面、Brush/Rectangle 连续放置与擦除，以及按钮式类型/四向旋转和固定 PICO-8 颜色切换。
 - 地形 Reference 几何携带 barycentric 与真实边界掩码，边缘暗化不会显示内部三角形对角线；描边使用与地块协调的深色并设有非纯黑下限。
 - 无限网格与 X/Y/Z 坐标轴是 Studio 所有的编辑器视口辅助，可分别开关；地块边缘也有独立开关。三个设置仅进入 Editor Session，不进入工作场景、Ink 作者源或导出文件。
-- Terrain、Group、Shape 和 Draw 模式中手指始终只驱动 OrbitControls；Apple Pencil 只驱动编辑，鼠标不驱动编辑或镜头。
+- Terrain、Group、Shape 和 Draw 模式中手指始终只驱动 OrbitControls；Apple Pencil 只驱动编辑，鼠标不驱动编辑或镜头。相机轨道保留极点安全余量，但可越过水平面旋转到目标下方的负 Y 视角。
 
 ### 2.5 渲染与灯光
 
@@ -94,7 +94,7 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 8 个 Vitest 文件、56 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 8 个 Vitest 文件、59 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
 - 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere 网格密度，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、格式往返和限制、多个 Group、Plane/Cuboid/Sphere Outline/Fill 编译、Cuboid 固有尺寸与固定世界单位 Normal Outset 壳、Normal Outset v13 编译与资源释放、Shape GPU 资源复用、Sphere 与 Cuboid 六面朝外绕序、Fill 正面/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v11/v12 工作文件升级、篡改派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存语义、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 

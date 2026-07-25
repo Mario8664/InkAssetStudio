@@ -5,7 +5,11 @@ import type { TileKind, TileRotation } from '../terrain/terrain';
 
 export type WorkspaceMode = 'terrain' | 'select' | 'shape' | 'draw';
 export type InkDrawTool = 'outline' | 'outline-eraser' | 'fill-brush' | 'fill-eraser' | 'fill-bucket' | 'picker';
-export type TransformMode = 'translate' | 'rotate';
+/**
+ * `resize` is Shape-only and controls Cuboid intrinsic size / Sphere radius.
+ * It deliberately does not map to Three.js TransformControls scale.
+ */
+export type TransformMode = 'translate' | 'rotate' | 'resize';
 export type TerrainAction = 'place' | 'erase';
 export type TerrainOperation = 'brush' | 'rectangle';
 export type TerrainWorkAxis = 'x' | 'y' | 'z';
@@ -107,7 +111,7 @@ export function normalizeStudioEditorSession(value: unknown): StudioEditorSessio
     terrainRotation: isOneOf(source.terrainRotation, [0, 90, 180, 270]) ? source.terrainRotation : fallback.terrainRotation,
     terrainColor: isPico8ColorId(source.terrainColor) ? source.terrainColor : fallback.terrainColor,
     planeOrientation: isOneOf(source.planeOrientation, ['x', 'y', 'z', 'camera']) ? source.planeOrientation : fallback.planeOrientation,
-    transformMode: isOneOf(source.transformMode, ['translate', 'rotate']) ? source.transformMode : fallback.transformMode,
+    transformMode: isOneOf(source.transformMode, ['translate', 'rotate', 'resize']) ? source.transformMode : fallback.transformMode,
     snapEnabled: typeof source.snapEnabled === 'boolean' ? source.snapEnabled : fallback.snapEnabled,
     transformSnapUnit: number(source.transformSnapUnit, fallback.transformSnapUnit, 0.001, 1_000),
     showTerrainEdges: typeof source.showTerrainEdges === 'boolean'

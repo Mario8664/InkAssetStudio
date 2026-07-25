@@ -51,4 +51,8 @@ describe('Editor viewport session', () => {
     expect(session.transformSnapUnit).toBe(0.5);
     expect(session.snapEnabled).toBe(false);
   });
+
+  it('persists the Shape-only intrinsic size handle mode', () => {
+    expect(normalizeStudioEditorSession({ transformMode: 'resize' }).transformMode).toBe('resize');
+  });
 });

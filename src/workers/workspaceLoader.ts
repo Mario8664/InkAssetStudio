@@ -2,14 +2,14 @@ import type { WorkspaceValidationResult } from '../domain/workspace/workspace';
 
 type WorkspaceLoadRequest =
   | { operation: 'normalize'; value: unknown }
-  | { operation: 'parse'; text: string };
+  | { operation: 'parse-file'; file: File };
 
 export function normalizeStudioDocumentInWorker(value: unknown): Promise<WorkspaceValidationResult> {
   return runWorkspaceLoader({ operation: 'normalize', value });
 }
 
-export function parseStudioWorkFileInWorker(text: string): Promise<WorkspaceValidationResult> {
-  return runWorkspaceLoader({ operation: 'parse', text });
+export function parseStudioWorkFileInWorker(file: File): Promise<WorkspaceValidationResult> {
+  return runWorkspaceLoader({ operation: 'parse-file', file });
 }
 
 function runWorkspaceLoader(request: WorkspaceLoadRequest): Promise<WorkspaceValidationResult> {
