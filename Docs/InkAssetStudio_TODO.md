@@ -69,20 +69,20 @@
 ### 2.5 渲染与灯光
 
 - Map Reference 在 Three.js 展开灯光 ShaderChunk 前注入有效 Half-Lambert，显示地形体积和基础颜色，背光坡面不再退化为接近纯黑。
-- Ink Ribbon 和 Fill 使用真实深度遮挡。
-- Ink Fill 保留当前硬分档光照和专属最近采样硬阴影。
+- Ink Ribbon 和 Fill 使用自身真实深度遮挡；Reference 合成不写入该深度，不能遮挡 Ink。
+- Ink Fill 保留当前硬分档光照和专属最近采样硬阴影；Reference 地形不进入 Ink 硬阴影投射或接收。
 - Ink Fill 可见材质固定使用 `DoubleSide`，片元在背面翻转光照法线；专属硬阴影 depth material 仍使用 `BackSide`。Cuboid、Sphere、Cylinder 与 Frustum 的表面三角形绕序均保持法线朝外。
 - Ink 阴影目标密度固定为 64 px/世界单位；普通 Three.js PCF 阴影保持关闭。
-- 阴影深度只在地形、Ink 几何/Transform、摆放或光照方向变化时失效；灯光颜色和强度不会触发阴影深度重建。
+- 阴影深度只在 Ink 几何/Transform、摆放或光照方向变化时失效；Reference 地形、灯光颜色和强度不会触发阴影深度重建。
 - 纯 Outline 与 Normal Outset 编辑不再重绘硬阴影；packed-depth 捕获会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
 - Ink Group 渲染按 Shape 复用已上传资源：Transform 只更新对象变换，Fill-only 更新复用 Ribbon，描边变化只替换对应 Shape，而不是重建整组 Ink。
 - 阴影相机范围变化后显式更新投影矩阵。
 - GPU 最大纹理不足时不修改作品数据，界面会显示所需尺寸、设备上限和恢复办法。
 - 预览灯光的初值已与 Painting 当前实际保存的 Global Lighting 对齐：相位 `0`、太阳路径 `-12° / 15°`、全局地形反弹 `0.5`，以及完整 Day/Night Profile。所有参数均可编辑，并提供 Reset 恢复该基线；昼夜相位使用重点 `-1～1` 触控滑杆。
-- 太阳/月亮 Profile 选择、地平线强度衰减、环境光/背景线性色彩插值均与 Painting 当前算法一致。Reference、Ink 与编辑器辅助先进入 Half Float Composer，再由最终 `OutputPass` 统一执行 sRGB、ACES Filmic 和 `1.05` 曝光，避免线性 RenderTarget 被直接显示；默认背景输出像素与所给 Painting 参考图同为 `(227, 222, 215)`。
+- 太阳/月亮 Profile 选择、地平线强度衰减、环境光/背景线性色彩插值均与 Painting 当前算法一致。Reference 先捕获到 Half Float 目标，再单独经 `OutputPass` 执行 sRGB、ACES Filmic 和 `1.05` 曝光；Ink 在该输出之后以原始作者 sRGB 值直接显示，不做 ACES 或 sRGB 解码/编码，并保留自身 Half-Lambert、环境光和 Ink-only 硬阴影。编辑器辅助最后作为 overlay 绘制；默认 Reference 背景输出像素与所给 Painting 参考图同为 `(227, 222, 215)`。
 - 首版默认灯光未被自定义的旧草稿会迁移到 Painting 当前基线并保留原昼夜相位；存在任意其它自定义灯光值的草稿保持原样。
 - Sky、Ground、Reflection、地形反弹强度和 Profile 反弹亮度均可编辑、保存和交换；当前 Map Reference 范围不启用 PMREM 或地形色反弹，因此这些字段不会虚构移动端预览效果。
-- Map PBR、PCF 软阴影、GTAO、PMREM、环境反射和效果型后处理未启用；只保留最终颜色管理必需的 `OutputPass`。
+- Map PBR、PCF 软阴影、GTAO、PMREM、环境反射和效果型后处理未启用；只保留 Map Reference 最终颜色管理必需的 `OutputPass`，Ink 不经过该 pass。
 - Three.js 几何、材质、纹理、RenderTarget、监听器、ResizeObserver、Worker 和 UI 计时器均有明确 dispose/terminate/clear 路径。
 
 ## 3. 自动验收结果

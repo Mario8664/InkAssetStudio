@@ -380,7 +380,7 @@ function createInkNormalOutsetSurfaceMesh(
 
 function updateInkNormalOutsetSurfaceMesh(mesh: Mesh, outset: InkNormalOutsetRenderSettings, fill: Mesh): void {
   const material = mesh.material as ShaderMaterial;
-  (material.uniforms.inkNormalOutsetColor!.value as Color).set(outset.color);
+  setRawSrgbColor(material.uniforms.inkNormalOutsetColor!.value as Color, outset.color);
   copyInkFillAlphaClipUniforms(material, fill.material as ShaderMaterial);
 }
 
@@ -667,7 +667,9 @@ function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset, fillMate
   const fillUniforms = fillMaterial.uniforms;
   return new ShaderMaterial({
     uniforms: {
-      inkNormalOutsetColor: { value: new Color(outset.color) },
+      // Ink source colours are authored sRGB bytes. The display phase writes
+      // them directly, so do not let Three convert this uniform to linear.
+      inkNormalOutsetColor: { value: createRawSrgbColor(outset.color) },
       inkFillMap: { value: fillUniforms.inkFillMap!.value },
       inkFillUvMin: { value: fillUniforms.inkFillUvMin!.value },
       inkFillUvSize: { value: fillUniforms.inkFillUvSize!.value },
@@ -705,6 +707,19 @@ function copyInkFillAlphaClipUniforms(outsetMaterial: ShaderMaterial, fillMateri
   outsetUniforms.inkFillMap!.value = fillUniforms.inkFillMap!.value;
   outsetUniforms.inkFillUvMin!.value = fillUniforms.inkFillUvMin!.value;
   outsetUniforms.inkFillUvSize!.value = fillUniforms.inkFillUvSize!.value;
+}
+
+function createRawSrgbColor(value: string): Color {
+  return setRawSrgbColor(new Color(), value);
+}
+
+function setRawSrgbColor(color: Color, value: string): Color {
+  const parsed = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value);
+  if (!parsed) return color.setRGB(0, 0, 0);
+  color.r = Number.parseInt(parsed[1]!, 16) / 255;
+  color.g = Number.parseInt(parsed[2]!, 16) / 255;
+  color.b = Number.parseInt(parsed[3]!, 16) / 255;
+  return color;
 }
 
 /**

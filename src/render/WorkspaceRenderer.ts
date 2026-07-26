@@ -7,8 +7,10 @@ import {
   DoubleSide,
   Group,
   HalfFloatType,
+  LinearSRGBColorSpace,
   Mesh,
   MeshBasicMaterial,
+  NoToneMapping,
   PerspectiveCamera,
   Plane,
   PlaneGeometry,
@@ -264,7 +266,14 @@ export class WorkspaceRenderer {
     this.cursor.visible = false;
     this.cursor.renderOrder = 2000;
     this.cursorRoot.add(this.cursor);
-    this.hardShadow = new InkHardShadowMap(this.renderer, this.scene, this.mainLight, this.inkLighting, onWarning);
+    this.hardShadow = new InkHardShadowMap(
+      this.renderer,
+      this.scene,
+      this.mainLight,
+      this.inkLighting,
+      onWarning,
+      (mesh) => isDescendantOf(mesh, this.inkRoot),
+    );
     this.resizeObserver = new ResizeObserver(this.handleResize);
     this.resizeObserver.observe(canvas);
     this.handleResize();
@@ -275,14 +284,14 @@ export class WorkspaceRenderer {
     if (this.document && this.document.documentId !== document.documentId) this.clearStrokePreviewHandoffs();
     this.document = document;
     this.session = session;
-    const terrainChanged = this.terrain.update(document.terrain.tiles);
+    this.terrain.update(document.terrain.tiles);
     this.referenceLayer.setTerrainEdgesVisible(session.showTerrainEdges);
     this.editorGuides.setGridVisible(session.showInfiniteGrid);
     this.editorGuides.setAxesVisible(session.showAxes);
     const inkUpdate = this.updateInkGroups(document);
     const lightingDirectionChanged = this.applyLighting(document);
-    if (terrainChanged || inkUpdate.hardShadowChanged || lightingDirectionChanged) this.hardShadow.markDirty();
-    if (terrainChanged || inkUpdate.boundsChanged) this.updateShadowBounds(document);
+    if (inkUpdate.hardShadowChanged || lightingDirectionChanged) this.hardShadow.markDirty();
+    if (inkUpdate.boundsChanged) this.updateShadowBounds(document);
     const editHelperStateKey = `${session.mode}|${session.activeReferenceId ?? ''}|${session.activeShapeId ?? ''}|${session.excludedShapeIds.join('|')}`;
     const selectionChanged = this.editHelperStateKey !== editHelperStateKey || inkUpdate.changed;
     this.editHelperStateKey = editHelperStateKey;
@@ -960,13 +969,6 @@ export class WorkspaceRenderer {
 
   private updateShadowBounds(document: InkStudioWorkFile): void {
     let minimumX = -4, maximumX = 4, minimumZ = -4, maximumZ = 4, maximumY = 4;
-    for (const tile of document.terrain.tiles) {
-      minimumX = Math.min(minimumX, tile.x - 1);
-      maximumX = Math.max(maximumX, tile.x + 1);
-      minimumZ = Math.min(minimumZ, tile.z - 1);
-      maximumZ = Math.max(maximumZ, tile.z + 1);
-      maximumY = Math.max(maximumY, tile.y + 2);
-    }
     for (const reference of document.ink.assetReferences) {
       minimumX = Math.min(minimumX, reference.anchorPosition.x - 4);
       maximumX = Math.max(maximumX, reference.anchorPosition.x + 4);
@@ -1023,13 +1025,109 @@ export class WorkspaceRenderer {
     if (this.disposed) return;
     this.camera.updateMatrixWorld();
     this.editorGuides.update();
-    this.referenceLayer.render(this.scene, this.camera, new Set<Object3D>([this.terrain.referenceRoot]));
-    const previousTerrainVisibility = this.terrain.referenceRoot.visible;
-    this.terrain.referenceRoot.visible = true;
+    const hasReference = this.referenceLayer.render(this.scene, this.camera, new Set<Object3D>([this.terrain.referenceRoot]));
     this.hardShadow.renderIfNeeded();
-    this.terrain.referenceRoot.visible = previousTerrainVisibility;
-    this.composer.render();
+    if (hasReference) this.renderReferenceOutput();
+    this.renderInkDisplay(hasReference);
+    this.renderEditorOverlay();
   };
+
+  /** Stage 5: ACES + sRGB applies only to the captured Map Reference display. */
+  private renderReferenceOutput(): void {
+    this.renderScenePhase([this.referenceLayer.mesh], () => this.composer.render());
+  }
+
+  /**
+   * Stage 6: Ink is composited after Reference output as original authored
+   * sRGB bytes. Reference never writes the depth used by this stage.
+   */
+  private renderInkDisplay(hasReference: boolean): void {
+    const previousOutputColorSpace = this.renderer.outputColorSpace;
+    const previousToneMapping = this.renderer.toneMapping;
+    const previousExposure = this.renderer.toneMappingExposure;
+    const previousAutoClear = this.renderer.autoClear;
+    const previousClearColor = this.renderer.getClearColor(new Color());
+    const previousClearAlpha = this.renderer.getClearAlpha();
+    const previousBackground = this.scene.background;
+    try {
+      this.renderer.setRenderTarget(null);
+      this.renderer.outputColorSpace = LinearSRGBColorSpace;
+      this.renderer.toneMapping = NoToneMapping;
+      this.renderer.toneMappingExposure = 1;
+      this.renderer.autoClear = false;
+      this.scene.background = null;
+      if (hasReference) this.renderer.clearDepth();
+      else {
+        const rawBackground = getRawSrgbBackground(previousBackground);
+        this.renderer.setClearColor(rawBackground ?? previousClearColor, rawBackground ? 1 : previousClearAlpha);
+        this.renderer.clear(true, true, false);
+      }
+      this.renderScenePhase(
+        [this.inkRoot, this.strokePreviewRoot, this.strokePreviewHandoffRoot],
+        () => this.renderer.render(this.scene, this.camera),
+      );
+    } finally {
+      this.scene.background = previousBackground;
+      this.renderer.autoClear = previousAutoClear;
+      this.renderer.setClearColor(previousClearColor, previousClearAlpha);
+      this.renderer.toneMappingExposure = previousExposure;
+      this.renderer.toneMapping = previousToneMapping;
+      this.renderer.outputColorSpace = previousOutputColorSpace;
+    }
+  }
+
+  /** Stage 7: Studio-only guides and controls are drawn after Ink. */
+  private renderEditorOverlay(): void {
+    const previousToneMapping = this.renderer.toneMapping;
+    const previousExposure = this.renderer.toneMappingExposure;
+    const previousAutoClear = this.renderer.autoClear;
+    const previousBackground = this.scene.background;
+    try {
+      this.renderer.setRenderTarget(null);
+      this.renderer.toneMapping = NoToneMapping;
+      this.renderer.toneMappingExposure = 1;
+      this.renderer.autoClear = false;
+      this.scene.background = null;
+      this.renderScenePhase(
+        [this.editorGuides, this.helperRoot, this.groupPivotRoot, this.cursorRoot, this.terrainPreviewRoot, this.terrainToolPreviewRoot],
+        () => this.renderer.render(this.scene, this.camera),
+      );
+    } finally {
+      this.scene.background = previousBackground;
+      this.renderer.autoClear = previousAutoClear;
+      this.renderer.toneMappingExposure = previousExposure;
+      this.renderer.toneMapping = previousToneMapping;
+    }
+  }
+
+  private renderScenePhase(visibleRoots: readonly Object3D[], render: () => void): void {
+    const rootStates = new Map<Object3D, boolean>();
+    for (const root of this.getSceneRenderRoots()) {
+      rootStates.set(root, root.visible);
+      root.visible = root.visible && visibleRoots.includes(root);
+    }
+    try {
+      render();
+    } finally {
+      rootStates.forEach((visible, root) => { root.visible = visible; });
+    }
+  }
+
+  private getSceneRenderRoots(): readonly Object3D[] {
+    return [
+      this.referenceLayer.mesh,
+      this.terrain.referenceRoot,
+      this.editorGuides,
+      this.inkRoot,
+      this.helperRoot,
+      this.groupPivotRoot,
+      this.cursorRoot,
+      this.strokePreviewRoot,
+      this.strokePreviewHandoffRoot,
+      this.terrainPreviewRoot,
+      this.terrainToolPreviewRoot,
+    ];
+  }
 }
 
 export function createTerrainPreviewMaterial(overlay: boolean): MeshBasicMaterial {
@@ -1045,6 +1143,15 @@ export function createTerrainPreviewMaterial(overlay: boolean): MeshBasicMateria
 
 function helperKey(referenceId: string, shapeId: string): string {
   return `${referenceId}:${shapeId}`;
+}
+
+function isDescendantOf(object: Object3D, ancestor: Object3D): boolean {
+  for (let current: Object3D | null = object; current; current = current.parent) if (current === ancestor) return true;
+  return false;
+}
+
+function getRawSrgbBackground(background: Scene['background']): Color | null {
+  return background instanceof Color ? background.clone().convertLinearToSRGB() : null;
 }
 
 function getInkShapeHelperGeometryKey(shape: InkShape): string {

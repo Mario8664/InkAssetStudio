@@ -112,8 +112,11 @@ diffuseColor.rgb = mix(diffuseColor.rgb, terrainEdgeColour, terrainEdge * terrai
     this.terrainEdgesVisibleUniform.value = visible ? 1 : 0;
   }
 
-  render(scene: Scene, camera: Camera, mapRoots: ReadonlySet<Object3D>): void {
-    if (!this.enabled || !this.target || mapRoots.size === 0) return;
+  /** Captures Reference and reports whether it has a displayable frame this render. */
+  render(scene: Scene, camera: Camera, mapRoots: ReadonlySet<Object3D>): boolean {
+    const shouldRender = this.enabled && this.target !== null && mapRoots.size > 0;
+    this.mesh.visible = shouldRender;
+    if (!shouldRender) return false;
     const mapObjects = new Set<Object3D>();
     mapRoots.forEach((root) => root.traverse((object) => mapObjects.add(object)));
     const rootVisibility = new Map<Object3D, boolean>();
@@ -147,6 +150,7 @@ diffuseColor.rgb = mix(diffuseColor.rgb, terrainEdgeColour, terrainEdge * terrai
       visibility.forEach((visible, object) => { object.visible = visible; });
       rootVisibility.forEach((visible, root) => { root.visible = visible; });
     }
+    return true;
   }
 
   dispose(): void {

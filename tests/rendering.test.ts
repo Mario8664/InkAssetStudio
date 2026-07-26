@@ -91,6 +91,8 @@ describe('Reference rendering', () => {
     const before = terrain.getPickMeshes();
     const firstChunk = before.find((mesh) => mesh.name.endsWith(':0:0:0'))!;
     const distantChunk = before.find((mesh) => mesh.name.endsWith(':1:0:0'))!;
+    expect(firstChunk.castShadow).toBe(false);
+    expect(distantChunk.castShadow).toBe(false);
     expect(terrain.getTileFromIntersection({ object: firstChunk, faceIndex: 0 } as unknown as Intersection)).toBe(first);
 
     const repainted = createTerrainTile('block', 0, 0, 0, 0, 'red');
@@ -316,7 +318,7 @@ describe('Reference rendering', () => {
 
   it('alpha-clips Normal Outset surfaces to Fill charts and disposes them when disabled', () => {
     const shape = createInkSphereShape();
-    shape.normalOutset = { enabled: true, color: '#5a3e16', distance: 0.08 };
+    shape.normalOutset = { enabled: true, color: '#ff004d', distance: 0.08 };
     const emptyRoot = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState(), { useSourceNormalOutset: true });
     expect(emptyRoot.getObjectByName('InkNormalOutsetShell')).toBeUndefined();
     disposeObjectTree(emptyRoot);
@@ -331,6 +333,7 @@ describe('Reference rendering', () => {
     expect(surface).toBeInstanceOf(Mesh);
     expect(material.side).toBe(BackSide);
     expect(surface.castShadow).toBe(false);
+    expect((material.uniforms.inkNormalOutsetColor!.value as Color).toArray()).toEqual([1, 0, 0x4d / 255]);
     expect(material.uniforms.inkFillMap!.value).toBe((fill.material as ShaderMaterial).uniforms.inkFillMap!.value);
     expect(material.fragmentShader).toContain('texture2D(inkFillMap, fillUv).a < 0.5');
 
@@ -446,17 +449,20 @@ describe('Reference rendering', () => {
     disposeInkShapePreviewTree(preview.root);
   });
 
-  it('isolates non-casters and restores every captured state when hard-shadow rendering throws', () => {
+  it('isolates Reference and other non-Ink casters, then restores every captured state when hard-shadow rendering throws', () => {
     const scene = new Scene();
     const sceneBackground = new Color(0x334455);
     scene.background = sceneBackground;
     const casterMaterial = new MeshBasicMaterial({ color: 0xffffff });
     const caster = new Mesh(new PlaneGeometry(1, 1), casterMaterial);
     caster.castShadow = true;
+    const referenceMaterial = new MeshBasicMaterial({ color: 0xffffff });
+    const referenceCaster = new Mesh(new PlaneGeometry(1, 1), referenceMaterial);
+    referenceCaster.castShadow = true;
     const nonCasterMaterial = new MeshBasicMaterial({ color: 0xffffff });
     const nonCaster = new Mesh(new PlaneGeometry(1, 1), nonCasterMaterial);
     const helper = new LineSegments(new PlaneGeometry(1, 1), new LineBasicMaterial({ color: 0xffffff }));
-    scene.add(caster, nonCaster, helper);
+    scene.add(caster, referenceCaster, nonCaster, helper);
 
     const light = new DirectionalLight();
     scene.add(light);
@@ -465,7 +471,7 @@ describe('Reference rendering', () => {
     let currentTarget: WebGLRenderTarget | null = originalTarget;
     let clearColor = originalClearColor.clone();
     let clearAlpha = 0.4;
-    let observed: { casterMaterial: Material | Material[]; nonCasterVisible: boolean; helperVisible: boolean; background: Scene['background'] } | null = null;
+    let observed: { casterMaterial: Material | Material[]; referenceVisible: boolean; nonCasterVisible: boolean; helperVisible: boolean; background: Scene['background'] } | null = null;
     const renderer = {
       capabilities: { maxTextureSize: 4096 },
       autoClear: false,
@@ -482,6 +488,7 @@ describe('Reference rendering', () => {
       render: () => {
         observed = {
           casterMaterial: caster.material,
+          referenceVisible: referenceCaster.visible,
           nonCasterVisible: nonCaster.visible,
           helperVisible: helper.visible,
           background: scene.background,
@@ -490,16 +497,19 @@ describe('Reference rendering', () => {
       },
     } as unknown as WebGLRenderer;
     const lighting = createInkFillLightingState();
-    const hardShadow = new InkHardShadowMap(renderer, scene, light, lighting);
+    const hardShadow = new InkHardShadowMap(renderer, scene, light, lighting, () => undefined, (mesh) => mesh === caster);
 
     expect(() => hardShadow.renderIfNeeded(true)).toThrow('synthetic renderer failure');
     expect(observed).not.toBeNull();
     expect(observed!.casterMaterial).not.toBe(casterMaterial);
+    expect(observed!.referenceVisible).toBe(false);
     expect(observed!.nonCasterVisible).toBe(false);
     expect(observed!.helperVisible).toBe(false);
     expect(observed!.background).toBeNull();
     expect(caster.visible).toBe(true);
     expect(caster.material).toBe(casterMaterial);
+    expect(referenceCaster.visible).toBe(true);
+    expect(referenceCaster.material).toBe(referenceMaterial);
     expect(nonCaster.visible).toBe(true);
     expect(nonCaster.material).toBe(nonCasterMaterial);
     expect(helper.visible).toBe(true);
@@ -513,6 +523,8 @@ describe('Reference rendering', () => {
     hardShadow.dispose();
     caster.geometry.dispose();
     casterMaterial.dispose();
+    referenceCaster.geometry.dispose();
+    referenceMaterial.dispose();
     nonCaster.geometry.dispose();
     nonCasterMaterial.dispose();
     helper.geometry.dispose();

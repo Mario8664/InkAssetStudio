@@ -35,6 +35,7 @@ export class InkHardShadowMap {
     private readonly light: DirectionalLight,
     private readonly lighting: InkFillLightingState,
     private readonly onWarning: (message: string) => void = () => undefined,
+    private readonly isApprovedCaster: (mesh: Mesh) => boolean = () => true,
   ) {
     this.depthMaterial.name = 'InkHardShadowDepth';
   }
@@ -66,7 +67,7 @@ export class InkHardShadowMap {
     this.scene.traverse((object) => {
       if (object instanceof Mesh) {
         const inkDepthMaterial = object.userData.inkHardShadowDepthMaterial as Material | undefined;
-        const isCaster = object.castShadow || inkDepthMaterial !== undefined;
+        const isCaster = this.isApprovedCaster(object) && (object.castShadow || inkDepthMaterial !== undefined);
         casterStates.set(object, { visible: object.visible, material: object.material });
         object.visible = object.visible && isCaster;
         if (inkDepthMaterial) object.material = inkDepthMaterial;

@@ -120,7 +120,9 @@ export class TerrainRenderer {
     const batch = createTerrainGeometryBatch([...chunk.tiles.values()]);
     const mesh = new Mesh(batch.geometry, this.material);
     mesh.name = `ReferenceTerrainChunk:${key}`;
-    mesh.castShadow = true;
+    // Reference is captured as its own unshadowed display layer. It is never
+    // an Ink hard-shadow caster or receiver.
+    mesh.castShadow = false;
     mesh.userData.sourceTilesByTriangle = batch.sourceTilesByTriangle;
     chunk.mesh = mesh;
     this.referenceRoot.add(mesh);
