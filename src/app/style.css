@@ -82,6 +82,7 @@ output { color: var(--accent); font-variant-numeric: tabular-nums; }
 .shape-list-section { border-top: 1px solid var(--line); padding: 8px; }
 .subheading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 3px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
 .shape-row { display: grid; grid-template-columns: 20px 1fr; align-items: center; width: 100%; border-color: transparent; background: transparent; text-align: left; }
+.shape-list-row { grid-template-columns: minmax(0, 1fr) 34px 34px; }
 .shape-list-row.active .shape-row { border-color: #4f7590; background: #263946; }
 .shape-create-label { margin-top: 9px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
 .plane-create-row { display: grid; grid-template-columns: repeat(3, 1fr) 1.6fr; gap: 4px; margin-top: 4px; }
