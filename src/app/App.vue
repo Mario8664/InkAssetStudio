@@ -809,7 +809,6 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
         <div class="palette-editor-list">
           <div v-for="(color, index) in session.palette" :key="`edit-${index}`" class="palette-editor-row">
             <input type="color" :value="color" :aria-label="`Edit palette color ${index + 1}`" @input="setPaletteColor(index, $event)" />
-            <code>{{ color }}</code>
             <button :disabled="index === 0" title="Move left" @click="movePaletteColor(index, -1)">←</button>
             <button :disabled="index === session.palette.length - 1" title="Move right" @click="movePaletteColor(index, 1)">→</button>
             <button class="palette-delete" title="Remove color" @click="removePaletteColor(index)">⌫</button>
