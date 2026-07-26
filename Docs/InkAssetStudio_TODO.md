@@ -147,7 +147,7 @@ npm.cmd run visual-check
 
 ## 5. 当前 iPad 绘画体验升级
 
-- [x] 删除独立 Navigate 模式，完成 Touch-only 导航与 Pencil-only 编辑输入仲裁。
+- [x] 删除独立 Navigate 模式，完成 Touch-only 导航与 Pencil-only 编辑输入仲裁；Apple Pencil 悬浮或绘制期间锁定手指镜头，避免支撑手旋转视图。
 - [x] Terrain 改为已有地形射线相邻放置、X/Y/Z 工作面、Brush/Rectangle 和批量半透明预览。
 - [x] Terrain 改为固定 PICO-8 颜色、按钮式 Tile/四向旋转，并增加一秒工具形状预览。
 - [x] 修复 Plane 同笔越界扩展、扩大后的局部坐标映射、多 Shape Outline/Fill 预览与提交。

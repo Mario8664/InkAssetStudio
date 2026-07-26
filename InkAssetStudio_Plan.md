@@ -230,7 +230,7 @@ type InkStudioWorkFile = {
 | 当前意图 | Studio 交互 |
 | --- | --- |
 | Pencil 落笔绘制 | Apple Pencil 在激活 Draw 工具且命中 Shape 时绘制。 |
-| 视图导航 | 所有编辑模式下始终可用的手指触控轨道导航；Pencil 和鼠标都不负责相机导航。 |
+| 视图导航 | 无 Pencil 悬浮或绘制时，所有编辑模式下均可用手指触控轨道导航；Pencil 和鼠标都不负责相机导航。Pencil 悬浮或绘制期间，支撑手的触摸不得旋转镜头。 |
 | 选择 Group / Shape | 明确的 Select 模式，点击 Pivot 或可见的 Shape 辅助面。 |
 | 直线辅助 | 工具栏中可见的直线模式/临时按钮，不依赖键盘 `Shift`。 |
 | 吸色 | 独立吸色工具按钮，不依赖 `Ctrl`。 |
@@ -343,7 +343,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 
 本节取代此前“显式 Navigate 模式”和“按层放置 Terrain”的交互描述。
 
-- 视口导航不再是独立模式。它在 Terrain、Group、Shape 与 Draw 模式中始终可用，但只接收手指触摸；Apple Pencil、鼠标均不得驱动镜头。
+- 视口导航不再是独立模式。它在 Terrain、Group、Shape 与 Draw 模式中，在没有 Apple Pencil 悬浮或绘制时只接收手指触摸；Apple Pencil、鼠标均不得驱动镜头。检测到 Apple Pencil 悬浮或绘制后，必须拒绝支撑手的全部镜头旋转，直至 Pencil 离开视口。
 - Terrain、Ink、Group/Shape 选择与全部 Transform/尺寸手柄只接收 Apple Pencil。手指不得修改作者内容，鼠标不得作为移动端编辑输入的替代品。
 - Terrain 优先射线命中已有地块并按命中面放置相邻格，从而可以向上或向侧面搭建；空白处使用 X/Y/Z 三个零坐标工作面。一次 Brush 或 Rectangle 手势锁定工作轴和工作面。
 - Terrain 保留 Brush 与 Rectangle、Block/Slope/Corner Slope、Place/Erase 和四向旋转。Tile 类型与四向旋转都使用直接按钮；点选类型或方向后在主画面显示一秒半透明形状预览，实际绘制期间持续显示半透明落点或范围预览。

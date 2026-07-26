@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createInkOutlineStroke, createInkPlaneShape, getCameraFacingInkPlaneRotation } from '../src/domain/ink/ink';
 import { chooseInkFallbackPlane, eraseInkOutline, resolveInkGesturePoint } from '../src/editor/InkEditorController';
 import { closestRayLineParameter } from '../src/editor/PencilTransformController';
-import { isApplePencilPointer, isFingerNavigationPointer } from '../src/editor/pointerInput';
+import { PencilPresenceTracker, canNavigateWithFinger, isApplePencilPointer, isFingerNavigationPointer } from '../src/editor/pointerInput';
 import { Euler, Quaternion, Vector3 } from 'three';
 
 describe('outline eraser', () => {
@@ -64,6 +64,26 @@ describe('iPad editor input boundaries', () => {
     expect(isApplePencilPointer({ pointerType: 'mouse' } as PointerEvent)).toBe(false);
     expect(isFingerNavigationPointer({ pointerType: 'touch' } as PointerEvent)).toBe(true);
     expect(isFingerNavigationPointer({ pointerType: 'pen' } as PointerEvent)).toBe(false);
+  });
+
+  it('locks finger navigation while a Pencil hovers or draws in the viewport', () => {
+    const pencil = new PencilPresenceTracker();
+    const finger = { pointerType: 'touch' } as PointerEvent;
+    const penHover = { pointerId: 7, pointerType: 'pen', type: 'pointerenter' } as PointerEvent;
+
+    expect(canNavigateWithFinger(finger, pencil.isPresent)).toBe(true);
+    pencil.observe(penHover);
+    expect(pencil.isPresent).toBe(true);
+    expect(canNavigateWithFinger(finger, pencil.isPresent)).toBe(false);
+
+    pencil.observe({ ...penHover, type: 'pointerdown' } as PointerEvent);
+    pencil.observe({ ...penHover, type: 'pointerup' } as PointerEvent);
+    expect(pencil.isPresent).toBe(true);
+    expect(canNavigateWithFinger(finger, pencil.isPresent)).toBe(false);
+
+    pencil.observe({ ...penHover, type: 'pointerleave' } as PointerEvent);
+    expect(pencil.isPresent).toBe(false);
+    expect(canNavigateWithFinger(finger, pencil.isPresent)).toBe(true);
   });
 
   it('projects intrinsic size drags onto the selected Shape axis', () => {

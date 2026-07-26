@@ -62,7 +62,7 @@ import { MapReferenceLayer } from './MapReferenceLayer';
 import { TerrainRenderer } from './TerrainRenderer';
 import { createTerrainBatchGeometry } from './terrainGeometry';
 import { disposeObjectTree } from './dispose';
-import { isFingerNavigationPointer } from '../editor/pointerInput';
+import { PencilPresenceTracker, canNavigateWithFinger } from '../editor/pointerInput';
 
 export const TERRAIN_PREVIEW_COLOR = '#74c7f7';
 export const TERRAIN_PREVIEW_OPACITY = 0.42;
@@ -144,6 +144,7 @@ export class WorkspaceRenderer {
   private readonly pivotPickers: Mesh[] = [];
   private readonly cursorCircleGeometry = new RingGeometry(0.9, 1.1, 40);
   private readonly cursorSquareGeometry = new PlaneGeometry(2, 2);
+  private readonly pencilPresence = new PencilPresenceTracker();
   private readonly cursor: Mesh;
   private readonly strokePreviews: StrokePreviewEntry[] = [];
   private readonly helperEntries = new Map<string, InkHelperEntry>();
@@ -171,11 +172,16 @@ export class WorkspaceRenderer {
     this.camera.lookAt(0, 0, 0);
     this.controls = new OrbitControls(this.camera, canvas);
     // OrbitControls records every PointerEvent before it branches on pointerType.
-    // A capture-phase gate keeps Pencil/mouse out of its multi-touch bookkeeping.
+    // The capture-phase gate also keeps support-hand touches out while a Pencil
+    // is hovering or drawing, so their contact cannot rotate the camera.
+    canvas.addEventListener('pointerover', this.gateOrbitPointer, { capture: true });
+    canvas.addEventListener('pointerenter', this.gateOrbitPointer, { capture: true });
     canvas.addEventListener('pointerdown', this.gateOrbitPointer, { capture: true });
     canvas.addEventListener('pointermove', this.gateOrbitPointer, { capture: true });
     canvas.addEventListener('pointerup', this.gateOrbitPointer, { capture: true });
     canvas.addEventListener('pointercancel', this.gateOrbitPointer, { capture: true });
+    canvas.addEventListener('pointerout', this.gateOrbitPointer, { capture: true });
+    canvas.addEventListener('pointerleave', this.gateOrbitPointer, { capture: true });
     canvas.addEventListener('wheel', this.blockMouseWheelNavigation, { capture: true, passive: false });
     this.controls.target.set(0, 0.5, 0);
     this.controls.enableDamping = false;
@@ -562,10 +568,14 @@ export class WorkspaceRenderer {
     this.resizeObserver.disconnect();
     this.controls.removeEventListener('change', this.handleControlsChange);
     this.controls.dispose();
+    this.canvas.removeEventListener('pointerover', this.gateOrbitPointer, { capture: true });
+    this.canvas.removeEventListener('pointerenter', this.gateOrbitPointer, { capture: true });
     this.canvas.removeEventListener('pointerdown', this.gateOrbitPointer, { capture: true });
     this.canvas.removeEventListener('pointermove', this.gateOrbitPointer, { capture: true });
     this.canvas.removeEventListener('pointerup', this.gateOrbitPointer, { capture: true });
     this.canvas.removeEventListener('pointercancel', this.gateOrbitPointer, { capture: true });
+    this.canvas.removeEventListener('pointerout', this.gateOrbitPointer, { capture: true });
+    this.canvas.removeEventListener('pointerleave', this.gateOrbitPointer, { capture: true });
     this.canvas.removeEventListener('wheel', this.blockMouseWheelNavigation, { capture: true });
     if (this.terrainPreviewFrame) cancelAnimationFrame(this.terrainPreviewFrame);
     if (this.terrainToolPreviewTimer !== null) window.clearTimeout(this.terrainToolPreviewTimer);
@@ -909,7 +919,8 @@ export class WorkspaceRenderer {
   private readonly handleControlsChange = (): void => { this.requestRender(); };
 
   private readonly gateOrbitPointer = (event: PointerEvent): void => {
-    this.controls.enabled = isFingerNavigationPointer(event);
+    this.pencilPresence.observe(event);
+    this.controls.enabled = canNavigateWithFinger(event, this.pencilPresence.isPresent);
   };
 
   private readonly blockMouseWheelNavigation = (event: WheelEvent): void => {
