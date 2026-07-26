@@ -209,7 +209,8 @@ export const DEFAULT_INK_CUBOID_SIZE: InkVector3 = { x: 1, y: 1, z: 1 };
 export const DEFAULT_INK_SPHERE_RADIUS = 0.5;
 export const DEFAULT_INK_FILL_BRUSH_SIZE = 0.1;
 export const DEFAULT_INK_NORMAL_OUTSET_COLOR = '#000000';
-export const DEFAULT_INK_NORMAL_OUTSET_DISTANCE = 0.05;
+/** Normal outset and authored outline share the same default world width. */
+export const DEFAULT_INK_NORMAL_OUTSET_DISTANCE = DEFAULT_INK_STROKE_WIDTH;
 const CUBOID_FACE_ORDER: readonly InkCuboidFace[] = [
   'positive-x', 'negative-x', 'positive-y', 'negative-y', 'positive-z', 'negative-z',
 ];
@@ -349,10 +350,16 @@ export function createDefaultInkNormalOutsetSettings(): InkNormalOutsetSettings 
 export function createInkSphereGeometry(radius: number): BufferGeometry {
   const geometry = new BufferGeometry();
   const positions: number[] = [];
-  for (const vertex of INK_SPHERE_UNIT_VERTICES) positions.push(vertex.x * radius, vertex.y * radius, vertex.z * radius);
+  const normals: number[] = [];
+  for (const vertex of INK_SPHERE_UNIT_VERTICES) {
+    positions.push(vertex.x * radius, vertex.y * radius, vertex.z * radius);
+    // The six cube-sphere charts duplicate boundary vertices. Supplying the
+    // radial normal explicitly keeps the Normal Outset shell continuous.
+    normals.push(vertex.x, vertex.y, vertex.z);
+  }
   geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new Float32BufferAttribute(normals, 3));
   geometry.setIndex(INK_SPHERE_TRIANGLE_INDICES);
-  geometry.computeVertexNormals();
   return geometry;
 }
 

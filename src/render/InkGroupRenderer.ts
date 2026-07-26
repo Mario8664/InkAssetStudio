@@ -313,28 +313,27 @@ function resolveInkNormalOutsetRenderSettings(
 
 /** Disabled Shapes own no shell resource; enabled Studio previews use live source settings. */
 function createInkNormalOutsetMesh(outset: InkNormalOutsetRenderSettings, shape: InkShape): Mesh {
-  const geometry = createInkNormalOutsetGeometry(shape);
+  const geometry = createInkNormalOutsetGeometry(shape, outset.distance);
   if (!geometry) throw new Error(`Normal outset is unsupported for Ink ${shape.kind}.`);
-  const mesh = new Mesh(geometry, createInkNormalOutsetMaterial(outset, shape));
+  const mesh = new Mesh(geometry, createInkNormalOutsetMaterial(outset));
   mesh.name = 'InkNormalOutsetShell';
-  mesh.userData.inkNormalOutsetGeometryKey = getInkNormalOutsetGeometryKey(shape);
+  mesh.userData.inkNormalOutsetGeometryKey = getInkNormalOutsetGeometryKey(shape, outset.distance);
   mesh.visible = outset.enabled;
   mesh.castShadow = false;
   return mesh;
 }
 
 function updateInkNormalOutsetMesh(mesh: Mesh, outset: InkNormalOutsetRenderSettings, shape: InkShape): void {
-  const geometryKey = getInkNormalOutsetGeometryKey(shape);
+  const geometryKey = getInkNormalOutsetGeometryKey(shape, outset.distance);
   if (mesh.userData.inkNormalOutsetGeometryKey !== geometryKey) {
     mesh.geometry.dispose();
-    const geometry = createInkNormalOutsetGeometry(shape);
+    const geometry = createInkNormalOutsetGeometry(shape, outset.distance);
     if (!geometry) throw new Error(`Normal outset is unsupported for Ink ${shape.kind}.`);
     mesh.geometry = geometry;
     mesh.userData.inkNormalOutsetGeometryKey = geometryKey;
   }
   const uniforms = (mesh.material as ShaderMaterial).uniforms;
   (uniforms.inkNormalOutsetColor!.value as Color).set(outset.color);
-  uniforms.inkNormalOutsetDistance!.value = outset.distance;
   mesh.visible = outset.enabled;
 }
 
@@ -343,19 +342,51 @@ function disposeInkNormalOutsetMesh(mesh: Mesh): void {
   (mesh.material as ShaderMaterial).dispose();
 }
 
-function createInkNormalOutsetGeometry(shape: InkShape): BufferGeometry | null {
-  if (shape.kind === 'cuboid') return createAveragedNormalCuboidGeometry(shape.size);
-  if (shape.kind === 'sphere') return createInkSphereGeometry(shape.radius);
-  if (shape.kind === 'cylinder') return createInkCylinderGeometry(shape.radius, shape.height);
-  if (shape.kind === 'frustum') return createInkFrustumGeometry(shape.topSize, shape.bottomSize, shape.height);
+/** Every finite Shape owns final-dimension, pre-expanded shell geometry. */
+function createInkNormalOutsetGeometry(shape: InkShape, distance: number): BufferGeometry | null {
+  if (shape.kind === 'cuboid') return createMiteredCuboidGeometry(
+    shape.size.x + distance * 2,
+    shape.size.y + distance * 2,
+    shape.size.z + distance * 2,
+  );
+  if (shape.kind === 'sphere') return createInkSphereGeometry(shape.radius + distance);
+  if (shape.kind === 'cylinder') return createInkCylinderGeometry(shape.radius + distance, shape.height + distance * 2);
+  if (shape.kind === 'frustum') {
+    const dimensions = getMiteredFrustumOutsetDimensions(shape, distance);
+    return createInkFrustumGeometry(dimensions.topSize, dimensions.bottomSize, dimensions.height);
+  }
   return null;
 }
 
-/** Shared corners and equal-weight corner normals keep the Cuboid shell continuous. */
-function createAveragedNormalCuboidGeometry(size: Readonly<{ x: number; y: number; z: number }>): BufferGeometry {
-  const halfX = size.x * 0.5;
-  const halfY = size.y * 0.5;
-  const halfZ = size.z * 0.5;
+function getInkNormalOutsetGeometryKey(shape: InkShape, distance: number): string {
+  if (shape.kind === 'cuboid') return `cuboid:${shape.size.x}:${shape.size.y}:${shape.size.z}:${distance}`;
+  if (shape.kind === 'sphere') return `sphere:${shape.radius}:${distance}`;
+  if (shape.kind === 'cylinder') return `cylinder:${shape.radius}:${shape.height}:${distance}`;
+  if (shape.kind === 'frustum') return `frustum:${shape.topSize}:${shape.bottomSize}:${shape.height}:${distance}`;
+  return 'plane';
+}
+
+/** Offsets each Frustum face plane by distance and intersects the moved planes at its corners. */
+function getMiteredFrustumOutsetDimensions(
+  shape: Extract<InkShape, { kind: 'frustum' }>,
+  distance: number,
+): { topSize: number; bottomSize: number; height: number } {
+  const sideSlope = (shape.topSize - shape.bottomSize) / (shape.height * 2);
+  const sideNormalLength = Math.hypot(1, sideSlope);
+  const outerHalfHeight = shape.height * 0.5 + distance;
+  const sidePlaneOffset = (shape.topSize + shape.bottomSize) * 0.25 + distance * sideNormalLength;
+  return {
+    topSize: (sidePlaneOffset + sideSlope * outerHalfHeight) * 2,
+    bottomSize: (sidePlaneOffset - sideSlope * outerHalfHeight) * 2,
+    height: outerHalfHeight * 2,
+  };
+}
+
+/** A closed hard-edge Cuboid at its already-offset dimensions. */
+function createMiteredCuboidGeometry(width: number, height: number, depth: number): BufferGeometry {
+  const halfX = width * 0.5;
+  const halfY = height * 0.5;
+  const halfZ = depth * 0.5;
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new Float32BufferAttribute([
     -halfX, -halfY, -halfZ,
@@ -375,26 +406,7 @@ function createAveragedNormalCuboidGeometry(size: Readonly<{ x: number; y: numbe
     3, 7, 2, 7, 6, 2,
     0, 1, 4, 1, 5, 4,
   ]);
-  const cornerNormal = 1 / Math.sqrt(3);
-  geometry.setAttribute('normal', new Float32BufferAttribute([
-    -cornerNormal, -cornerNormal, -cornerNormal,
-    cornerNormal, -cornerNormal, -cornerNormal,
-    cornerNormal, cornerNormal, -cornerNormal,
-    -cornerNormal, cornerNormal, -cornerNormal,
-    -cornerNormal, -cornerNormal, cornerNormal,
-    cornerNormal, -cornerNormal, cornerNormal,
-    cornerNormal, cornerNormal, cornerNormal,
-    -cornerNormal, cornerNormal, cornerNormal,
-  ], 3));
   return geometry;
-}
-
-function getInkNormalOutsetGeometryKey(shape: InkShape): string {
-  if (shape.kind === 'cuboid') return `cuboid:${shape.size.x}:${shape.size.y}:${shape.size.z}`;
-  if (shape.kind === 'sphere') return `sphere:${shape.radius}`;
-  if (shape.kind === 'cylinder') return `cylinder:${shape.radius}:${shape.height}`;
-  if (shape.kind === 'frustum') return `frustum:${shape.topSize}:${shape.bottomSize}:${shape.height}`;
-  return 'plane';
 }
 
 function createInkShapeContentRoot(): Group {
@@ -583,12 +595,11 @@ void main() {
   });
 }
 
-/** The shell moves in world space and renders only its inward-facing side. */
-function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset, _shape: InkShape): ShaderMaterial {
+/** The already-offset shell renders only its inward-facing side. */
+function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset): ShaderMaterial {
   return new ShaderMaterial({
     uniforms: {
       inkNormalOutsetColor: { value: new Color(outset.color) },
-      inkNormalOutsetDistance: { value: outset.distance },
     },
     transparent: false,
     depthTest: true,
@@ -596,12 +607,9 @@ function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset, _shape: 
     side: BackSide,
     toneMapped: false,
     vertexShader: `
-uniform float inkNormalOutsetDistance;
 void main() {
-  vec3 outwardWorldNormal = normalize(mat3(modelMatrix) * normal);
-  vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-  worldPosition.xyz += outwardWorldNormal * inkNormalOutsetDistance;
-  gl_Position = projectionMatrix * viewMatrix * worldPosition;
+  // Geometry positions already represent the complete world-unit outset.
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`,
     fragmentShader: `
 uniform vec3 inkNormalOutsetColor;

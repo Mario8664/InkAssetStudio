@@ -30,7 +30,7 @@ Studio 不是图片画板、Procreate 导入器、远程桌面，也不是完整
 - 一个工作场景可包含多个 Ink Group、每个 Group 多个 Shape。
 - Group 保留稳定 `id`、名称、局部 Pivot、连续世界坐标摆放和 `0 / 90 / 180 / 270` 度离散 Y 轴旋转。
 - Shape 保留与 Painting 一致的 `plane`、`cuboid`、`sphere`、`cylinder`、`frustum` 五类，以及位置、YXZ 旋转和固有尺寸；Cuboid 使用 XYZ size，Sphere 使用 radius，Cylinder 使用 radius/height，Frustum 使用 top size/bottom size/height；不提供通用 Transform Scale。
-- Cuboid、Sphere、Cylinder 与 Frustum 提供 Painting 当前的 `normalOutset` Shape 配置：可切换启用、设置壳颜色与 `0.001～1` 世界单位外扩距离；Plane 不提供该配置。壳不使用 Fill 纹理、Half-Lambert 或 Ink 硬阴影，关闭时不保留 Mesh 或 GPU 资源。
+- Cuboid、Sphere、Cylinder 与 Frustum 提供 Painting 当前的 `normalOutset` Shape 配置：可切换启用、设置壳颜色与 `0.001～1` 世界单位外扩距离；默认距离与默认 Outline 宽度同为 `0.035`。壳 Geometry 直接烘焙最终内在尺寸和 `distance`，不在 shader 中按插值 normal 二次外扩：Cuboid、Cylinder、Frustum 使用逐面恒距 miter 壳，Sphere 使用无接缝的 `radius + distance` 径向外球。Plane 不提供该配置；壳不使用 Fill 纹理、Half-Lambert 或 Ink 硬阴影，关闭时不保留 Mesh 或 GPU 资源。
 - Move 与 Rotate 手柄支持 Unity 风格的 World/Local 坐标空间切换；该选择只属于 Editor Session。Shape 列表在删除按钮左侧提供眼睛按钮，可将指定 Shape 临时排除出绘制、吸色与 Shape 拾取，但不隐藏其已提交 Ink 渲染结果，也不写入作者源、导出、Undo/Redo 或内容 dirty。
 - 提供完整 Ink 工具：描边绘制、描边擦除、填色绘制、填色擦除、Bucket Fill、吸色、颜色调整、可编辑色板、笔刷尺寸、直线辅助、Group/Shape 选择、Undo/Redo。
 - Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。
@@ -247,7 +247,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 
 - 指针拖动期间仅维护临时 Ribbon 或 Fill 工作副本；松手后才形成一次作者源写入和一条 Undo/Redo 记录。
 - Ink 编译在常驻 Worker 中完成；页面首次打开或 Group 增删 Shape 时才初始化该 Group 的作者源与轻量 Shape hash。一次笔画提交只跨线程发送受影响的作者 Shape，并只回传该 Shape 的派生缓存；未变化 Shape 的 Ribbon/Fill 数组必须留在主文档并复用。
-- Shape Position/Rotation 使用已有 Mesh Transform 更新；Cuboid size、Sphere radius、Cylinder radius/height 与 Frustum top size/bottom size/height 都是固有尺寸，保存在作者 Shape 数据中，不作为通用 Transform Scale。渲染时仅在 Shape 的内部内容坐标层应用尺寸，Normal Outset 壳以实际尺寸几何独立构建，`distance` 始终保持世界单位。尺寸变化只重采样当前 Shape 的有限 Fill 图表、刷新该 Shape 的辅助面和硬阴影，不重建整个场景。
+- Shape Position/Rotation 使用已有 Mesh Transform 更新；Cuboid size、Sphere radius、Cylinder radius/height 与 Frustum top size/bottom size/height 都是固有尺寸，保存在作者 Shape 数据中，不作为通用 Transform Scale。渲染时仅在 Shape 的内部内容坐标层应用尺寸，Normal Outset 壳以包含真实尺寸和 `distance` 的预外扩 Geometry 独立构建，`distance` 始终保持世界单位；不得由共享顶点的平滑 normal 或 shader 位移推导。尺寸或距离变化只替换当前 Shape 的壳 Geometry、重采样必要的有限 Fill 图表并刷新辅助面和硬阴影，不重建整个场景。
 - 只要输入不变，普通相机导航、UI 变化和灯光颜色/强度变化不得触发全场景重编译或硬阴影深度重建。
 - Ink 硬阴影捕获必须隔离 Line、Points、Sprite 和全部编辑辅助对象；纯 Outline 与 Normal Outset 编辑不得使硬阴影深度图失效。
 - Terrain 修改只重建必要的 Reference 几何与阴影深度；不得以整份文档克隆、全场景序列化或 GPU 资源重建作为普通交互的便利回退。
@@ -276,7 +276,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 
 - 多个 Group 可在同一工作场景中独立选择、摆放、编辑和撤销/重做。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 都支持现有的 Ink 描边与 Fill 规则；Cylinder 的侧面图表在环绕方向连续，Frustum 使用六个表面图表。
-- Cuboid/Sphere/Cylinder/Frustum 的 Normal Outset 开关、颜色和距离可实时预览、Undo/Redo、保存、导出和重新导入；所有有限 Shape 的壳均保持朝外且无图表缺面。
+- Cuboid/Sphere/Cylinder/Frustum 的 Normal Outset 开关、颜色和距离可实时预览、Undo/Redo、保存、导出和重新导入；所有有限 Shape 的壳均保持朝外、逐面恒距且无 Sphere 图表接缝或缺面。
 - 可见 Fill 使用 `DoubleSide` 并在背面翻转光照法线；专属 alpha-clip hard-shadow depth pass 固定 `BackSide`。
 - 描边/擦除/填色/Fill 擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成。
 - Apple Pencil 压感开启时记录有效压力；关闭时新描边全部记录为 `1`；切换不会改写历史笔画。

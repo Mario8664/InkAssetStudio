@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_INK_NORMAL_OUTSET_DISTANCE,
+  DEFAULT_INK_STROKE_WIDTH,
   INK_COMPILED_FORMAT_VERSION,
   compileInkShape,
   createInkCuboidShape,
@@ -17,6 +19,11 @@ import {
 } from '../src/domain/ink/ink';
 
 describe('Painting-compatible Ink Shapes', () => {
+  it('uses the authored Outline width as the default Normal Outset distance', () => {
+    expect(DEFAULT_INK_NORMAL_OUTSET_DISTANCE).toBe(DEFAULT_INK_STROKE_WIDTH);
+    expect(createInkCuboidShape().normalOutset!.distance).toBe(DEFAULT_INK_STROKE_WIDTH);
+  });
+
   const cases: Array<{ label: string; shape: InkShape; points: InkSurfacePoint[] }> = [
     {
       label: 'Plane',

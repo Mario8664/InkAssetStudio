@@ -203,6 +203,12 @@ describe('Reference rendering', () => {
       const centroid = first.clone().add(second).add(third).multiplyScalar(1 / 3);
       expect(normal.dot(centroid)).toBeGreaterThan(0);
     }
+    const normals = sphereGeometry.getAttribute('normal');
+    for (let index = 0; index < positions.count; index += 1) {
+      const position = new Vector3().fromBufferAttribute(positions, index).normalize();
+      const normal = new Vector3().fromBufferAttribute(normals, index).normalize();
+      expect(normal.distanceTo(position)).toBeLessThan(0.000001);
+    }
     sphereGeometry.dispose();
 
     const painted = paintInkFill(
@@ -258,6 +264,18 @@ describe('Reference rendering', () => {
       expect((fill.userData.inkHardShadowDepthMaterial as ShaderMaterial).side).toBe(BackSide);
       expect(shell).toBeInstanceOf(Mesh);
       expect(shell.castShadow).toBe(false);
+      const positions = shell.geometry.getAttribute('position');
+      const maximumY = Math.max(...Array.from({ length: positions.count }, (_, index) => Math.abs(positions.getY(index))));
+      expect(maximumY).toBeCloseTo(0.58);
+      if (sample.shape.kind === 'cylinder') {
+        const maximumRadius = Math.max(...Array.from({ length: positions.count }, (_, index) => Math.hypot(positions.getX(index), positions.getZ(index))));
+        expect(maximumRadius).toBeCloseTo(0.58);
+      } else {
+        const topHalfSize = Math.max(...Array.from({ length: positions.count }, (_, index) => positions.getY(index) > 0 ? Math.max(Math.abs(positions.getX(index)), Math.abs(positions.getZ(index))) : 0));
+        const bottomHalfSize = Math.max(...Array.from({ length: positions.count }, (_, index) => positions.getY(index) < 0 ? Math.max(Math.abs(positions.getX(index)), Math.abs(positions.getZ(index))) : 0));
+        expect(topHalfSize * 2).toBeCloseTo(0.6249230177);
+        expect(bottomHalfSize * 2).toBeCloseTo(1.2049230177);
+      }
       disposeObjectTree(root);
     }
   });
@@ -329,18 +347,23 @@ describe('Reference rendering', () => {
     expect(root.scale.toArray()).toEqual([1, 1, 1]);
     expect(content.scale.toArray()).toEqual([3, 2, 0.5]);
     expect(shell.geometry).not.toBe(originalGeometry);
-    expect(Array.from(shell.geometry.getAttribute('position').array)).toEqual([
-      -1.5, -1, -0.25,
-      1.5, -1, -0.25,
-      1.5, 1, -0.25,
-      -1.5, 1, -0.25,
-      -1.5, -1, 0.25,
-      1.5, -1, 0.25,
-      1.5, 1, 0.25,
-      -1.5, 1, 0.25,
-    ]);
+    const shellPositions = Array.from(shell.geometry.getAttribute('position').array);
+    const expectedShellPositions = [
+      -1.58, -1.08, -0.33,
+      1.58, -1.08, -0.33,
+      1.58, 1.08, -0.33,
+      -1.58, 1.08, -0.33,
+      -1.58, -1.08, 0.33,
+      1.58, -1.08, 0.33,
+      1.58, 1.08, 0.33,
+      -1.58, 1.08, 0.33,
+    ];
+    expect(shellPositions).toHaveLength(expectedShellPositions.length);
+    for (const [index, expected] of expectedShellPositions.entries()) expect(shellPositions[index]).toBeCloseTo(expected);
     expect(shell.getWorldScale(new Vector3()).toArray()).toEqual([1, 1, 1]);
-    expect((shell.material as ShaderMaterial).uniforms.inkNormalOutsetDistance!.value).toBe(0.08);
+    const shellMaterial = shell.material as ShaderMaterial;
+    expect(shellMaterial.uniforms.inkNormalOutsetDistance).toBeUndefined();
+    expect(shellMaterial.vertexShader).not.toContain('outwardWorldNormal');
     disposeObjectTree(root);
   });
 

@@ -38,8 +38,8 @@
 - 多 Group Outliner、Group 新建/删除/改名、连续 X/Y/Z 摆放、0/90/180/270° Y 轴摆放旋转。
 - Group Pivot 视口选择和 XZ 拖动摆放。
 - 每个 Group 支持任意多个 Plane、Cuboid、Sphere、Cylinder、Frustum。
-- Shape 支持选择、删除、位置、XYZ 旋转、Cuboid 固有尺寸、Sphere 固有半径、Cylinder 半径/高度与 Frustum 上表面 size/下表面 size/高度；不提供通用 Transform Scale。Move、Rotate 与内在尺寸是互斥视口手柄模式，尺寸手柄不会与移动或旋转手柄混显。Move/Rotate 支持持久化的 World/Local 坐标空间切换，默认 World。有限 Shape 尺寸变更只重采样当前 Shape 的 Fill 图表，Normal Outset 壳以真实尺寸几何渲染，外扩距离保持世界单位。
-- Cuboid/Sphere/Cylinder/Frustum 支持 Painting 当前的 Normal Outset Shape 配置：启用、壳颜色与世界单位外扩距离可实时调整、Undo/Redo、保存和交换；Plane 不开放该设置。关闭时立即移除并释放壳资源。
+- Shape 支持选择、删除、位置、XYZ 旋转、Cuboid 固有尺寸、Sphere 固有半径、Cylinder 半径/高度与 Frustum 上表面 size/下表面 size/高度；不提供通用 Transform Scale。Move、Rotate 与内在尺寸是互斥视口手柄模式，尺寸手柄不会与移动或旋转手柄混显。Move/Rotate 支持持久化的 World/Local 坐标空间切换，默认 World。有限 Shape 尺寸变更只重采样当前 Shape 的 Fill 图表；Normal Outset 壳以真实尺寸和 `distance` 预外扩 Geometry 渲染，外扩距离保持世界单位。
+- Cuboid/Sphere/Cylinder/Frustum 支持 Painting 当前的 Normal Outset Shape 配置：启用、壳颜色与世界单位外扩距离可实时调整、Undo/Redo、保存和交换；默认距离与默认 Outline 宽度同为 `0.035`。Cuboid/Cylinder/Frustum 使用逐面恒距 miter 壳，Sphere 使用无缝的 `radius + distance` 径向外球，且不会在 shader 中二次外扩；Plane 不开放该设置。关闭时立即移除并释放壳资源。
 - Shape 列表在删除按钮左侧提供眼睛按钮。它将该 Shape 临时排除出新绘制、吸色与 Shape 拾取，仍显示既有 Ink；排除 ID 仅进入 Editor Session，不进入作者源、导出、Undo/Redo 或内容 dirty。
 - Shape 视口拖动支持 XZ 移动和 Y 轴旋转，手势结束后才提交一次作者事务。
 - Shape 编辑辅助已与 Painting 当前视觉一致：选中 Surface 使用 `#63c7fa / 0.34`，未选中及 Draw 模式 Surface 使用 `#548097 / 0.16`；相应参考网格使用 `#b9ebff / 0.84` 与 `#7aa0ae / 0.42`。辅助面读取深度但不写入深度，不再使用黄色 wireframe。
@@ -95,7 +95,7 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 8 个 Vitest 文件、66 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 8 个 Vitest 文件、67 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
 - 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样与固定世界单位 Normal Outset 壳、Normal Outset v14 编译与资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、旧工作文件升级、篡改派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存语义、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
