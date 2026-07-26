@@ -26,9 +26,6 @@ import {
   INK_CYLINDER_SEGMENTS,
   INK_FILL_PIXELS_PER_WORLD_UNIT,
   INK_SPHERE_FACE_SEGMENTS,
-  createInkCylinderGeometry,
-  createInkFrustumGeometry,
-  createInkSphereGeometry,
   getInkFrustumFacePosition,
   type CompiledInkFillSurface,
   type CompiledInkNormalOutset,
@@ -89,7 +86,7 @@ export function createInkGroupRenderRoot(
   return root;
 }
 
-/** Creates one independently replaceable Shape root: Fill, optional shell, then Outline. */
+/** Creates one independently replaceable Shape root: Fill, alpha-clipped outset shell, then Outline. */
 export function createInkShapeRenderRoot(
   shape: CompiledInkShape,
   source: InkShape,
@@ -155,7 +152,7 @@ export function updateInkShapeRibbon(root: Group, ribbon: CompiledInkRibbon): vo
   content.add(replacement);
 }
 
-/** Creates, updates, or removes the whole-Shape shell from live source settings. */
+/** Creates, updates, or removes alpha-clipped outset surfaces from live source settings. */
 export function updateInkShapeNormalOutset(
   root: Group,
   normalOutset: CompiledInkNormalOutset | null,
@@ -163,19 +160,25 @@ export function updateInkShapeNormalOutset(
   options: InkShapeRenderOptions = {},
 ): void {
   const next = resolveInkNormalOutsetRenderSettings(normalOutset, source, options);
-  const existing = root.children.find((child) => child instanceof Mesh && child.name === 'InkNormalOutsetShell') as Mesh | undefined;
-  if (!next) {
+  const fills = getInkFillSurfaceMeshes(root);
+  const existing = root.children.find((child) => child.name === 'InkNormalOutsetShell');
+  if (!next || fills.size === 0) {
     if (existing) {
-      disposeInkNormalOutsetMesh(existing);
+      disposeInkNormalOutsetObject(existing);
       existing.removeFromParent();
     }
     return;
   }
-  if (existing) {
-    updateInkNormalOutsetMesh(existing, next, source);
+  const geometryKey = getInkNormalOutsetGeometryKey(source, next.distance);
+  if (!(existing instanceof Group) || existing.userData.inkNormalOutsetGeometryKey !== geometryKey) {
+    if (existing) {
+      disposeInkNormalOutsetObject(existing);
+      existing.removeFromParent();
+    }
+    root.add(createInkNormalOutsetShell(next, source, fills));
     return;
   }
-  root.add(createInkNormalOutsetMesh(next, source));
+  updateInkNormalOutsetShell(existing, next, source, fills);
 }
 
 /**
@@ -311,30 +314,85 @@ function resolveInkNormalOutsetRenderSettings(
   };
 }
 
-/** Disabled Shapes own no shell resource; enabled Studio previews use live source settings. */
-function createInkNormalOutsetMesh(outset: InkNormalOutsetRenderSettings, shape: InkShape): Mesh {
-  const geometry = createInkNormalOutsetGeometry(shape, outset.distance);
-  if (!geometry) throw new Error(`Normal outset is unsupported for Ink ${shape.kind}.`);
-  const mesh = new Mesh(geometry, createInkNormalOutsetMaterial(outset));
-  mesh.name = 'InkNormalOutsetShell';
-  mesh.userData.inkNormalOutsetGeometryKey = getInkNormalOutsetGeometryKey(shape, outset.distance);
-  mesh.visible = outset.enabled;
+function getInkFillSurfaceMeshes(root: Group): Map<InkFillSurfaceId, Mesh> {
+  const fills = new Map<InkFillSurfaceId, Mesh>();
+  const content = getInkShapeContentRoot(root);
+  for (const child of content.children) {
+    if (!(child instanceof Mesh) || child.name !== 'InkFillSurface' || typeof child.userData.inkFillSurfaceId !== 'string') continue;
+    fills.set(child.userData.inkFillSurfaceId as InkFillSurfaceId, child);
+  }
+  return fills;
+}
+
+function createInkNormalOutsetShell(
+  outset: InkNormalOutsetRenderSettings,
+  shape: InkShape,
+  fills: ReadonlyMap<InkFillSurfaceId, Mesh>,
+): Group {
+  const shell = new Group();
+  shell.name = 'InkNormalOutsetShell';
+  shell.userData.inkNormalOutsetGeometryKey = getInkNormalOutsetGeometryKey(shape, outset.distance);
+  shell.visible = outset.enabled;
+  for (const [id, fill] of fills) shell.add(createInkNormalOutsetSurfaceMesh(id, outset, shape, fill));
+  return shell;
+}
+
+function updateInkNormalOutsetShell(
+  shell: Group,
+  outset: InkNormalOutsetRenderSettings,
+  shape: InkShape,
+  fills: ReadonlyMap<InkFillSurfaceId, Mesh>,
+): void {
+  shell.visible = outset.enabled;
+  const existing = new Map<InkFillSurfaceId, Mesh>();
+  for (const child of shell.children) {
+    if (!(child instanceof Mesh) || child.name !== 'InkNormalOutsetSurface' || typeof child.userData.inkFillSurfaceId !== 'string') continue;
+    existing.set(child.userData.inkFillSurfaceId as InkFillSurfaceId, child);
+  }
+  for (const [id, mesh] of existing) {
+    if (fills.has(id)) continue;
+    disposeInkNormalOutsetMesh(mesh);
+    mesh.removeFromParent();
+    existing.delete(id);
+  }
+  for (const [id, fill] of fills) {
+    const mesh = existing.get(id);
+    if (mesh) updateInkNormalOutsetSurfaceMesh(mesh, outset, fill);
+    else shell.add(createInkNormalOutsetSurfaceMesh(id, outset, shape, fill));
+  }
+}
+
+function createInkNormalOutsetSurfaceMesh(
+  id: InkFillSurfaceId,
+  outset: InkNormalOutsetRenderSettings,
+  shape: InkShape,
+  fill: Mesh,
+): Mesh {
+  const mesh = new Mesh(
+    createInkNormalOutsetSurfaceGeometry(id, shape, outset.distance),
+    createInkNormalOutsetMaterial(outset, fill.material as ShaderMaterial),
+  );
+  mesh.name = 'InkNormalOutsetSurface';
+  mesh.userData.inkFillSurfaceId = id;
   mesh.castShadow = false;
   return mesh;
 }
 
-function updateInkNormalOutsetMesh(mesh: Mesh, outset: InkNormalOutsetRenderSettings, shape: InkShape): void {
-  const geometryKey = getInkNormalOutsetGeometryKey(shape, outset.distance);
-  if (mesh.userData.inkNormalOutsetGeometryKey !== geometryKey) {
-    mesh.geometry.dispose();
-    const geometry = createInkNormalOutsetGeometry(shape, outset.distance);
-    if (!geometry) throw new Error(`Normal outset is unsupported for Ink ${shape.kind}.`);
-    mesh.geometry = geometry;
-    mesh.userData.inkNormalOutsetGeometryKey = geometryKey;
+function updateInkNormalOutsetSurfaceMesh(mesh: Mesh, outset: InkNormalOutsetRenderSettings, fill: Mesh): void {
+  const material = mesh.material as ShaderMaterial;
+  (material.uniforms.inkNormalOutsetColor!.value as Color).set(outset.color);
+  copyInkFillAlphaClipUniforms(material, fill.material as ShaderMaterial);
+}
+
+function disposeInkNormalOutsetObject(object: Object3D): void {
+  if (object instanceof Mesh) {
+    disposeInkNormalOutsetMesh(object);
+    return;
   }
-  const uniforms = (mesh.material as ShaderMaterial).uniforms;
-  (uniforms.inkNormalOutsetColor!.value as Color).set(outset.color);
-  mesh.visible = outset.enabled;
+  for (const child of [...object.children]) {
+    if (child instanceof Mesh) disposeInkNormalOutsetMesh(child);
+    child.removeFromParent();
+  }
 }
 
 function disposeInkNormalOutsetMesh(mesh: Mesh): void {
@@ -342,20 +400,56 @@ function disposeInkNormalOutsetMesh(mesh: Mesh): void {
   (mesh.material as ShaderMaterial).dispose();
 }
 
-/** Every finite Shape owns final-dimension, pre-expanded shell geometry. */
-function createInkNormalOutsetGeometry(shape: InkShape, distance: number): BufferGeometry | null {
-  if (shape.kind === 'cuboid') return createMiteredCuboidGeometry(
-    shape.size.x + distance * 2,
-    shape.size.y + distance * 2,
-    shape.size.z + distance * 2,
-  );
-  if (shape.kind === 'sphere') return createInkSphereGeometry(shape.radius + distance);
-  if (shape.kind === 'cylinder') return createInkCylinderGeometry(shape.radius + distance, shape.height + distance * 2);
+function createInkNormalOutsetSurfaceGeometry(id: InkFillSurfaceId, shape: InkShape, distance: number): BufferGeometry {
+  if (shape.kind === 'cuboid' && isInkCuboidFace(id)) return createCuboidNormalOutsetSurfaceGeometry(id, shape, distance);
+  if (shape.kind === 'sphere' && isInkCuboidFace(id)) {
+    const geometry = createSphereFillSurfaceGeometry(id);
+    geometry.scale(shape.radius + distance, shape.radius + distance, shape.radius + distance);
+    return geometry;
+  }
+  if (shape.kind === 'cylinder') return createCylinderFillSurfaceGeometry({
+    ...shape,
+    radius: shape.radius + distance,
+    height: shape.height + distance * 2,
+  }, id);
   if (shape.kind === 'frustum') {
     const dimensions = getMiteredFrustumOutsetDimensions(shape, distance);
-    return createInkFrustumGeometry(dimensions.topSize, dimensions.bottomSize, dimensions.height);
+    return createFrustumFillSurfaceGeometry({ ...shape, ...dimensions }, id);
   }
-  return null;
+  return new BufferGeometry();
+}
+
+function createCuboidNormalOutsetSurfaceGeometry(
+  face: InkCuboidFace,
+  shape: Extract<InkShape, { kind: 'cuboid' }>,
+  distance: number,
+): BufferGeometry {
+  const dimensions = {
+    x: shape.size.x + distance * 2,
+    y: shape.size.y + distance * 2,
+    z: shape.size.z + distance * 2,
+  };
+  return createSurfaceQuad(
+    getCuboidOutsetFacePosition(face, -0.5, -0.5, dimensions),
+    getCuboidOutsetFacePosition(face, 0.5, -0.5, dimensions),
+    getCuboidOutsetFacePosition(face, -0.5, 0.5, dimensions),
+    getCuboidOutsetFacePosition(face, 0.5, 0.5, dimensions),
+    face === 'positive-z' || face === 'negative-z',
+  );
+}
+
+function getCuboidOutsetFacePosition(
+  face: InkCuboidFace,
+  u: number,
+  v: number,
+  dimensions: { x: number; y: number; z: number },
+): Vector3 {
+  const unitPosition = getCuboidFacePosition(face, u, v);
+  return new Vector3(
+    unitPosition.x * dimensions.x,
+    unitPosition.y * dimensions.y,
+    unitPosition.z * dimensions.z,
+  );
 }
 
 function getInkNormalOutsetGeometryKey(shape: InkShape, distance: number): string {
@@ -380,33 +474,6 @@ function getMiteredFrustumOutsetDimensions(
     bottomSize: (sidePlaneOffset - sideSlope * outerHalfHeight) * 2,
     height: outerHalfHeight * 2,
   };
-}
-
-/** A closed hard-edge Cuboid at its already-offset dimensions. */
-function createMiteredCuboidGeometry(width: number, height: number, depth: number): BufferGeometry {
-  const halfX = width * 0.5;
-  const halfY = height * 0.5;
-  const halfZ = depth * 0.5;
-  const geometry = new BufferGeometry();
-  geometry.setAttribute('position', new Float32BufferAttribute([
-    -halfX, -halfY, -halfZ,
-    halfX, -halfY, -halfZ,
-    halfX, halfY, -halfZ,
-    -halfX, halfY, -halfZ,
-    -halfX, -halfY, halfZ,
-    halfX, -halfY, halfZ,
-    halfX, halfY, halfZ,
-    -halfX, halfY, halfZ,
-  ], 3));
-  geometry.setIndex([
-    4, 5, 7, 5, 6, 7,
-    1, 0, 2, 0, 3, 2,
-    1, 2, 5, 5, 2, 6,
-    0, 4, 3, 4, 7, 3,
-    3, 7, 2, 7, 6, 2,
-    0, 1, 4, 1, 5, 4,
-  ]);
-  return geometry;
 }
 
 function createInkShapeContentRoot(): Group {
@@ -595,11 +662,15 @@ void main() {
   });
 }
 
-/** The already-offset shell renders only its inward-facing side. */
-function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset): ShaderMaterial {
+/** The alpha-clipped shell renders only its inward-facing side. */
+function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset, fillMaterial: ShaderMaterial): ShaderMaterial {
+  const fillUniforms = fillMaterial.uniforms;
   return new ShaderMaterial({
     uniforms: {
       inkNormalOutsetColor: { value: new Color(outset.color) },
+      inkFillMap: { value: fillUniforms.inkFillMap!.value },
+      inkFillUvMin: { value: fillUniforms.inkFillUvMin!.value },
+      inkFillUvSize: { value: fillUniforms.inkFillUvSize!.value },
     },
     transparent: false,
     depthTest: true,
@@ -607,16 +678,33 @@ function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset): ShaderM
     side: BackSide,
     toneMapped: false,
     vertexShader: `
+varying vec2 vInkFillUv;
 void main() {
   // Geometry positions already represent the complete world-unit outset.
+  vInkFillUv = uv;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`,
     fragmentShader: `
 uniform vec3 inkNormalOutsetColor;
+uniform sampler2D inkFillMap;
+uniform vec2 inkFillUvMin;
+uniform vec2 inkFillUvSize;
+varying vec2 vInkFillUv;
 void main() {
+  vec2 fillUv = (vInkFillUv - inkFillUvMin) / inkFillUvSize;
+  if (fillUv.x < 0.0 || fillUv.x > 1.0 || fillUv.y < 0.0 || fillUv.y > 1.0) discard;
+  if (texture2D(inkFillMap, fillUv).a < 0.5) discard;
   gl_FragColor = vec4(inkNormalOutsetColor, 1.0);
 }`,
   });
+}
+
+function copyInkFillAlphaClipUniforms(outsetMaterial: ShaderMaterial, fillMaterial: ShaderMaterial): void {
+  const outsetUniforms = outsetMaterial.uniforms;
+  const fillUniforms = fillMaterial.uniforms;
+  outsetUniforms.inkFillMap!.value = fillUniforms.inkFillMap!.value;
+  outsetUniforms.inkFillUvMin!.value = fillUniforms.inkFillUvMin!.value;
+  outsetUniforms.inkFillUvSize!.value = fillUniforms.inkFillUvSize!.value;
 }
 
 /**

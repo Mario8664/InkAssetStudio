@@ -30,7 +30,7 @@ Studio 不是图片画板、Procreate 导入器、远程桌面，也不是完整
 - 一个工作场景可包含多个 Ink Group、每个 Group 多个 Shape。
 - Group 保留稳定 `id`、名称、局部 Pivot、连续世界坐标摆放和 `0 / 90 / 180 / 270` 度离散 Y 轴旋转。
 - Shape 保留与 Painting 一致的 `plane`、`cuboid`、`sphere`、`cylinder`、`frustum` 五类，以及位置、YXZ 旋转和固有尺寸；Cuboid 使用 XYZ size，Sphere 使用 radius，Cylinder 使用 radius/height，Frustum 使用 top size/bottom size/height；不提供通用 Transform Scale。
-- Cuboid、Sphere、Cylinder 与 Frustum 提供 Painting 当前的 `normalOutset` Shape 配置：可切换启用、设置壳颜色与 `0.001～1` 世界单位外扩距离；默认距离与默认 Outline 宽度同为 `0.035`。壳 Geometry 直接烘焙最终内在尺寸和 `distance`，不在 shader 中按插值 normal 二次外扩：Cuboid、Cylinder、Frustum 使用逐面恒距 miter 壳，Sphere 使用无接缝的 `radius + distance` 径向外球。Plane 不提供该配置；壳不使用 Fill 纹理、Half-Lambert 或 Ink 硬阴影，关闭时不保留 Mesh 或 GPU 资源。
+- Cuboid、Sphere、Cylinder 与 Frustum 提供 Painting 当前的 `normalOutset` Shape 配置：可切换启用、设置壳颜色与 `0.001～1` 世界单位外扩距离；默认距离与默认 Outline 宽度同为 `0.035`。壳 Geometry 直接烘焙最终内在尺寸和 `distance`，不在 shader 中按插值 normal 二次外扩：Cuboid、Cylinder、Frustum 使用逐面恒距 miter 壳，Sphere 使用无接缝的 `radius + distance` 径向外球。Plane 不提供该配置；每张壳面复用对应 Fill 图表的纹理与 UV 裁切，并以相同的 `alpha < 0.5` 阈值裁去透明像素；没有 Fill 图表时不创建壳资源。壳不参与 Half-Lambert 或 Ink 硬阴影，关闭时不保留 Mesh 或 GPU 资源。
 - Move 与 Rotate 手柄支持 Unity 风格的 World/Local 坐标空间切换；该选择只属于 Editor Session。Shape 列表在删除按钮左侧提供眼睛按钮，可将指定 Shape 临时排除出绘制、吸色与 Shape 拾取，但不隐藏其已提交 Ink 渲染结果，也不写入作者源、导出、Undo/Redo 或内容 dirty。
 - 提供完整 Ink 工具：描边绘制、描边擦除、填色绘制、填色擦除、Bucket Fill、吸色、颜色调整、可编辑色板、笔刷尺寸、直线辅助、Group/Shape 选择、Undo/Redo。
 - Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。

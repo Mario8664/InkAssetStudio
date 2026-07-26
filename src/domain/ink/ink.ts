@@ -829,7 +829,7 @@ export function compileInkFill(shape: InkShape): CompiledInkFillSurface[] {
   return compiled;
 }
 
-/** Compiles one whole-Shape shell only when Cuboid/Sphere configuration enables it. */
+/** Compiles finite-Shape Normal Outset settings when the configuration enables them. */
 export function compileInkNormalOutset(shape: InkShape): CompiledInkNormalOutset | null {
   if (shape.kind === 'plane' || !shape.normalOutset?.enabled) return null;
   return {

@@ -259,12 +259,14 @@ describe('Reference rendering', () => {
       const painted = paintInkFill(sample.shape, [sample.point], '#29adff', 0.12, 'circle', false);
       const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState(), { useSourceNormalOutset: true });
       const fill = root.getObjectByName('InkFillSurface') as Mesh;
-      const shell = root.getObjectByName('InkNormalOutsetShell') as Mesh;
+      const shell = root.getObjectByName('InkNormalOutsetShell') as Group;
+      const shellSurface = shell.getObjectByName('InkNormalOutsetSurface') as Mesh;
       expect((fill.material as ShaderMaterial).side).toBe(DoubleSide);
       expect((fill.userData.inkHardShadowDepthMaterial as ShaderMaterial).side).toBe(BackSide);
-      expect(shell).toBeInstanceOf(Mesh);
-      expect(shell.castShadow).toBe(false);
-      const positions = shell.geometry.getAttribute('position');
+      expect(shell).toBeInstanceOf(Group);
+      expect(shellSurface).toBeInstanceOf(Mesh);
+      expect(shellSurface.castShadow).toBe(false);
+      const positions = shellSurface.geometry.getAttribute('position');
       const maximumY = Math.max(...Array.from({ length: positions.count }, (_, index) => Math.abs(positions.getY(index))));
       expect(maximumY).toBeCloseTo(0.58);
       if (sample.shape.kind === 'cylinder') {
@@ -312,18 +314,29 @@ describe('Reference rendering', () => {
     disposeObjectTree(root);
   });
 
-  it('creates and disposes a non-casting live-source Normal Outset shell', () => {
+  it('alpha-clips Normal Outset surfaces to Fill charts and disposes them when disabled', () => {
     const shape = createInkSphereShape();
     shape.normalOutset = { enabled: true, color: '#5a3e16', distance: 0.08 };
-    const root = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState(), { useSourceNormalOutset: true });
-    const shell = root.getObjectByName('InkNormalOutsetShell') as Mesh;
-    expect(shell).toBeInstanceOf(Mesh);
-    expect((shell.material as ShaderMaterial).side).toBe(BackSide);
-    expect(shell.castShadow).toBe(false);
+    const emptyRoot = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState(), { useSourceNormalOutset: true });
+    expect(emptyRoot.getObjectByName('InkNormalOutsetShell')).toBeUndefined();
+    disposeObjectTree(emptyRoot);
 
-    const disposeGeometry = vi.spyOn(shell.geometry, 'dispose');
-    const disposeMaterial = vi.spyOn(shell.material as ShaderMaterial, 'dispose');
-    updateInkShapeNormalOutset(root, null, { ...shape, normalOutset: { ...shape.normalOutset, enabled: false } }, { useSourceNormalOutset: true });
+    const painted = paintInkFill(shape, [{ x: 1, y: 0, z: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
+    const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState(), { useSourceNormalOutset: true });
+    const fill = root.getObjectByName('InkFillSurface') as Mesh;
+    const shell = root.getObjectByName('InkNormalOutsetShell') as Group;
+    const surface = shell.getObjectByName('InkNormalOutsetSurface') as Mesh;
+    const material = surface.material as ShaderMaterial;
+    expect(shell).toBeInstanceOf(Group);
+    expect(surface).toBeInstanceOf(Mesh);
+    expect(material.side).toBe(BackSide);
+    expect(surface.castShadow).toBe(false);
+    expect(material.uniforms.inkFillMap!.value).toBe((fill.material as ShaderMaterial).uniforms.inkFillMap!.value);
+    expect(material.fragmentShader).toContain('texture2D(inkFillMap, fillUv).a < 0.5');
+
+    const disposeGeometry = vi.spyOn(surface.geometry, 'dispose');
+    const disposeMaterial = vi.spyOn(material, 'dispose');
+    updateInkShapeNormalOutset(root, null, { ...painted, normalOutset: { ...painted.normalOutset!, enabled: false } }, { useSourceNormalOutset: true });
     expect(root.getObjectByName('InkNormalOutsetShell')).toBeUndefined();
     expect(disposeGeometry).toHaveBeenCalledOnce();
     expect(disposeMaterial).toHaveBeenCalledOnce();
@@ -333,12 +346,14 @@ describe('Reference rendering', () => {
   it('keeps Cuboid dimensions intrinsic while Normal Outset remains a fixed world-unit distance', () => {
     const shape = createInkCuboidShape();
     shape.normalOutset = { enabled: true, color: '#5a3e16', distance: 0.08 };
-    const compiled = compileInkShape(shape);
-    const root = createInkShapeRenderRoot(compiled, shape, createInkFillLightingState(), { useSourceNormalOutset: true });
+    const painted = paintInkFill(shape, [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
+    const compiled = compileInkShape(painted);
+    const root = createInkShapeRenderRoot(compiled, painted, createInkFillLightingState(), { useSourceNormalOutset: true });
     const content = root.getObjectByName('InkShapeContent') as Group;
-    const shell = root.getObjectByName('InkNormalOutsetShell') as Mesh;
-    const originalGeometry = shell.geometry;
-    const resized = { ...shape, size: { x: 3, y: 2, z: 0.5 } };
+    const shell = root.getObjectByName('InkNormalOutsetShell') as Group;
+    const surface = shell.getObjectByName('InkNormalOutsetSurface') as Mesh;
+    const originalGeometry = surface.geometry;
+    const resized = { ...painted, size: { x: 3, y: 2, z: 0.5 } };
 
     applyInkShapeRenderTransform(root, resized);
     updateInkShapeNormalOutset(root, compiled.normalOutset, resized, { useSourceNormalOutset: true });
@@ -346,22 +361,20 @@ describe('Reference rendering', () => {
 
     expect(root.scale.toArray()).toEqual([1, 1, 1]);
     expect(content.scale.toArray()).toEqual([3, 2, 0.5]);
-    expect(shell.geometry).not.toBe(originalGeometry);
-    const shellPositions = Array.from(shell.geometry.getAttribute('position').array);
+    const resizedShell = root.getObjectByName('InkNormalOutsetShell') as Group;
+    const resizedSurface = resizedShell.getObjectByName('InkNormalOutsetSurface') as Mesh;
+    expect(resizedSurface.geometry).not.toBe(originalGeometry);
+    const shellPositions = Array.from(resizedSurface.geometry.getAttribute('position').array);
     const expectedShellPositions = [
-      -1.58, -1.08, -0.33,
-      1.58, -1.08, -0.33,
-      1.58, 1.08, -0.33,
-      -1.58, 1.08, -0.33,
       -1.58, -1.08, 0.33,
       1.58, -1.08, 0.33,
-      1.58, 1.08, 0.33,
       -1.58, 1.08, 0.33,
+      1.58, 1.08, 0.33,
     ];
     expect(shellPositions).toHaveLength(expectedShellPositions.length);
     for (const [index, expected] of expectedShellPositions.entries()) expect(shellPositions[index]).toBeCloseTo(expected);
-    expect(shell.getWorldScale(new Vector3()).toArray()).toEqual([1, 1, 1]);
-    const shellMaterial = shell.material as ShaderMaterial;
+    expect(resizedShell.getWorldScale(new Vector3()).toArray()).toEqual([1, 1, 1]);
+    const shellMaterial = resizedSurface.material as ShaderMaterial;
     expect(shellMaterial.uniforms.inkNormalOutsetDistance).toBeUndefined();
     expect(shellMaterial.vertexShader).not.toContain('outwardWorldNormal');
     disposeObjectTree(root);
@@ -393,7 +406,11 @@ describe('Reference rendering', () => {
     expect(root.getObjectByName('InkShapeRibbon')).toBe(ribbon);
     expect(root.getObjectByName('InkFillSurface')).toBe(fill);
     expect(root.position.toArray()).toEqual([2, 3, -1]);
-    expect(root.getObjectByName('InkNormalOutsetShell')).toBeInstanceOf(Mesh);
+    const shell = root.getObjectByName('InkNormalOutsetShell') as Group;
+    const shellSurface = shell.getObjectByName('InkNormalOutsetSurface') as Mesh;
+    expect(shell).toBeInstanceOf(Group);
+    expect(shellSurface).toBeInstanceOf(Mesh);
+    expect((shellSurface.material as ShaderMaterial).uniforms.inkFillMap!.value).toBe(fillTexture);
 
     const repainted = paintInkFill(transformed, [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#ff004d', 0.12, 'circle', false);
     const recompiled = compileInkShape(repainted, undefined, compiled);
@@ -403,6 +420,7 @@ describe('Reference rendering', () => {
     expect(fill.geometry).toBe(fillGeometry);
     expect(fill.material).toBe(fillMaterial);
     expect(fill.userData.inkFillTexture).toBe(fillTexture);
+    expect((shellSurface.material as ShaderMaterial).uniforms.inkFillMap!.value).toBe(fillTexture);
     disposeObjectTree(root);
   });
 
