@@ -78,7 +78,7 @@ export class PencilTransformController {
     this.controls.setSpace('world');
     this.controls.setSize(0.85);
     this.controls.attach(this.proxy);
-    renderer.scene.add(this.helper, this.dimensionRoot);
+    renderer.editorOverlay.add(this.helper, this.dimensionRoot);
     this.dimensionRoot.name = 'InkIntrinsicSizeHandles';
     this.controls.addEventListener('objectChange', this.handleObjectChange);
     this.controls.addEventListener('dragging-changed', this.handleDraggingChanged);

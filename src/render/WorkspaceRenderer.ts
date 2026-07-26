@@ -129,6 +129,8 @@ export type InkStrokePreviewSegment = {
 export class WorkspaceRenderer {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
+  /** Editor-only render tree kept out of all content and offscreen passes. */
+  readonly editorOverlay = new Scene();
   readonly camera = new PerspectiveCamera(42, 1, 0.05, 300);
   readonly controls: OrbitControls;
   readonly inkLighting: InkFillLightingState = createInkFillLightingState();
@@ -224,6 +226,7 @@ export class WorkspaceRenderer {
     this.referenceLayer = new MapReferenceLayer(this.renderer);
     this.referenceLayer.setEnabled(true);
     this.referenceLayer.setSamples(Math.min(4, this.renderer.capabilities.maxSamples));
+    this.editorOverlay.name = 'StudioEditorOverlay';
     this.mainLight.name = 'StudioMainLight';
     this.mainLight.position.set(-12, 20, 12);
     this.mainLight.target.position.set(0, 0, 0);
@@ -1092,6 +1095,7 @@ export class WorkspaceRenderer {
         [this.editorGuides, this.helperRoot, this.groupPivotRoot, this.cursorRoot, this.terrainPreviewRoot, this.terrainToolPreviewRoot],
         () => this.renderer.render(this.scene, this.camera),
       );
+      this.renderer.render(this.editorOverlay, this.camera);
     } finally {
       this.scene.background = previousBackground;
       this.renderer.autoClear = previousAutoClear;
