@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import {
-  createDefaultInkNormalOutsetSettings,
+  createDefaultInkSurfaceOutlineSettings,
   createInkCuboidShape,
   createInkCylinderShape,
   createInkFrustumShape,
@@ -66,9 +66,11 @@ const document = computed(() => snapshot.value?.document ?? null);
 const activeReference = computed(() => document.value ? getInkReference(document.value, session.activeReferenceId) : null);
 const activeGroup = computed(() => document.value ? getInkSourceByReference(document.value, session.activeReferenceId) : null);
 const activeShape = computed(() => activeGroup.value?.shapes.find((shape) => shape.id === session.activeShapeId) ?? null);
-const activeNormalOutset = computed(() => {
+const activeSurfaceOutline = computed(() => {
   const shape = activeShape.value;
-  return shape && shape.kind !== 'plane' ? shape.normalOutset ?? createDefaultInkNormalOutsetSettings() : null;
+  return shape && (shape.kind === 'sphere' || shape.kind === 'cylinder')
+    ? shape.surfaceOutline ?? createDefaultInkSurfaceOutlineSettings()
+    : null;
 });
 const isDirty = computed(() => !!snapshot.value && snapshot.value.revision > snapshot.value.savedRevision);
 const isUnexported = computed(() => !!snapshot.value && snapshot.value.revision > snapshot.value.exportedRevision);
@@ -448,34 +450,28 @@ function setFrustumDimension(field: 'topSize' | 'bottomSize' | 'height', event: 
     : current));
 }
 
-function setNormalOutsetEnabled(event: Event): void {
+function setSurfaceOutlineEnabled(event: Event): void {
   const enabled = (event.target as HTMLInputElement).checked;
-  updateActiveNormalOutset('Toggle Ink normal outset', undefined, (current) => ({ ...current, enabled }));
+  updateActiveSurfaceOutline('Toggle Ink surface outline', undefined, (current) => ({ ...current, enabled }));
 }
 
-function setNormalOutsetColor(event: Event): void {
-  const color = (event.target as HTMLInputElement).value.toLowerCase();
-  if (!/^#[0-9a-f]{6}$/.test(color)) return;
-  updateActiveNormalOutset('Set Ink normal outset colour', 'normal-outset:color', (current) => ({ ...current, color }));
+function setSurfaceOutlineWidth(event: Event): void {
+  const fallback = activeSurfaceOutline.value?.width ?? createDefaultInkSurfaceOutlineSettings().width;
+  const width = boundedInput(event, fallback, 0.001, 1);
+  updateActiveSurfaceOutline('Set Ink surface outline width', 'surface-outline:width', (current) => ({ ...current, width }));
 }
 
-function setNormalOutsetDistance(event: Event): void {
-  const fallback = activeNormalOutset.value?.distance ?? createDefaultInkNormalOutsetSettings().distance;
-  const distance = boundedInput(event, fallback, 0.001, 1);
-  updateActiveNormalOutset('Set Ink normal outset distance', 'normal-outset:distance', (current) => ({ ...current, distance }));
-}
-
-function updateActiveNormalOutset(
+function updateActiveSurfaceOutline(
   label: string,
   coalescedKey: string | undefined,
-  update: (current: ReturnType<typeof createDefaultInkNormalOutsetSettings>) => ReturnType<typeof createDefaultInkNormalOutsetSettings>,
+  update: (current: ReturnType<typeof createDefaultInkSurfaceOutlineSettings>) => ReturnType<typeof createDefaultInkSurfaceOutlineSettings>,
 ): void {
   const shape = activeShape.value;
   const referenceId = session.activeReferenceId;
-  if (!store || !shape || shape.kind === 'plane' || !referenceId) return;
-  const apply = (value: InkStudioWorkFile) => updateInkShapeAuthor(value, referenceId, shape.id, (current) => current.kind === 'plane'
+  if (!store || !shape || (shape.kind !== 'sphere' && shape.kind !== 'cylinder') || !referenceId) return;
+  const apply = (value: InkStudioWorkFile) => updateInkShapeAuthor(value, referenceId, shape.id, (current) => current.kind !== 'sphere' && current.kind !== 'cylinder'
     ? current
-    : { ...current, normalOutset: update(current.normalOutset ?? createDefaultInkNormalOutsetSettings()) });
+    : { ...current, surfaceOutline: update(current.surfaceOutline ?? createDefaultInkSurfaceOutlineSettings()) });
   if (coalescedKey) store.transactCoalesced(`${coalescedKey}:${shape.id}`, label, apply);
   else store.transact(label, apply);
 }
@@ -788,19 +784,18 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
           <template v-else-if="activeShape.kind === 'sphere'"><label>Radius</label><input type="number" min="0.05" step="0.1" :value="activeShape.radius" @change="setShapeRadius" /></template>
           <template v-else-if="activeShape.kind === 'cylinder'"><label>Dimensions</label><div class="vector-row"><label>Radius<input type="number" min="0.05" step="0.1" :value="activeShape.radius" @change="setCylinderDimension('radius', $event)" /></label><label>Height<input type="number" min="0.05" step="0.1" :value="activeShape.height" @change="setCylinderDimension('height', $event)" /></label></div></template>
           <template v-else-if="activeShape.kind === 'frustum'"><label>Dimensions</label><div class="vector-row"><label>Top<input type="number" min="0.05" step="0.1" :value="activeShape.topSize" @change="setFrustumDimension('topSize', $event)" /></label><label>Bottom<input type="number" min="0.05" step="0.1" :value="activeShape.bottomSize" @change="setFrustumDimension('bottomSize', $event)" /></label><label>Height<input type="number" min="0.05" step="0.1" :value="activeShape.height" @change="setFrustumDimension('height', $event)" /></label></div></template>
-          <fieldset v-if="activeNormalOutset" class="normal-outset-settings">
-            <legend>Normal Outset</legend>
-            <label class="checkbox-label"><input :checked="activeNormalOutset.enabled" type="checkbox" @change="setNormalOutsetEnabled" /> Enabled</label>
-            <template v-if="activeNormalOutset.enabled">
-              <label>Shell Color <input :value="activeNormalOutset.color" type="color" @input="setNormalOutsetColor" /></label>
-              <label>Shell Outset
+          <fieldset v-if="activeSurfaceOutline" class="surface-outline-settings">
+            <legend>Surface Outline</legend>
+            <label class="checkbox-label"><input :checked="activeSurfaceOutline.enabled" type="checkbox" @change="setSurfaceOutlineEnabled" /> Enabled</label>
+            <template v-if="activeSurfaceOutline.enabled">
+              <label>Width
                 <span class="range-input-row">
-                  <input :value="activeNormalOutset.distance" type="range" min="0.001" max="1" step="0.001" @input="setNormalOutsetDistance" />
-                  <input aria-label="Normal outset distance" class="precision-number" :value="activeNormalOutset.distance" type="number" min="0.001" max="1" step="0.001" @change="setNormalOutsetDistance" />
+                  <input :value="activeSurfaceOutline.width" type="range" min="0.001" max="1" step="0.001" @input="setSurfaceOutlineWidth" />
+                  <input aria-label="Surface outline width" class="precision-number" :value="activeSurfaceOutline.width" type="number" min="0.001" max="1" step="0.001" @change="setSurfaceOutlineWidth" />
                 </span>
               </label>
             </template>
-            <p class="note">The shell uses final-dimension Shape geometry, so its world-unit outset remains consistent. It does not enter Ink hard shadows.</p>
+            <p class="note">This camera-facing Ribbon uses a world-unit width and is clipped to opaque Fill pixels. It does not enter Ink hard shadows.</p>
           </fieldset>
           <p class="note">Shape transforms use source-local coordinates. Ribbon width remains in world units.</p>
         </section>

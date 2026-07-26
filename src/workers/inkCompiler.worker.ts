@@ -46,7 +46,7 @@ workerScope.onmessage = (event): void => {
     state.group = { ...state.group, shapes };
 
     // The first edit after opening may need one Ribbon rebuild for this Shape.
-    // Subsequent Fill/Normal Outset edits reuse the Worker-owned Ribbon alone.
+    // Subsequent Fill/surface-outline edits reuse the Worker-owned Ribbon alone.
     const compiledShape = compileInkShape(
       request.shape,
       hashInkShapeSource(request.shape),

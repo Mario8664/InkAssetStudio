@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_INK_NORMAL_OUTSET_DISTANCE,
   DEFAULT_INK_STROKE_WIDTH,
   INK_COMPILED_FORMAT_VERSION,
   compileInkShape,
@@ -19,9 +18,11 @@ import {
 } from '../src/domain/ink/ink';
 
 describe('Painting-compatible Ink Shapes', () => {
-  it('uses the authored Outline width as the default Normal Outset distance', () => {
-    expect(DEFAULT_INK_NORMAL_OUTSET_DISTANCE).toBe(DEFAULT_INK_STROKE_WIDTH);
-    expect(createInkCuboidShape().normalOutset!.distance).toBe(DEFAULT_INK_STROKE_WIDTH);
+  it('uses the authored Outline width as the default smooth-surface outline width', () => {
+    expect(createInkSphereShape().surfaceOutline.width).toBe(DEFAULT_INK_STROKE_WIDTH);
+    expect(createInkCylinderShape().surfaceOutline.width).toBe(DEFAULT_INK_STROKE_WIDTH);
+    expect('surfaceOutline' in createInkCuboidShape()).toBe(false);
+    expect('surfaceOutline' in createInkFrustumShape()).toBe(false);
   });
 
   const cases: Array<{ label: string; shape: InkShape; points: InkSurfacePoint[] }> = [
@@ -80,26 +81,25 @@ describe('Painting-compatible Ink Shapes', () => {
     });
   }
 
-  it('compiles Normal Outset as v14 Shape configuration without rebuilding Ribbon data', () => {
-    const shape = createInkCuboidShape();
+  it('keeps surface-outline configuration out of worker payloads while reusing authored Ribbon data', () => {
+    const shape = createInkSphereShape();
     const outlined = {
       ...shape,
       strokes: [createInkOutlineStroke([
-        { face: 'positive-z', u: -0.2, v: 0, pressure: 1 },
-        { face: 'positive-z', u: 0.2, v: 0, pressure: 1 },
+        { x: 1, y: 0, z: 0, pressure: 1 },
+        { x: 0.98, y: 0.2, z: 0, pressure: 1 },
       ], '#000000', 0.04)],
     } as InkShape;
     const before = compileInkShape(outlined);
     const enabled = {
       ...outlined,
-      normalOutset: { enabled: true, color: '#5A3E16', distance: 0.075 },
-    } as InkShape;
+      surfaceOutline: { enabled: true, width: 0.075 },
+    } as Extract<InkShape, { kind: 'sphere' }>;
     const after = compileInkShape(enabled, undefined, before);
 
-    expect(INK_COMPILED_FORMAT_VERSION).toBe(14);
-    expect(after.normalOutset).toEqual({ color: '#5a3e16', distance: 0.075 });
+    expect(INK_COMPILED_FORMAT_VERSION).toBe(15);
     expect(after.ribbon).toBe(before.ribbon);
-    expect(compileInkShape({ ...enabled, normalOutset: { ...enabled.normalOutset!, enabled: false } }).normalOutset).toBeNull();
+    expect('normalOutset' in after).toBe(false);
   });
 
   it('resamples only finite Cuboid Fill charts when intrinsic size changes', () => {

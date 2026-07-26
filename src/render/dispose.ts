@@ -10,6 +10,8 @@ export function disposeObjectTree(root: Object3D): void {
     if (depth instanceof Material) depth.dispose();
     const texture = object.userData.inkFillTexture;
     if (texture instanceof Texture) texture.dispose();
+    const surfaceOutlineFallback = object.userData.inkSurfaceOutlineEmptyFillAlphaTexture;
+    if (surfaceOutlineFallback instanceof Texture) surfaceOutlineFallback.dispose();
   });
   root.clear();
 }

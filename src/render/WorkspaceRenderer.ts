@@ -53,8 +53,8 @@ import {
   createInkGroupRenderRoot,
   createInkShapeRenderRoot,
   type InkFillLightingState,
+  updateInkSurfaceOutlines,
   updateInkShapeFillSurfaces,
-  updateInkShapeNormalOutset,
   updateInkShapeRibbon,
 } from './InkGroupRenderer';
 import { InkHardShadowMap } from './InkHardShadowMap';
@@ -102,8 +102,6 @@ type HandoffStrokePreviewEntry = {
   assetId: string;
   shapeId: string;
 };
-
-const INK_SHAPE_RENDER_OPTIONS = { useSourceNormalOutset: true } as const;
 
 export type InkSurfaceHit = {
   referenceId: string;
@@ -556,10 +554,8 @@ export class WorkspaceRenderer {
     updateInkShapeFillSurfaces(
       root,
       compileInkFill(shape),
-      null,
       shape,
       this.inkLighting,
-      INK_SHAPE_RENDER_OPTIONS,
     );
     applyInkShapeRenderTransform(root, shape);
     this.syncSingleInkHelper(referenceId, shape);
@@ -605,7 +601,7 @@ export class WorkspaceRenderer {
     const root = this.inkEntries.get(referenceId)?.shapes.get(shape.id);
     const fills = compileInkFill(shape);
     if (root) {
-      updateInkShapeFillSurfaces(root, fills, null, shape, this.inkLighting, INK_SHAPE_RENDER_OPTIONS);
+      updateInkShapeFillSurfaces(root, fills, shape, this.inkLighting);
       applyInkShapeRenderTransform(root, shape);
     }
     this.syncSingleInkHelper(referenceId, shape);
@@ -694,7 +690,7 @@ export class WorkspaceRenderer {
       const existing = this.inkEntries.get(group.id);
       if (existing?.source === source && existing.anchorKey === anchorKey) continue;
       if (!existing) {
-        const root = createInkGroupRenderRoot(group, this.inkLighting, INK_SHAPE_RENDER_OPTIONS);
+        const root = createInkGroupRenderRoot(group, this.inkLighting);
         root.userData.referenceId = group.id;
         this.inkRoot.add(root);
         this.inkEntries.set(group.id, {
@@ -749,7 +745,7 @@ export class WorkspaceRenderer {
       const priorShape = previousShapes.get(shapeId);
       const priorCompiled = previousCompiled.get(shapeId);
       if (!existing) {
-        const root = createInkShapeRenderRoot(compiled, shape, this.inkLighting, INK_SHAPE_RENDER_OPTIONS);
+        const root = createInkShapeRenderRoot(compiled, shape, this.inkLighting);
         entry.root.add(root);
         entry.shapes.set(shapeId, root);
         hardShadowChanged ||= hasInkHardShadowCasterInShape(compiled);
@@ -765,7 +761,6 @@ export class WorkspaceRenderer {
 
       if (priorCompiled?.sourceHash === compiled.sourceHash) {
         applyInkShapeRenderTransform(existing, shape);
-        updateInkShapeNormalOutset(existing, compiled.normalOutset, shape, INK_SHAPE_RENDER_OPTIONS);
         continue;
       }
       if (priorCompiled?.ribbonSourceHash === compiled.ribbonSourceHash) {
@@ -773,17 +768,15 @@ export class WorkspaceRenderer {
         updateInkShapeFillSurfaces(
           existing,
           compiled.fill,
-          compiled.normalOutset,
           shape,
           this.inkLighting,
-          INK_SHAPE_RENDER_OPTIONS,
         );
         continue;
       }
 
       disposeObjectTree(existing);
       existing.removeFromParent();
-      const replacement = createInkShapeRenderRoot(compiled, shape, this.inkLighting, INK_SHAPE_RENDER_OPTIONS);
+      const replacement = createInkShapeRenderRoot(compiled, shape, this.inkLighting);
       entry.root.add(replacement);
       entry.shapes.set(shapeId, replacement);
     }
@@ -1045,6 +1038,7 @@ export class WorkspaceRenderer {
    * sRGB bytes. Reference never writes the depth used by this stage.
    */
   private renderInkDisplay(hasReference: boolean): void {
+    updateInkSurfaceOutlines(this.inkRoot, this.camera);
     const previousOutputColorSpace = this.renderer.outputColorSpace;
     const previousToneMapping = this.renderer.toneMapping;
     const previousExposure = this.renderer.toneMappingExposure;

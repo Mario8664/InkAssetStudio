@@ -143,24 +143,20 @@ try {
   if (await cuboidVisibility.getAttribute('title') !== 'Temporarily hide from drawing') throw new Error('Shape drawing exclusion did not restore.');
   await page.waitForTimeout(400);
   if (await page.locator('.toast.error').count()) throw new Error('Persisting the temporary Shape drawing exclusion failed.');
-  const normalOutset = page.locator('.normal-outset-settings');
-  if (!await normalOutset.isVisible()) throw new Error('Cuboid Normal Outset controls are not visible.');
-  await normalOutset.getByLabel('Enabled').check();
-  await normalOutset.getByLabel('Shell Color').evaluate((input) => {
-    input.value = '#5a3e16';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  const normalOutsetDistance = normalOutset.getByLabel('Normal outset distance');
-  await normalOutsetDistance.fill('0.035');
-  await normalOutsetDistance.press('Enter');
-  await page.waitForFunction(() => (document.querySelector('[aria-label="Normal outset distance"]')?.value ?? '') === '0.035');
-  await page.waitForTimeout(100);
-  await page.screenshot({ path: 'studio-shape-preview.png', fullPage: true });
+  if (await page.locator('.shape-inspector .surface-outline-settings').count()) throw new Error('Cuboid must not expose Surface Outline controls.');
   await page.getByRole('button', { name: '+ Cylinder', exact: true }).click();
   if (!await page.locator('.shape-inspector').getByLabel('Radius').isVisible() || !await page.locator('.shape-inspector').getByLabel('Height').isVisible()) {
     throw new Error('Cylinder Radius and Height controls are not visible.');
   }
-  if (!await page.locator('.shape-inspector .normal-outset-settings').isVisible()) throw new Error('Cylinder Normal Outset controls are not visible.');
+  const surfaceOutline = page.locator('.shape-inspector .surface-outline-settings');
+  if (!await surfaceOutline.isVisible()) throw new Error('Cylinder Surface Outline controls are not visible.');
+  await surfaceOutline.getByLabel('Enabled').check();
+  const surfaceOutlineWidth = surfaceOutline.getByLabel('Surface outline width');
+  await surfaceOutlineWidth.fill('0.035');
+  await surfaceOutlineWidth.press('Enter');
+  await page.waitForFunction(() => (document.querySelector('[aria-label="Surface outline width"]')?.value ?? '') === '0.035');
+  await page.waitForTimeout(100);
+  await page.screenshot({ path: 'studio-shape-preview.png', fullPage: true });
   await page.locator('.shape-inspector').getByLabel('Radius').evaluate((input) => {
     input.value = '0.7';
     input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -169,7 +165,7 @@ try {
   for (const label of ['Top', 'Bottom', 'Height']) {
     if (!await page.locator('.shape-inspector').getByLabel(label, { exact: true }).isVisible()) throw new Error(`Frustum ${label} control is not visible.`);
   }
-  if (!await page.locator('.shape-inspector .normal-outset-settings').isVisible()) throw new Error('Frustum Normal Outset controls are not visible.');
+  if (await page.locator('.shape-inspector .surface-outline-settings').count()) throw new Error('Frustum must not expose Surface Outline controls.');
   await page.locator('.shape-inspector').getByLabel('Top', { exact: true }).evaluate((input) => {
     input.value = '0.7';
     input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -259,7 +255,7 @@ try {
   const groups = exported.ink?.embeddedAssets ?? [];
   const strokePoints = groups.flatMap((asset) => asset.group.shapes).flatMap((shape) => shape.strokes).flatMap((stroke) => stroke.points);
   const fillBlocks = groups.flatMap((asset) => asset.group.shapes).flatMap((shape) => shape.fill.surfaces).flatMap((surface) => surface.blocks);
-  const normalOutsets = groups.flatMap((asset) => asset.group.shapes).filter((shape) => shape.normalOutset?.enabled);
+  const surfaceOutlines = groups.flatMap((asset) => asset.group.shapes).filter((shape) => shape.surfaceOutline?.enabled);
   const shapes = groups.flatMap((asset) => asset.group.shapes);
   const cylinder = shapes.find((shape) => shape.kind === 'cylinder');
   const frustum = shapes.find((shape) => shape.kind === 'frustum');
@@ -267,11 +263,11 @@ try {
   if (strokePoints.length < 2) throw new Error('The browser drawing gesture did not produce editable outline points.');
   if (!strokePoints.every((point) => point.pressure === 1)) throw new Error('Pressure Off did not persist pressure: 1 for new points.');
   if (fillBlocks.length < 1) throw new Error('The browser Fill Paint gesture did not produce sparse editable Fill blocks.');
-  if (normalOutsets.length !== 1 || normalOutsets[0].normalOutset.color !== '#5a3e16' || normalOutsets[0].normalOutset.distance !== 0.035) {
-    throw new Error('Normal Outset author settings were not exported exactly.');
+  if (surfaceOutlines.length !== 1 || surfaceOutlines[0].surfaceOutline.width !== 0.035) {
+    throw new Error('Surface Outline author settings were not exported exactly.');
   }
   if (!cylinder || cylinder.radius !== 0.7 || !frustum || frustum.topSize !== 0.7) throw new Error('Cylinder or Frustum dimensions were not exported exactly.');
-  if (exported.sourceCompatibility?.paintingInkCompiledFormatVersion !== 14) throw new Error('The exported work file is not marked Ink compiled format v14.');
+  if (exported.sourceCompatibility?.paintingInkCompiledFormatVersion !== 15) throw new Error('The exported work file is not marked Ink compiled format v15.');
   if ((exported.terrain?.tiles?.length ?? 25) >= 25) throw new Error('The terrain erase gesture did not remove any reference cells.');
 
   await page.getByRole('button', { name: 'New' }).click();
@@ -332,7 +328,7 @@ try {
     groups: groups.length,
     strokePoints: strokePoints.length,
     fillBlocks: fillBlocks.length,
-    normalOutsets: normalOutsets.length,
+    surfaceOutlines: surfaceOutlines.length,
     shapes: shapes.map((shape) => shape.kind),
     terrainTiles: exported.terrain.tiles.length,
   }, errors }, null, 2)}\n`);

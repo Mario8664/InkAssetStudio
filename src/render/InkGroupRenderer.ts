@@ -2,7 +2,7 @@ import {
   BackSide,
   BufferAttribute,
   BufferGeometry,
-  Color,
+  Camera,
   DataTexture,
   DynamicDrawUsage,
   DoubleSide,
@@ -19,16 +19,15 @@ import {
   Texture,
   Vector2,
   Vector3,
+  Vector4,
 } from 'three';
 import {
-  DEFAULT_INK_NORMAL_OUTSET_COLOR,
-  DEFAULT_INK_NORMAL_OUTSET_DISTANCE,
+  DEFAULT_INK_STROKE_COLOR,
   INK_CYLINDER_SEGMENTS,
   INK_FILL_PIXELS_PER_WORLD_UNIT,
   INK_SPHERE_FACE_SEGMENTS,
   getInkFrustumFacePosition,
   type CompiledInkFillSurface,
-  type CompiledInkNormalOutset,
   type CompiledInkRibbon,
   type CompiledInkShape,
   type InkCuboidFace,
@@ -36,11 +35,6 @@ import {
   type InkGroupData,
   type InkShape,
 } from '../domain/ink/ink';
-
-/** Studio previews current source settings before the Worker result arrives. */
-export type InkShapeRenderOptions = {
-  useSourceNormalOutset?: boolean;
-};
 
 /** Shared mutable uniforms for every Fill material mounted by one GridSceneView. */
 export type InkFillLightingState = {
@@ -72,7 +66,6 @@ export function createInkFillLightingState(): InkFillLightingState {
 export function createInkGroupRenderRoot(
   data: InkGroupData,
   lighting = createInkFillLightingState(),
-  options: InkShapeRenderOptions = {},
 ): Group {
   const root = new Group();
   root.name = 'InkGroup';
@@ -80,18 +73,17 @@ export function createInkGroupRenderRoot(
   root.rotation.y = ((data.placementRotation ?? 0) * Math.PI) / 180;
   for (const shape of data.compiled.shapes) {
     const source = data.shapes.find((candidate) => candidate.id === shape.shapeId);
-    const shapeRoot = source ? createInkShapeRenderRoot(shape, source, lighting, options) : null;
+    const shapeRoot = source ? createInkShapeRenderRoot(shape, source, lighting) : null;
     if (shapeRoot) root.add(shapeRoot);
   }
   return root;
 }
 
-/** Creates one independently replaceable Shape root: Fill, alpha-clipped outset shell, then Outline. */
+/** Creates one independently replaceable Shape root: Fill, authored Outline, then optional surface Ribbon. */
 export function createInkShapeRenderRoot(
   shape: CompiledInkShape,
   source: InkShape,
   lighting = createInkFillLightingState(),
-  options: InkShapeRenderOptions = {},
 ): Group {
   const root = new Group();
   root.name = 'InkShape';
@@ -100,9 +92,10 @@ export function createInkShapeRenderRoot(
   applyInkShapeRenderTransform(root, source);
   const content = getInkShapeContentRoot(root);
   for (const fill of shape.fill) content.add(createInkFillSurfaceMesh(fill, source, lighting));
-  updateInkShapeNormalOutset(root, shape.normalOutset, source, options);
   const outline = createInkShapeRenderMesh(shape, source, false);
   if (outline) content.add(outline);
+  const surfaceOutline = createInkSurfaceOutlineRenderer(root, content, source);
+  if (surfaceOutline) content.add(surfaceOutline.mesh);
   return root;
 }
 
@@ -110,10 +103,8 @@ export function createInkShapeRenderRoot(
 export function updateInkShapeFillSurfaces(
   root: Group,
   fills: readonly CompiledInkFillSurface[],
-  normalOutset: CompiledInkNormalOutset | null,
   source: InkShape,
   lighting = createInkFillLightingState(),
-  options: InkShapeRenderOptions = {},
 ): void {
   const content = getInkShapeContentRoot(root);
   const existing = new Map<InkFillSurfaceId, Mesh>();
@@ -133,7 +124,12 @@ export function updateInkShapeFillSurfaces(
     else content.add(createInkFillSurfaceMesh(fill, source, lighting));
   }
 
-  updateInkShapeNormalOutset(root, normalOutset, source, options);
+  updateInkShapeSurfaceOutline(root, source);
+}
+
+/** Updates the enabled analytic smooth-surface Ribbons for the active camera. */
+export function updateInkSurfaceOutlines(root: Object3D, camera: Camera): void {
+  root.traverse((object) => getInkSurfaceOutlineRenderer(object)?.update(camera));
 }
 
 /** Replaces only one Shape's compiled Ribbon while preserving its Fill resources. */
@@ -152,35 +148,6 @@ export function updateInkShapeRibbon(root: Group, ribbon: CompiledInkRibbon): vo
   content.add(replacement);
 }
 
-/** Creates, updates, or removes alpha-clipped outset surfaces from live source settings. */
-export function updateInkShapeNormalOutset(
-  root: Group,
-  normalOutset: CompiledInkNormalOutset | null,
-  source: InkShape,
-  options: InkShapeRenderOptions = {},
-): void {
-  const next = resolveInkNormalOutsetRenderSettings(normalOutset, source, options);
-  const fills = getInkFillSurfaceMeshes(root);
-  const existing = root.children.find((child) => child.name === 'InkNormalOutsetShell');
-  if (!next || fills.size === 0) {
-    if (existing) {
-      disposeInkNormalOutsetObject(existing);
-      existing.removeFromParent();
-    }
-    return;
-  }
-  const geometryKey = getInkNormalOutsetGeometryKey(source, next.distance);
-  if (!(existing instanceof Group) || existing.userData.inkNormalOutsetGeometryKey !== geometryKey) {
-    if (existing) {
-      disposeInkNormalOutsetObject(existing);
-      existing.removeFromParent();
-    }
-    root.add(createInkNormalOutsetShell(next, source, fills));
-    return;
-  }
-  updateInkNormalOutsetShell(existing, next, source, fills);
-}
-
 /**
  * Editor-only preview that retains one Geometry and Material for the entire
  * pointer gesture. Its buffers grow geometrically but are never recreated for
@@ -189,7 +156,7 @@ export function updateInkShapeNormalOutset(
 export class InkRibbonPreview {
   readonly mesh: Mesh;
   private readonly geometry = new BufferGeometry();
-  private readonly material = createInkRibbonMaterial();
+  private readonly material: ShaderMaterial;
   private capacity = 0;
   private position!: BufferAttribute;
   private previous!: BufferAttribute;
@@ -201,7 +168,8 @@ export class InkRibbonPreview {
   private colors!: BufferAttribute;
   private indices!: BufferAttribute;
 
-  constructor() {
+  constructor(createMaterial: () => ShaderMaterial = createInkRibbonMaterial) {
+    this.material = createMaterial();
     this.ensureCapacity(2, 6);
     this.geometry.setDrawRange(0, 0);
     this.mesh = new Mesh(this.geometry, this.material);
@@ -273,8 +241,8 @@ export class InkRibbonPreview {
 
 /**
  * Applies the authored Shape transform. Intrinsic dimensions live on the
- * content-coordinate child rather than the Shape transform itself, leaving
- * Normal Outset geometry in true world units.
+ * content-coordinate child rather than the Shape transform itself. Ribbon
+ * shader expansion remains in world units under every intrinsic dimension.
  */
 export function applyInkShapeRenderTransform(target: Object3D, shape: InkShape): void {
   target.position.set(shape.position.x, shape.position.y, shape.position.z);
@@ -298,182 +266,305 @@ export function createInkShapeRenderMesh(shape: CompiledInkShape, source: InkSha
   return mesh;
 }
 
-type InkNormalOutsetRenderSettings = CompiledInkNormalOutset & { enabled: boolean };
+type InkSurfaceOutlineShape = Extract<InkShape, { kind: 'sphere' | 'cylinder' }>;
 
-function resolveInkNormalOutsetRenderSettings(
-  normalOutset: CompiledInkNormalOutset | null,
-  shape: InkShape,
-  options: InkShapeRenderOptions,
-): InkNormalOutsetRenderSettings | null {
-  if (!options.useSourceNormalOutset) return normalOutset ? { ...normalOutset, enabled: true } : null;
-  if (shape.kind === 'plane' || !shape.normalOutset?.enabled) return null;
-  return {
-    enabled: true,
-    color: shape.normalOutset.color ?? DEFAULT_INK_NORMAL_OUTSET_COLOR,
-    distance: shape.normalOutset.distance ?? DEFAULT_INK_NORMAL_OUTSET_DISTANCE,
-  };
-}
+const INK_SURFACE_OUTLINE_RENDERER_KEY = 'inkSurfaceOutlineRenderer';
+const INK_SURFACE_OUTLINE_SPHERE_SEGMENTS = 48;
+const INK_SURFACE_OUTLINE_COLOR = parseInkDisplayColor(DEFAULT_INK_STROKE_COLOR);
+const INK_SPHERE_FILL_UNIFORMS: readonly Readonly<{ id: InkCuboidFace; name: string }>[] = [
+  { id: 'positive-x', name: 'inkFillPositiveX' },
+  { id: 'negative-x', name: 'inkFillNegativeX' },
+  { id: 'positive-y', name: 'inkFillPositiveY' },
+  { id: 'negative-y', name: 'inkFillNegativeY' },
+  { id: 'positive-z', name: 'inkFillPositiveZ' },
+  { id: 'negative-z', name: 'inkFillNegativeZ' },
+];
 
-function getInkFillSurfaceMeshes(root: Group): Map<InkFillSurfaceId, Mesh> {
-  const fills = new Map<InkFillSurfaceId, Mesh>();
-  const content = getInkShapeContentRoot(root);
-  for (const child of content.children) {
-    if (!(child instanceof Mesh) || child.name !== 'InkFillSurface' || typeof child.userData.inkFillSurfaceId !== 'string') continue;
-    fills.set(child.userData.inkFillSurfaceId as InkFillSurfaceId, child);
+/** One persistent dynamic Ribbon for an enabled analytic smooth Shape. */
+class InkSurfaceOutlineRenderer {
+  readonly mesh: Mesh;
+  private readonly preview: InkRibbonPreview;
+  private readonly material: ShaderMaterial;
+  private readonly ribbon = createDynamicInkRibbon();
+  private readonly localCamera = new Vector3();
+  private readonly lastLocalCamera = new Vector3(Number.NaN, Number.NaN, Number.NaN);
+  private readonly sphereAxis = new Vector3();
+  private readonly sphereBasisA = new Vector3();
+  private readonly sphereBasisB = new Vector3();
+  private readonly spherePoints = Array.from({ length: INK_SURFACE_OUTLINE_SPHERE_SEGMENTS }, () => new Vector3());
+  private readonly cylinderPoints = [new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+  private readonly cylinderNormals = [new Vector3(), new Vector3()];
+  private readonly firstCylinderPoints: readonly Vector3[] = [this.cylinderPoints[0]!, this.cylinderPoints[1]!];
+  private readonly secondCylinderPoints: readonly Vector3[] = [this.cylinderPoints[2]!, this.cylinderPoints[3]!];
+  private readonly firstCylinderNormals: readonly Vector3[] = [this.cylinderNormals[0]!, this.cylinderNormals[0]!];
+  private readonly secondCylinderNormals: readonly Vector3[] = [this.cylinderNormals[1]!, this.cylinderNormals[1]!];
+  private readonly emptyFillAlphaTexture = createEmptyInkFillAlphaTexture();
+  private hasResolvedCamera = false;
+
+  constructor(
+    private readonly content: Group,
+    private readonly shape: InkSurfaceOutlineShape,
+  ) {
+    this.preview = new InkRibbonPreview(() => createInkSurfaceOutlineMaterial(shape, this.emptyFillAlphaTexture));
+    this.mesh = this.preview.mesh;
+    this.mesh.name = 'InkSurfaceOutline';
+    this.mesh.userData.inkSurfaceOutlineShapeId = shape.id;
+    this.mesh.userData.inkSurfaceOutlineEmptyFillAlphaTexture = this.emptyFillAlphaTexture;
+    this.material = this.mesh.material as ShaderMaterial;
   }
-  return fills;
-}
 
-function createInkNormalOutsetShell(
-  outset: InkNormalOutsetRenderSettings,
-  shape: InkShape,
-  fills: ReadonlyMap<InkFillSurfaceId, Mesh>,
-): Group {
-  const shell = new Group();
-  shell.name = 'InkNormalOutsetShell';
-  shell.userData.inkNormalOutsetGeometryKey = getInkNormalOutsetGeometryKey(shape, outset.distance);
-  shell.visible = outset.enabled;
-  for (const [id, fill] of fills) shell.add(createInkNormalOutsetSurfaceMesh(id, outset, shape, fill));
-  return shell;
-}
-
-function updateInkNormalOutsetShell(
-  shell: Group,
-  outset: InkNormalOutsetRenderSettings,
-  shape: InkShape,
-  fills: ReadonlyMap<InkFillSurfaceId, Mesh>,
-): void {
-  shell.visible = outset.enabled;
-  const existing = new Map<InkFillSurfaceId, Mesh>();
-  for (const child of shell.children) {
-    if (!(child instanceof Mesh) || child.name !== 'InkNormalOutsetSurface' || typeof child.userData.inkFillSurfaceId !== 'string') continue;
-    existing.set(child.userData.inkFillSurfaceId as InkFillSurfaceId, child);
+  update(camera: Camera): void {
+    this.content.updateWorldMatrix(true, false);
+    this.localCamera.copy(camera.position);
+    this.content.worldToLocal(this.localCamera);
+    if (this.hasResolvedCamera && this.lastLocalCamera.distanceToSquared(this.localCamera) <= 1e-12) return;
+    this.hasResolvedCamera = true;
+    this.lastLocalCamera.copy(this.localCamera);
+    const visible = this.shape.kind === 'sphere' ? this.updateSphereRibbon() : this.updateCylinderRibbons();
+    if (!visible) {
+      this.preview.clear();
+      return;
+    }
+    this.preview.update(this.ribbon);
   }
-  for (const [id, mesh] of existing) {
-    if (fills.has(id)) continue;
-    disposeInkNormalOutsetMesh(mesh);
-    mesh.removeFromParent();
-    existing.delete(id);
+
+  syncFillAlpha(): void {
+    const fills = new Map<InkFillSurfaceId, InkFillAlphaSource>();
+    for (const child of this.content.children) {
+      if (!(child instanceof Mesh) || child.name !== 'InkFillSurface' || typeof child.userData.inkFillSurfaceId !== 'string') continue;
+      const source = getInkFillAlphaSource(child);
+      if (source) fills.set(child.userData.inkFillSurfaceId as InkFillSurfaceId, source);
+    }
+    if (this.shape.kind === 'cylinder') {
+      setInkFillAlphaUniform(this.material, 'inkFillSide', fills.get('side'), this.emptyFillAlphaTexture);
+      return;
+    }
+    for (const face of INK_SPHERE_FILL_UNIFORMS) setInkFillAlphaUniform(this.material, face.name, fills.get(face.id), this.emptyFillAlphaTexture);
   }
-  for (const [id, fill] of fills) {
-    const mesh = existing.get(id);
-    if (mesh) updateInkNormalOutsetSurfaceMesh(mesh, outset, fill);
-    else shell.add(createInkNormalOutsetSurfaceMesh(id, outset, shape, fill));
+
+  matches(shape: InkShape): boolean {
+    if ((shape.kind !== 'sphere' && shape.kind !== 'cylinder')
+      || shape.kind !== this.shape.kind
+      || shape.surfaceOutline.enabled !== this.shape.surfaceOutline.enabled
+      || shape.surfaceOutline.width !== this.shape.surfaceOutline.width) return false;
+    return shape.kind !== 'cylinder'
+      || (this.shape.kind === 'cylinder'
+        && shape.radius === this.shape.radius
+        && shape.height === this.shape.height);
+  }
+
+  dispose(): void {
+    this.preview.dispose();
+    this.emptyFillAlphaTexture.dispose();
+    delete this.mesh.userData.inkSurfaceOutlineEmptyFillAlphaTexture;
+  }
+
+  private updateSphereRibbon(): boolean {
+    const distance = this.localCamera.length();
+    if (distance <= 1.0001) return false;
+    this.sphereAxis.copy(this.localCamera).multiplyScalar(1 / distance);
+    const reference = Math.abs(this.sphereAxis.y) < 0.9 ? UP_AXIS : RIGHT_AXIS;
+    this.sphereBasisA.crossVectors(this.sphereAxis, reference).normalize();
+    this.sphereBasisB.crossVectors(this.sphereAxis, this.sphereBasisA).normalize();
+    const circleCenter = 1 / distance;
+    const circleRadius = Math.sqrt(Math.max(0, 1 - circleCenter * circleCenter));
+    for (let index = 0; index < this.spherePoints.length; index += 1) {
+      const angle = index / this.spherePoints.length * Math.PI * 2;
+      this.spherePoints[index]!.copy(this.sphereAxis).multiplyScalar(circleCenter)
+        .addScaledVector(this.sphereBasisA, Math.cos(angle) * circleRadius)
+        .addScaledVector(this.sphereBasisB, Math.sin(angle) * circleRadius);
+    }
+    resetDynamicInkRibbon(this.ribbon);
+    appendDynamicInkRibbonPath(this.ribbon, this.spherePoints, this.spherePoints, this.shape.surfaceOutline.width, true);
+    return true;
+  }
+
+  private updateCylinderRibbons(): boolean {
+    if (this.shape.kind !== 'cylinder') return false;
+    const horizontalDistance = Math.hypot(this.localCamera.x, this.localCamera.z);
+    const radius = this.shape.radius;
+    if (horizontalDistance <= radius + 0.0001) return false;
+    const viewX = this.localCamera.x / horizontalDistance;
+    const viewZ = this.localCamera.z / horizontalDistance;
+    const tangentCenterDistance = radius * radius / horizontalDistance;
+    const tangentOffset = radius * Math.sqrt(Math.max(0, 1 - radius * radius / (horizontalDistance * horizontalDistance)));
+    const centerX = viewX * tangentCenterDistance;
+    const centerZ = viewZ * tangentCenterDistance;
+    const perpendicularX = -viewZ * tangentOffset;
+    const perpendicularZ = viewX * tangentOffset;
+    const halfHeight = this.shape.height * 0.5;
+    this.setCylinderGenerator(0, centerX + perpendicularX, centerZ + perpendicularZ, halfHeight);
+    this.setCylinderGenerator(1, centerX - perpendicularX, centerZ - perpendicularZ, halfHeight);
+    resetDynamicInkRibbon(this.ribbon);
+    appendDynamicInkRibbonPath(this.ribbon, this.firstCylinderPoints, this.firstCylinderNormals, this.shape.surfaceOutline.width, false);
+    appendDynamicInkRibbonPath(this.ribbon, this.secondCylinderPoints, this.secondCylinderNormals, this.shape.surfaceOutline.width, false);
+    return true;
+  }
+
+  private setCylinderGenerator(generator: 0 | 1, x: number, z: number, halfHeight: number): void {
+    if (this.shape.kind !== 'cylinder') return;
+    const pointOffset = generator * 2;
+    const normal = this.cylinderNormals[generator]!;
+    normal.set(x / this.shape.radius, 0, z / this.shape.radius);
+    this.cylinderPoints[pointOffset]!.set(x, -halfHeight, z);
+    this.cylinderPoints[pointOffset + 1]!.set(x, halfHeight, z);
   }
 }
 
-function createInkNormalOutsetSurfaceMesh(
-  id: InkFillSurfaceId,
-  outset: InkNormalOutsetRenderSettings,
-  shape: InkShape,
-  fill: Mesh,
-): Mesh {
-  const mesh = new Mesh(
-    createInkNormalOutsetSurfaceGeometry(id, shape, outset.distance),
-    createInkNormalOutsetMaterial(outset, fill.material as ShaderMaterial),
-  );
-  mesh.name = 'InkNormalOutsetSurface';
-  mesh.userData.inkFillSurfaceId = id;
-  mesh.castShadow = false;
-  return mesh;
+type InkFillAlphaSource = Readonly<{ texture: Texture; crop: Vector4 }>;
+
+function createInkSurfaceOutlineRenderer(root: Group, content: Group, shape: InkShape): InkSurfaceOutlineRenderer | null {
+  if ((shape.kind !== 'sphere' && shape.kind !== 'cylinder') || !shape.surfaceOutline.enabled) return null;
+  const renderer = new InkSurfaceOutlineRenderer(content, shape);
+  root.userData[INK_SURFACE_OUTLINE_RENDERER_KEY] = renderer;
+  renderer.syncFillAlpha();
+  return renderer;
 }
 
-function updateInkNormalOutsetSurfaceMesh(mesh: Mesh, outset: InkNormalOutsetRenderSettings, fill: Mesh): void {
-  const material = mesh.material as ShaderMaterial;
-  setRawSrgbColor(material.uniforms.inkNormalOutsetColor!.value as Color, outset.color);
-  copyInkFillAlphaClipUniforms(material, fill.material as ShaderMaterial);
-}
-
-function disposeInkNormalOutsetObject(object: Object3D): void {
-  if (object instanceof Mesh) {
-    disposeInkNormalOutsetMesh(object);
+function updateInkShapeSurfaceOutline(root: Group, shape: InkShape): void {
+  const existing = getInkSurfaceOutlineRenderer(root);
+  const shouldRender = (shape.kind === 'sphere' || shape.kind === 'cylinder') && shape.surfaceOutline.enabled;
+  if (!shouldRender) {
+    disposeInkSurfaceOutlineRenderer(root, existing);
     return;
   }
-  for (const child of [...object.children]) {
-    if (child instanceof Mesh) disposeInkNormalOutsetMesh(child);
-    child.removeFromParent();
+  if (existing?.matches(shape)) {
+    existing.syncFillAlpha();
+    return;
+  }
+  disposeInkSurfaceOutlineRenderer(root, existing);
+  const next = createInkSurfaceOutlineRenderer(root, getInkShapeContentRoot(root), shape);
+  if (next) getInkShapeContentRoot(root).add(next.mesh);
+}
+
+function disposeInkSurfaceOutlineRenderer(root: Group, renderer: InkSurfaceOutlineRenderer | null): void {
+  if (!renderer) return;
+  renderer.mesh.removeFromParent();
+  renderer.dispose();
+  delete root.userData[INK_SURFACE_OUTLINE_RENDERER_KEY];
+}
+
+function getInkSurfaceOutlineRenderer(root: Object3D): InkSurfaceOutlineRenderer | null {
+  const renderer = root.userData[INK_SURFACE_OUTLINE_RENDERER_KEY];
+  return renderer instanceof InkSurfaceOutlineRenderer ? renderer : null;
+}
+
+function createEmptyInkFillAlphaTexture(): DataTexture {
+  const texture = new DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1, RGBAFormat, UnsignedByteType);
+  texture.magFilter = NearestFilter;
+  texture.minFilter = NearestFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function getInkFillAlphaSource(mesh: Mesh): InkFillAlphaSource | null {
+  const texture = mesh.userData.inkFillTexture;
+  const material = mesh.material;
+  if (!(texture instanceof Texture) || !(material instanceof ShaderMaterial)) return null;
+  const min = material.uniforms.inkFillUvMin?.value;
+  const size = material.uniforms.inkFillUvSize?.value;
+  if (!(min instanceof Vector2) || !(size instanceof Vector2)) return null;
+  return { texture, crop: new Vector4(min.x, min.y, size.x, size.y) };
+}
+
+function setInkFillAlphaUniform(material: ShaderMaterial, name: string, source: InkFillAlphaSource | undefined, fallback: Texture): void {
+  material.uniforms[name]!.value = source?.texture ?? fallback;
+  (material.uniforms[`${name}Crop`]!.value as Vector4).copy(source?.crop ?? EMPTY_INK_FILL_ALPHA_CROP);
+}
+
+const EMPTY_INK_FILL_ALPHA_CROP = new Vector4(0, 0, 1, 1);
+const UP_AXIS = new Vector3(0, 1, 0);
+const RIGHT_AXIS = new Vector3(1, 0, 0);
+
+function parseInkDisplayColor(value: string): Readonly<{ r: number; g: number; b: number }> {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value);
+  return match
+    ? { r: Number.parseInt(match[1]!, 16) / 255, g: Number.parseInt(match[2]!, 16) / 255, b: Number.parseInt(match[3]!, 16) / 255 }
+    : { r: 0, g: 0, b: 0 };
+}
+
+function createDynamicInkRibbon(): CompiledInkRibbon {
+  return { positions: [], previous: [], next: [], fallbackNormals: [], sides: [], tangentOffsets: [], widths: [], colors: [], indices: [] };
+}
+
+function resetDynamicInkRibbon(ribbon: CompiledInkRibbon): void {
+  ribbon.positions.length = 0;
+  ribbon.previous.length = 0;
+  ribbon.next.length = 0;
+  ribbon.fallbackNormals.length = 0;
+  ribbon.sides.length = 0;
+  ribbon.tangentOffsets.length = 0;
+  ribbon.widths.length = 0;
+  ribbon.colors.length = 0;
+  ribbon.indices.length = 0;
+}
+
+function appendDynamicInkRibbonPath(
+  ribbon: CompiledInkRibbon,
+  points: readonly Vector3[],
+  normals: readonly Vector3[],
+  width: number,
+  closed: boolean,
+): void {
+  if (points.length < 2 || points.length !== normals.length) return;
+  const start = ribbon.positions.length / 3;
+  for (let index = 0; index < points.length; index += 1) {
+    const previous = points[closed ? (index + points.length - 1) % points.length : Math.max(0, index - 1)]!;
+    const following = points[closed ? (index + 1) % points.length : Math.min(points.length - 1, index + 1)]!;
+    for (const side of [-1, 1]) appendDynamicInkRibbonVertex(ribbon, points[index]!, previous, following, normals[index]!, side, 0, width);
+  }
+  const segmentCount = closed ? points.length : points.length - 1;
+  for (let index = 0; index < segmentCount; index += 1) {
+    const first = start + index * 2;
+    const next = start + ((index + 1) % points.length) * 2;
+    ribbon.indices.push(first, first + 1, next, first + 1, next + 1, next);
+  }
+  if (closed) return;
+  appendDynamicInkRibbonCap(ribbon, points[0]!, points[1]!, normals[0]!, width, -1);
+  appendDynamicInkRibbonCap(ribbon, points[points.length - 1]!, points[points.length - 2]!, normals[points.length - 1]!, width, 1);
+}
+
+function appendDynamicInkRibbonCap(
+  ribbon: CompiledInkRibbon,
+  endpoint: Vector3,
+  neighbour: Vector3,
+  normal: Vector3,
+  width: number,
+  direction: -1 | 1,
+): void {
+  const prior = direction < 0 ? endpoint : neighbour;
+  const following = direction < 0 ? neighbour : endpoint;
+  const center = appendDynamicInkRibbonVertex(ribbon, endpoint, prior, following, normal, 0, 0, width);
+  let previousArc = -1;
+  for (let index = 0; index <= 6; index += 1) {
+    const angle = Math.PI * index / 6;
+    const currentArc = appendDynamicInkRibbonVertex(ribbon, endpoint, prior, following, normal, Math.cos(angle), direction * Math.sin(angle), width);
+    if (previousArc >= 0) ribbon.indices.push(center, previousArc, currentArc);
+    previousArc = currentArc;
   }
 }
 
-function disposeInkNormalOutsetMesh(mesh: Mesh): void {
-  mesh.geometry.dispose();
-  (mesh.material as ShaderMaterial).dispose();
-}
-
-function createInkNormalOutsetSurfaceGeometry(id: InkFillSurfaceId, shape: InkShape, distance: number): BufferGeometry {
-  if (shape.kind === 'cuboid' && isInkCuboidFace(id)) return createCuboidNormalOutsetSurfaceGeometry(id, shape, distance);
-  if (shape.kind === 'sphere' && isInkCuboidFace(id)) {
-    const geometry = createSphereFillSurfaceGeometry(id);
-    geometry.scale(shape.radius + distance, shape.radius + distance, shape.radius + distance);
-    return geometry;
-  }
-  if (shape.kind === 'cylinder') return createCylinderFillSurfaceGeometry({
-    ...shape,
-    radius: shape.radius + distance,
-    height: shape.height + distance * 2,
-  }, id);
-  if (shape.kind === 'frustum') {
-    const dimensions = getMiteredFrustumOutsetDimensions(shape, distance);
-    return createFrustumFillSurfaceGeometry({ ...shape, ...dimensions }, id);
-  }
-  return new BufferGeometry();
-}
-
-function createCuboidNormalOutsetSurfaceGeometry(
-  face: InkCuboidFace,
-  shape: Extract<InkShape, { kind: 'cuboid' }>,
-  distance: number,
-): BufferGeometry {
-  const dimensions = {
-    x: shape.size.x + distance * 2,
-    y: shape.size.y + distance * 2,
-    z: shape.size.z + distance * 2,
-  };
-  return createSurfaceQuad(
-    getCuboidOutsetFacePosition(face, -0.5, -0.5, dimensions),
-    getCuboidOutsetFacePosition(face, 0.5, -0.5, dimensions),
-    getCuboidOutsetFacePosition(face, -0.5, 0.5, dimensions),
-    getCuboidOutsetFacePosition(face, 0.5, 0.5, dimensions),
-    face === 'positive-z' || face === 'negative-z',
-  );
-}
-
-function getCuboidOutsetFacePosition(
-  face: InkCuboidFace,
-  u: number,
-  v: number,
-  dimensions: { x: number; y: number; z: number },
-): Vector3 {
-  const unitPosition = getCuboidFacePosition(face, u, v);
-  return new Vector3(
-    unitPosition.x * dimensions.x,
-    unitPosition.y * dimensions.y,
-    unitPosition.z * dimensions.z,
-  );
-}
-
-function getInkNormalOutsetGeometryKey(shape: InkShape, distance: number): string {
-  if (shape.kind === 'cuboid') return `cuboid:${shape.size.x}:${shape.size.y}:${shape.size.z}:${distance}`;
-  if (shape.kind === 'sphere') return `sphere:${shape.radius}:${distance}`;
-  if (shape.kind === 'cylinder') return `cylinder:${shape.radius}:${shape.height}:${distance}`;
-  if (shape.kind === 'frustum') return `frustum:${shape.topSize}:${shape.bottomSize}:${shape.height}:${distance}`;
-  return 'plane';
-}
-
-/** Offsets each Frustum face plane by distance and intersects the moved planes at its corners. */
-function getMiteredFrustumOutsetDimensions(
-  shape: Extract<InkShape, { kind: 'frustum' }>,
-  distance: number,
-): { topSize: number; bottomSize: number; height: number } {
-  const sideSlope = (shape.topSize - shape.bottomSize) / (shape.height * 2);
-  const sideNormalLength = Math.hypot(1, sideSlope);
-  const outerHalfHeight = shape.height * 0.5 + distance;
-  const sidePlaneOffset = (shape.topSize + shape.bottomSize) * 0.25 + distance * sideNormalLength;
-  return {
-    topSize: (sidePlaneOffset + sideSlope * outerHalfHeight) * 2,
-    bottomSize: (sidePlaneOffset - sideSlope * outerHalfHeight) * 2,
-    height: outerHalfHeight * 2,
-  };
+function appendDynamicInkRibbonVertex(
+  ribbon: CompiledInkRibbon,
+  current: Vector3,
+  previous: Vector3,
+  next: Vector3,
+  normal: Vector3,
+  side: number,
+  tangentOffset: number,
+  width: number,
+): number {
+  const index = ribbon.positions.length / 3;
+  ribbon.positions.push(current.x, current.y, current.z);
+  ribbon.previous.push(previous.x, previous.y, previous.z);
+  ribbon.next.push(next.x, next.y, next.z);
+  ribbon.fallbackNormals.push(normal.x, normal.y, normal.z);
+  ribbon.sides.push(side);
+  ribbon.tangentOffsets.push(tangentOffset);
+  ribbon.widths.push(width);
+  ribbon.colors.push(INK_SURFACE_OUTLINE_COLOR.r, INK_SURFACE_OUTLINE_COLOR.g, INK_SURFACE_OUTLINE_COLOR.b);
+  return index;
 }
 
 function createInkShapeContentRoot(): Group {
@@ -662,65 +753,119 @@ void main() {
   });
 }
 
-/** The alpha-clipped shell renders only its inward-facing side. */
-function createInkNormalOutsetMaterial(outset: CompiledInkNormalOutset, fillMaterial: ShaderMaterial): ShaderMaterial {
-  const fillUniforms = fillMaterial.uniforms;
+/** The dynamic Ribbon samples Fill alpha in the Shape's source chart space. */
+function createInkSurfaceOutlineMaterial(shape: InkSurfaceOutlineShape, emptyFillAlphaTexture: Texture): ShaderMaterial {
+  const isSphere = shape.kind === 'sphere';
   return new ShaderMaterial({
+    vertexColors: true,
     uniforms: {
-      // Ink source colours are authored sRGB bytes. The display phase writes
-      // them directly, so do not let Three convert this uniform to linear.
-      inkNormalOutsetColor: { value: createRawSrgbColor(outset.color) },
-      inkFillMap: { value: fillUniforms.inkFillMap!.value },
-      inkFillUvMin: { value: fillUniforms.inkFillUvMin!.value },
-      inkFillUvSize: { value: fillUniforms.inkFillUvSize!.value },
+      ...(shape.kind === 'sphere'
+        ? createInkSphereFillAlphaUniforms(emptyFillAlphaTexture)
+        : createInkCylinderFillAlphaUniforms(shape.height, emptyFillAlphaTexture)),
     },
     transparent: false,
     depthTest: true,
     depthWrite: true,
-    side: BackSide,
+    side: DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
     toneMapped: false,
-    vertexShader: `
-varying vec2 vInkFillUv;
-void main() {
-  // Geometry positions already represent the complete world-unit outset.
-  vInkFillUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}`,
+    vertexShader: createInkRibbonVertexShader(
+      'varying vec3 vInkSurfacePosition;',
+      'vInkSurfacePosition = position;',
+    ),
     fragmentShader: `
-uniform vec3 inkNormalOutsetColor;
-uniform sampler2D inkFillMap;
-uniform vec2 inkFillUvMin;
-uniform vec2 inkFillUvSize;
-varying vec2 vInkFillUv;
+varying vec3 vInkColor;
+varying vec3 vInkSurfacePosition;
+${isSphere ? INK_SPHERE_FILL_ALPHA_FRAGMENT : INK_CYLINDER_FILL_ALPHA_FRAGMENT}
 void main() {
-  vec2 fillUv = (vInkFillUv - inkFillUvMin) / inkFillUvSize;
-  if (fillUv.x < 0.0 || fillUv.x > 1.0 || fillUv.y < 0.0 || fillUv.y > 1.0) discard;
-  if (texture2D(inkFillMap, fillUv).a < 0.5) discard;
-  gl_FragColor = vec4(inkNormalOutsetColor, 1.0);
+  if (getInkSurfaceFillAlpha() < 0.5) discard;
+  gl_FragColor = vec4(vInkColor, 1.0);
 }`,
   });
 }
 
-function copyInkFillAlphaClipUniforms(outsetMaterial: ShaderMaterial, fillMaterial: ShaderMaterial): void {
-  const outsetUniforms = outsetMaterial.uniforms;
-  const fillUniforms = fillMaterial.uniforms;
-  outsetUniforms.inkFillMap!.value = fillUniforms.inkFillMap!.value;
-  outsetUniforms.inkFillUvMin!.value = fillUniforms.inkFillUvMin!.value;
-  outsetUniforms.inkFillUvSize!.value = fillUniforms.inkFillUvSize!.value;
+function createInkSphereFillAlphaUniforms(emptyFillAlphaTexture: Texture): Record<string, { value: Texture | Vector4 }> {
+  const uniforms: Record<string, { value: Texture | Vector4 }> = {};
+  for (const face of INK_SPHERE_FILL_UNIFORMS) {
+    uniforms[face.name] = { value: emptyFillAlphaTexture };
+    uniforms[`${face.name}Crop`] = { value: EMPTY_INK_FILL_ALPHA_CROP.clone() };
+  }
+  return uniforms;
 }
 
-function createRawSrgbColor(value: string): Color {
-  return setRawSrgbColor(new Color(), value);
+function createInkCylinderFillAlphaUniforms(height: number, emptyFillAlphaTexture: Texture): Record<string, { value: Texture | Vector4 | number }> {
+  return {
+    inkFillSide: { value: emptyFillAlphaTexture },
+    inkFillSideCrop: { value: EMPTY_INK_FILL_ALPHA_CROP.clone() },
+    inkCylinderHeight: { value: height },
+  };
 }
 
-function setRawSrgbColor(color: Color, value: string): Color {
-  const parsed = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value);
-  if (!parsed) return color.setRGB(0, 0, 0);
-  color.r = Number.parseInt(parsed[1]!, 16) / 255;
-  color.g = Number.parseInt(parsed[2]!, 16) / 255;
-  color.b = Number.parseInt(parsed[3]!, 16) / 255;
-  return color;
-}
+const INK_SURFACE_FILL_ALPHA_HELPER = `
+float sampleInkFillAlpha(sampler2D map, vec4 crop, vec2 chartUv) {
+  vec2 textureUv = (chartUv - crop.xy) / crop.zw;
+  if (textureUv.x < 0.0 || textureUv.x > 1.0 || textureUv.y < 0.0 || textureUv.y > 1.0) return 0.0;
+  return texture2D(map, textureUv).a;
+}`;
+
+const INK_SPHERE_FILL_ALPHA_FRAGMENT = `
+uniform sampler2D inkFillPositiveX;
+uniform sampler2D inkFillNegativeX;
+uniform sampler2D inkFillPositiveY;
+uniform sampler2D inkFillNegativeY;
+uniform sampler2D inkFillPositiveZ;
+uniform sampler2D inkFillNegativeZ;
+uniform vec4 inkFillPositiveXCrop;
+uniform vec4 inkFillNegativeXCrop;
+uniform vec4 inkFillPositiveYCrop;
+uniform vec4 inkFillNegativeYCrop;
+uniform vec4 inkFillPositiveZCrop;
+uniform vec4 inkFillNegativeZCrop;
+${INK_SURFACE_FILL_ALPHA_HELPER}
+
+float getInkSurfaceFillAlpha() {
+  vec3 direction = normalize(vInkSurfacePosition);
+  vec3 magnitude = abs(direction);
+  if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z) {
+    float divisor = max(0.00000001, magnitude.x);
+    vec2 chartUv = direction.x >= 0.0
+      ? vec2(direction.z / divisor, direction.y / divisor) * 0.5 + 0.5
+      : vec2(-direction.z / divisor, direction.y / divisor) * 0.5 + 0.5;
+    return direction.x >= 0.0
+      ? sampleInkFillAlpha(inkFillPositiveX, inkFillPositiveXCrop, chartUv)
+      : sampleInkFillAlpha(inkFillNegativeX, inkFillNegativeXCrop, chartUv);
+  }
+  if (magnitude.y >= magnitude.z) {
+    float divisor = max(0.00000001, magnitude.y);
+    vec2 chartUv = direction.y >= 0.0
+      ? vec2(direction.x / divisor, direction.z / divisor) * 0.5 + 0.5
+      : vec2(direction.x / divisor, -direction.z / divisor) * 0.5 + 0.5;
+    return direction.y >= 0.0
+      ? sampleInkFillAlpha(inkFillPositiveY, inkFillPositiveYCrop, chartUv)
+      : sampleInkFillAlpha(inkFillNegativeY, inkFillNegativeYCrop, chartUv);
+  }
+  float divisor = max(0.00000001, magnitude.z);
+  vec2 chartUv = direction.z >= 0.0
+    ? vec2(direction.x / divisor, direction.y / divisor) * 0.5 + 0.5
+    : vec2(-direction.x / divisor, direction.y / divisor) * 0.5 + 0.5;
+  return direction.z >= 0.0
+    ? sampleInkFillAlpha(inkFillPositiveZ, inkFillPositiveZCrop, chartUv)
+    : sampleInkFillAlpha(inkFillNegativeZ, inkFillNegativeZCrop, chartUv);
+}`;
+
+const INK_CYLINDER_FILL_ALPHA_FRAGMENT = `
+uniform sampler2D inkFillSide;
+uniform vec4 inkFillSideCrop;
+uniform float inkCylinderHeight;
+${INK_SURFACE_FILL_ALPHA_HELPER}
+
+float getInkSurfaceFillAlpha() {
+  float angle = atan(vInkSurfacePosition.z, vInkSurfacePosition.x);
+  vec2 chartUv = vec2(angle / (3.141592653589793 * 2.0) + 0.5, vInkSurfacePosition.y / inkCylinderHeight + 0.5);
+  return sampleInkFillAlpha(inkFillSide, inkFillSideCrop, chartUv);
+}`;
 
 /**
  * The dedicated Ink shadow pass must discard the same transparent pixels as
@@ -996,7 +1141,17 @@ function createInkRibbonMaterial(): ShaderMaterial {
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
     toneMapped: false,
-    vertexShader: `
+    vertexShader: createInkRibbonVertexShader(),
+    fragmentShader: `
+varying vec3 vInkColor;
+void main() {
+  gl_FragColor = vec4(vInkColor, 1.0);
+}`,
+  });
+}
+
+function createInkRibbonVertexShader(varyings = '', mainExtension = ''): string {
+  return `
 attribute vec3 inkPrevious;
 attribute vec3 inkNext;
 attribute vec3 inkFallbackNormal;
@@ -1004,6 +1159,7 @@ attribute float inkSide;
 attribute float inkTangentOffset;
 attribute float inkWidth;
 varying vec3 vInkColor;
+${varyings}
 
 void main() {
   vec3 currentWorld = (modelMatrix * vec4(position, 1.0)).xyz;
@@ -1036,15 +1192,10 @@ void main() {
   vec4 clipPosition = projectionMatrix * viewPosition;
   vec4 depthOffsetClipPosition = projectionMatrix * vec4(viewPosition.xyz + vec3(0.0, 0.0, viewDepthOffset), 1.0);
   vInkColor = color;
+  ${mainExtension}
   gl_Position = clipPosition;
   gl_Position.z = clipPosition.w * depthOffsetClipPosition.z / depthOffsetClipPosition.w;
-}`,
-    fragmentShader: `
-varying vec3 vInkColor;
-void main() {
-  gl_FragColor = vec4(vInkColor, 1.0);
-}`,
-  });
+}`;
 }
 
 function createDynamicAttribute(length: number, itemSize: number): BufferAttribute {

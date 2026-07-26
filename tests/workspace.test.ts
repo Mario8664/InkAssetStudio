@@ -56,30 +56,30 @@ describe('Ink Studio work files', () => {
     expect(parsed.document.ink.embeddedAssets[0]!.group.compiled.shapes[0]!.ribbon.positions.length).toBeGreaterThan(0);
   });
 
-  it('upgrades v11 work files to v14 and treats missing Normal Outset as disabled', () => {
+  it('upgrades legacy work files to v15 and removes retired Normal Outset data', () => {
     const legacy = structuredClone(createStudioDocument('Legacy v11')) as any;
     legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 11;
     const shape = legacy.ink.embeddedAssets[0].group.shapes[0];
-    delete shape.normalOutset;
+    shape.normalOutset = { enabled: true, color: '#000000', distance: 0.22 };
     legacy.ink.embeddedAssets[0].group.compiled.formatVersion = 11;
-    for (const compiled of legacy.ink.embeddedAssets[0].group.compiled.shapes) delete compiled.normalOutset;
 
     const parsed = parseStudioWorkFile(JSON.stringify(legacy));
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const upgraded = parsed.document.ink.embeddedAssets[0]!.group;
-    expect(parsed.document.sourceCompatibility.paintingInkCompiledFormatVersion).toBe(14);
-    expect(upgraded.compiled.formatVersion).toBe(14);
-    expect(upgraded.compiled.shapes[0]?.normalOutset).toBeNull();
+    expect(parsed.document.sourceCompatibility.paintingInkCompiledFormatVersion).toBe(15);
+    expect(upgraded.compiled.formatVersion).toBe(15);
+    expect('normalOutset' in upgraded.shapes[0]!).toBe(false);
   });
 
-  it('retires v12 painted Normal Outset data into a disabled editable setting', () => {
+  it('adds the default curve-only setting while retiring painted Normal Outset data', () => {
     const legacy = structuredClone(createStudioDocument('Legacy v12')) as any;
     legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 12;
     const shape = legacy.ink.embeddedAssets[0].group.shapes[0];
-    shape.kind = 'cuboid';
+    shape.kind = 'sphere';
     delete shape.orientation;
-    shape.size = { x: 1, y: 1, z: 1 };
+    delete shape.size;
+    shape.radius = 0.5;
     shape.normalOutset = { distance: 0.22, fill: { surfaces: [] } };
     legacy.ink.embeddedAssets[0].group.compiled.formatVersion = 12;
 
@@ -87,9 +87,12 @@ describe('Ink Studio work files', () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const upgraded = parsed.document.ink.embeddedAssets[0]!.group;
-    expect(upgraded.shapes[0]?.normalOutset).toEqual({ enabled: false, color: '#000000', distance: 0.22 });
-    expect(upgraded.compiled.formatVersion).toBe(14);
-    expect(upgraded.compiled.shapes[0]?.normalOutset).toBeNull();
+    const upgradedShape = upgraded.shapes[0];
+    expect(upgradedShape?.kind).toBe('sphere');
+    if (!upgradedShape || upgradedShape.kind !== 'sphere') return;
+    expect(upgradedShape.surfaceOutline).toEqual({ enabled: false, width: 0.035 });
+    expect('normalOutset' in upgradedShape).toBe(false);
+    expect(upgraded.compiled.formatVersion).toBe(15);
   });
 
   it('rebuilds tampered derived Ink payloads even when their persisted hashes still match', () => {

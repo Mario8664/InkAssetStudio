@@ -52,11 +52,10 @@ import {
 import { createTerrainBatchGeometry } from '../src/render/terrainGeometry';
 import { TerrainRenderer } from '../src/render/TerrainRenderer';
 import {
-  applyInkShapeRenderTransform,
   createInkFillLightingState,
   createInkShapeRenderRoot,
+  updateInkSurfaceOutlines,
   updateInkShapeFillSurfaces,
-  updateInkShapeNormalOutset,
   updateInkShapeRibbon,
 } from '../src/render/InkGroupRenderer';
 import { hasRendererMaterial, InkHardShadowMap } from '../src/render/InkHardShadowMap';
@@ -221,7 +220,7 @@ describe('Reference rendering', () => {
       'circle',
       false,
     );
-    const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState(), { useSourceNormalOutset: true });
+    const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState());
     const fill = root.getObjectByName('InkFillSurface') as Mesh;
     expect((fill.material as ShaderMaterial).side).toBe(DoubleSide);
     expect((fill.userData.inkHardShadowDepthMaterial as ShaderMaterial).side).toBe(BackSide);
@@ -233,8 +232,7 @@ describe('Reference rendering', () => {
     expect(second.clone().sub(first).cross(third.clone().sub(first)).z).toBeGreaterThan(0);
     disposeObjectTree(root);
   });
-
-  it('builds outward Cylinder and Frustum geometry with double-visible Fill and live Normal Outset shells', () => {
+  it('renders camera-facing smooth-surface Ribbons only for supported Shapes', () => {
     for (const geometry of [createInkCylinderGeometry(0.75, 1.5), createInkFrustumGeometry(0.6, 1.2, 1.5)]) {
       const positions = geometry.getAttribute('position');
       const indices = geometry.getIndex()!;
@@ -250,38 +248,76 @@ describe('Reference rendering', () => {
     }
 
     const cylinder = createInkCylinderShape();
-    cylinder.normalOutset = { enabled: true, color: '#5a3e16', distance: 0.08 };
-    const frustum = createInkFrustumShape();
-    frustum.normalOutset = { enabled: true, color: '#5a3e16', distance: 0.08 };
-    const samples: Array<{ shape: InkShape; point: Parameters<typeof paintInkFill>[1][number] }> = [
-      { shape: cylinder, point: { surface: 'side', u: 0, v: 0, pressure: 1 } },
-      { shape: frustum, point: { face: 'positive-z', u: 0, v: 0, pressure: 1 } },
-    ];
-    for (const sample of samples) {
-      const painted = paintInkFill(sample.shape, [sample.point], '#29adff', 0.12, 'circle', false);
-      const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState(), { useSourceNormalOutset: true });
-      const fill = root.getObjectByName('InkFillSurface') as Mesh;
-      const shell = root.getObjectByName('InkNormalOutsetShell') as Group;
-      const shellSurface = shell.getObjectByName('InkNormalOutsetSurface') as Mesh;
-      expect((fill.material as ShaderMaterial).side).toBe(DoubleSide);
-      expect((fill.userData.inkHardShadowDepthMaterial as ShaderMaterial).side).toBe(BackSide);
-      expect(shell).toBeInstanceOf(Group);
-      expect(shellSurface).toBeInstanceOf(Mesh);
-      expect(shellSurface.castShadow).toBe(false);
-      const positions = shellSurface.geometry.getAttribute('position');
-      const maximumY = Math.max(...Array.from({ length: positions.count }, (_, index) => Math.abs(positions.getY(index))));
-      expect(maximumY).toBeCloseTo(0.58);
-      if (sample.shape.kind === 'cylinder') {
-        const maximumRadius = Math.max(...Array.from({ length: positions.count }, (_, index) => Math.hypot(positions.getX(index), positions.getZ(index))));
-        expect(maximumRadius).toBeCloseTo(0.58);
-      } else {
-        const topHalfSize = Math.max(...Array.from({ length: positions.count }, (_, index) => positions.getY(index) > 0 ? Math.max(Math.abs(positions.getX(index)), Math.abs(positions.getZ(index))) : 0));
-        const bottomHalfSize = Math.max(...Array.from({ length: positions.count }, (_, index) => positions.getY(index) < 0 ? Math.max(Math.abs(positions.getX(index)), Math.abs(positions.getZ(index))) : 0));
-        expect(topHalfSize * 2).toBeCloseTo(0.6249230177);
-        expect(bottomHalfSize * 2).toBeCloseTo(1.2049230177);
-      }
-      disposeObjectTree(root);
-    }
+    cylinder.surfaceOutline = { enabled: true, width: 0.08 };
+    const paintedCylinder = paintInkFill(cylinder, [{ surface: 'side', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
+    const root = createInkShapeRenderRoot(compileInkShape(paintedCylinder), paintedCylinder, createInkFillLightingState());
+    const camera = new PerspectiveCamera(42, 1, 0.05, 20);
+    camera.position.set(3, 1, 3);
+    camera.updateMatrixWorld(true);
+    updateInkSurfaceOutlines(root, camera);
+    const outline = root.getObjectByName('InkSurfaceOutline') as Mesh;
+    expect(outline).toBeInstanceOf(Mesh);
+    expect(outline.geometry.getIndex()!.count).toBeGreaterThan(0);
+    expect((outline.material as ShaderMaterial).side).toBe(DoubleSide);
+
+    const frustum = paintInkFill(createInkFrustumShape(), [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
+    const frustumRoot = createInkShapeRenderRoot(compileInkShape(frustum), frustum, createInkFillLightingState());
+    updateInkSurfaceOutlines(frustumRoot, camera);
+    expect(frustumRoot.getObjectByName('InkSurfaceOutline')).toBeUndefined();
+    disposeObjectTree(root);
+    disposeObjectTree(frustumRoot);
+  });
+
+  it('clips a smooth-surface Ribbon to Fill alpha and releases it when disabled', () => {
+    const sphere = createInkSphereShape();
+    sphere.surfaceOutline = { enabled: true, width: 0.08 };
+    const painted = paintInkFill(sphere, [{ x: 1, y: 0, z: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false) as typeof sphere;
+    const compiled = compileInkShape(painted);
+    const root = createInkShapeRenderRoot(compiled, painted, createInkFillLightingState());
+    const fill = root.getObjectByName('InkFillSurface') as Mesh;
+    const outline = root.getObjectByName('InkSurfaceOutline') as Mesh;
+    const material = outline.material as ShaderMaterial;
+    expect(material.uniforms.inkFillPositiveX!.value).toBe((fill.material as ShaderMaterial).uniforms.inkFillMap!.value);
+    expect(material.fragmentShader).toContain('getInkSurfaceFillAlpha() < 0.5');
+    const disposeGeometry = vi.spyOn(outline.geometry, 'dispose');
+    const disposeMaterial = vi.spyOn(material, 'dispose');
+    const disabled = { ...painted, surfaceOutline: { ...painted.surfaceOutline, enabled: false } };
+    updateInkShapeFillSurfaces(root, compiled.fill, disabled, createInkFillLightingState());
+    expect(root.getObjectByName('InkSurfaceOutline')).toBeUndefined();
+    expect(disposeGeometry).toHaveBeenCalledOnce();
+    expect(disposeMaterial).toHaveBeenCalledOnce();
+    disposeObjectTree(root);
+  });
+
+  it('updates one persistent surface Ribbon as the camera moves without replacing Fill resources', () => {
+    const cylinder = createInkCylinderShape();
+    cylinder.surfaceOutline = { enabled: true, width: 0.035 };
+    const painted = paintInkFill(cylinder, [{ surface: 'side', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
+    const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState());
+    const fill = root.getObjectByName('InkFillSurface') as Mesh;
+    const outline = root.getObjectByName('InkSurfaceOutline') as Mesh;
+    const camera = new PerspectiveCamera(42, 1, 0.05, 20);
+    camera.position.set(3, 1, 0);
+    camera.updateMatrixWorld(true);
+    updateInkSurfaceOutlines(root, camera);
+    const geometry = outline.geometry;
+    camera.position.set(0, 1, 3);
+    camera.updateMatrixWorld(true);
+    updateInkSurfaceOutlines(root, camera);
+    expect(root.getObjectByName('InkSurfaceOutline')).toBe(outline);
+    expect(outline.geometry).toBe(geometry);
+
+    const repainted = paintInkFill(painted, [{ surface: 'side', u: 0.25, v: 0, pressure: 1 }], '#ff004d', 0.12, 'circle', false);
+    updateInkShapeFillSurfaces(root, compileInkShape(repainted).fill, repainted, createInkFillLightingState());
+    expect(root.getObjectByName('InkFillSurface')).toBe(fill);
+    expect(root.getObjectByName('InkSurfaceOutline')).toBe(outline);
+
+    const resized = { ...repainted, radius: 0.75, height: 2 };
+    updateInkShapeFillSurfaces(root, compileInkShape(resized).fill, resized, createInkFillLightingState());
+    const resizedOutline = root.getObjectByName('InkSurfaceOutline') as Mesh;
+    expect(resizedOutline).not.toBe(outline);
+    expect((resizedOutline.material as ShaderMaterial).uniforms.inkCylinderHeight!.value).toBe(2);
+    disposeObjectTree(root);
   });
 
   it('keeps Fill triangles outward on all six Cuboid charts', () => {
@@ -297,7 +333,7 @@ describe('Reference rendering', () => {
     for (const face of Object.keys(directions) as InkCuboidFace[]) {
       shape = paintInkFill(shape, [{ face, u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
     }
-    const root = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState(), { useSourceNormalOutset: true });
+    const root = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState());
     const fills: Mesh[] = [];
     root.traverse((child) => {
       if (child instanceof Mesh && child.name === 'InkFillSurface') fills.push(child);
@@ -313,117 +349,6 @@ describe('Reference rendering', () => {
       const normal = second.clone().sub(first).cross(third.clone().sub(first));
       expect(normal.dot(directions[face]), face).toBeGreaterThan(0);
     }
-    disposeObjectTree(root);
-  });
-
-  it('alpha-clips Normal Outset surfaces to Fill charts and disposes them when disabled', () => {
-    const shape = createInkSphereShape();
-    shape.normalOutset = { enabled: true, color: '#ff004d', distance: 0.08 };
-    const emptyRoot = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState(), { useSourceNormalOutset: true });
-    expect(emptyRoot.getObjectByName('InkNormalOutsetShell')).toBeUndefined();
-    disposeObjectTree(emptyRoot);
-
-    const painted = paintInkFill(shape, [{ x: 1, y: 0, z: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
-    const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState(), { useSourceNormalOutset: true });
-    const fill = root.getObjectByName('InkFillSurface') as Mesh;
-    const shell = root.getObjectByName('InkNormalOutsetShell') as Group;
-    const surface = shell.getObjectByName('InkNormalOutsetSurface') as Mesh;
-    const material = surface.material as ShaderMaterial;
-    expect(shell).toBeInstanceOf(Group);
-    expect(surface).toBeInstanceOf(Mesh);
-    expect(material.side).toBe(BackSide);
-    expect(surface.castShadow).toBe(false);
-    expect((material.uniforms.inkNormalOutsetColor!.value as Color).toArray()).toEqual([1, 0, 0x4d / 255]);
-    expect(material.uniforms.inkFillMap!.value).toBe((fill.material as ShaderMaterial).uniforms.inkFillMap!.value);
-    expect(material.fragmentShader).toContain('texture2D(inkFillMap, fillUv).a < 0.5');
-
-    const disposeGeometry = vi.spyOn(surface.geometry, 'dispose');
-    const disposeMaterial = vi.spyOn(material, 'dispose');
-    updateInkShapeNormalOutset(root, null, { ...painted, normalOutset: { ...painted.normalOutset!, enabled: false } }, { useSourceNormalOutset: true });
-    expect(root.getObjectByName('InkNormalOutsetShell')).toBeUndefined();
-    expect(disposeGeometry).toHaveBeenCalledOnce();
-    expect(disposeMaterial).toHaveBeenCalledOnce();
-    disposeObjectTree(root);
-  });
-
-  it('keeps Cuboid dimensions intrinsic while Normal Outset remains a fixed world-unit distance', () => {
-    const shape = createInkCuboidShape();
-    shape.normalOutset = { enabled: true, color: '#5a3e16', distance: 0.08 };
-    const painted = paintInkFill(shape, [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
-    const compiled = compileInkShape(painted);
-    const root = createInkShapeRenderRoot(compiled, painted, createInkFillLightingState(), { useSourceNormalOutset: true });
-    const content = root.getObjectByName('InkShapeContent') as Group;
-    const shell = root.getObjectByName('InkNormalOutsetShell') as Group;
-    const surface = shell.getObjectByName('InkNormalOutsetSurface') as Mesh;
-    const originalGeometry = surface.geometry;
-    const resized = { ...painted, size: { x: 3, y: 2, z: 0.5 } };
-
-    applyInkShapeRenderTransform(root, resized);
-    updateInkShapeNormalOutset(root, compiled.normalOutset, resized, { useSourceNormalOutset: true });
-    root.updateMatrixWorld(true);
-
-    expect(root.scale.toArray()).toEqual([1, 1, 1]);
-    expect(content.scale.toArray()).toEqual([3, 2, 0.5]);
-    const resizedShell = root.getObjectByName('InkNormalOutsetShell') as Group;
-    const resizedSurface = resizedShell.getObjectByName('InkNormalOutsetSurface') as Mesh;
-    expect(resizedSurface.geometry).not.toBe(originalGeometry);
-    const shellPositions = Array.from(resizedSurface.geometry.getAttribute('position').array);
-    const expectedShellPositions = [
-      -1.58, -1.08, 0.33,
-      1.58, -1.08, 0.33,
-      -1.58, 1.08, 0.33,
-      1.58, 1.08, 0.33,
-    ];
-    expect(shellPositions).toHaveLength(expectedShellPositions.length);
-    for (const [index, expected] of expectedShellPositions.entries()) expect(shellPositions[index]).toBeCloseTo(expected);
-    expect(resizedShell.getWorldScale(new Vector3()).toArray()).toEqual([1, 1, 1]);
-    const shellMaterial = resizedSurface.material as ShaderMaterial;
-    expect(shellMaterial.uniforms.inkNormalOutsetDistance).toBeUndefined();
-    expect(shellMaterial.vertexShader).not.toContain('outwardWorldNormal');
-    disposeObjectTree(root);
-  });
-
-  it('reuses Ribbon and Fill GPU resources across Transform, Fill, and Normal Outset edits', () => {
-    const shape = createInkCuboidShape();
-    shape.strokes = [createInkOutlineStroke([
-      { face: 'positive-z', u: -0.2, v: 0, pressure: 1 },
-      { face: 'positive-z', u: 0.2, v: 0, pressure: 1 },
-    ], '#000000', 0.04)];
-    const painted = paintInkFill(shape, [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
-    const compiled = compileInkShape(painted);
-    const root = createInkShapeRenderRoot(compiled, painted, createInkFillLightingState(), { useSourceNormalOutset: true });
-    const ribbon = root.getObjectByName('InkShapeRibbon') as Mesh;
-    const fill = root.getObjectByName('InkFillSurface') as Mesh;
-    const fillGeometry = fill.geometry;
-    const fillMaterial = fill.material;
-    const fillTexture = fill.userData.inkFillTexture;
-
-    const transformed = {
-      ...painted,
-      position: { x: 2, y: 3, z: -1 },
-      rotation: { x: 0.1, y: 0.2, z: 0.3 },
-      normalOutset: { enabled: true, color: '#5a3e16', distance: 0.08 },
-    };
-    applyInkShapeRenderTransform(root, transformed);
-    updateInkShapeNormalOutset(root, compiled.normalOutset, transformed, { useSourceNormalOutset: true });
-    expect(root.getObjectByName('InkShapeRibbon')).toBe(ribbon);
-    expect(root.getObjectByName('InkFillSurface')).toBe(fill);
-    expect(root.position.toArray()).toEqual([2, 3, -1]);
-    const shell = root.getObjectByName('InkNormalOutsetShell') as Group;
-    const shellSurface = shell.getObjectByName('InkNormalOutsetSurface') as Mesh;
-    expect(shell).toBeInstanceOf(Group);
-    expect(shellSurface).toBeInstanceOf(Mesh);
-    expect((shellSurface.material as ShaderMaterial).uniforms.inkFillMap!.value).toBe(fillTexture);
-
-    const repainted = paintInkFill(transformed, [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#ff004d', 0.12, 'circle', false);
-    const recompiled = compileInkShape(repainted, undefined, compiled);
-    updateInkShapeFillSurfaces(root, recompiled.fill, recompiled.normalOutset, repainted, createInkFillLightingState(), { useSourceNormalOutset: true });
-    expect(root.getObjectByName('InkShapeRibbon')).toBe(ribbon);
-    expect(root.getObjectByName('InkFillSurface')).toBe(fill);
-    expect(fill.geometry).toBe(fillGeometry);
-    expect(fill.material).toBe(fillMaterial);
-    expect(fill.userData.inkFillTexture).toBe(fillTexture);
-    expect((shellSurface.material as ShaderMaterial).uniforms.inkFillMap!.value).toBe(fillTexture);
     disposeObjectTree(root);
   });
 

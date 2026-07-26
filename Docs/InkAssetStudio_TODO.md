@@ -22,7 +22,7 @@
 ### 2.2 工作场景、持久化与文件交换
 
 - 工作文件格式：`ink-asset-studio-work`，`formatVersion: 1`。
-- Painting Ink 作者数据兼容版本：资产 schema 3、编译格式 14；旧格式文件均从作者源重建派生数据，缺少 Normal Outset 时按关闭处理；v12 painted Normal Outset 会迁移为关闭的可编辑 Shape 设置。
+- Painting Ink 作者数据兼容版本：资产 schema 3、编译格式 15；旧格式文件均从作者源重建派生数据，历史 `normalOutset` 字段会被丢弃。Sphere 与 Cylinder 会补入关闭的 `surfaceOutline` 配置，下一次保存写出规范数据。
 - Terrain schema：1。
 - 一个工作场景可内嵌多个独立 Ink 源和多个摆放引用。
 - IndexedDB 保存当前场景的作者源快照和独立 Editor Session；作者内容修改使用 600 ms 节流自动保存，工具状态使用独立低频保存。Ribbon/Fill 派生缓存不进入该保存事务，恢复时在 Worker 中重建。
@@ -38,8 +38,8 @@
 - 多 Group Outliner、Group 新建/删除/改名、连续 X/Y/Z 摆放、0/90/180/270° Y 轴摆放旋转。
 - Group Pivot 视口选择和 XZ 拖动摆放。
 - 每个 Group 支持任意多个 Plane、Cuboid、Sphere、Cylinder、Frustum。
-- Shape 支持选择、删除、位置、XYZ 旋转、Cuboid 固有尺寸、Sphere 固有半径、Cylinder 半径/高度与 Frustum 上表面 size/下表面 size/高度；不提供通用 Transform Scale。Move、Rotate 与内在尺寸是互斥视口手柄模式，尺寸手柄不会与移动或旋转手柄混显。Move/Rotate 支持持久化的 World/Local 坐标空间切换，默认 World。有限 Shape 尺寸变更只重采样当前 Shape 的 Fill 图表；Normal Outset 壳以真实尺寸和 `distance` 预外扩 Geometry 渲染，外扩距离保持世界单位。
-- Cuboid/Sphere/Cylinder/Frustum 支持 Painting 当前的 Normal Outset Shape 配置：启用、壳颜色与世界单位外扩距离可实时调整、Undo/Redo、保存和交换；默认距离与默认 Outline 宽度同为 `0.035`。Cuboid/Cylinder/Frustum 使用逐面恒距 miter 壳，Sphere 使用无缝的 `radius + distance` 径向外球，且不会在 shader 中二次外扩；每张壳面复用对应 Fill 图表的纹理和 UV 裁切，以相同的 `alpha < 0.5` 阈值裁去透明像素，没有 Fill 图表时不创建壳资源。Plane 不开放该设置。关闭时立即移除并释放壳资源。
+- Shape 支持选择、删除、位置、XYZ 旋转、Cuboid 固有尺寸、Sphere 固有半径、Cylinder 半径/高度与 Frustum 上表面 size/下表面 size/高度；不提供通用 Transform Scale。Move、Rotate 与内在尺寸是互斥视口手柄模式，尺寸手柄不会与移动或旋转手柄混显。Move/Rotate 支持持久化的 World/Local 坐标空间切换，默认 World。有限 Shape 尺寸变更只重采样当前 Shape 的 Fill 图表。
+- 只有 Sphere 与 Cylinder 支持 `surfaceOutline`：启用与世界单位宽度可实时调整、Undo/Redo、保存和交换，默认宽度与默认 Outline 宽度同为 `0.035`。它是 Ink 显示 pass 中常驻的相机相关 Ribbon，不进入 Worker 编译载荷或硬阴影。Sphere 用相机切线圆生成闭合 Ribbon；Cylinder 只生成侧面两条切线母线，顶面和底面不描边。Ribbon 复用普通描边的宽度、颜色和深度路径，并按对应 Fill 图表的 `alpha < 0.5` 裁切；透明区域或图表外不显示。Plane、Cuboid 与 Frustum 不拥有该设置；关闭时立即释放 Ribbon 资源。
 - Shape 列表在删除按钮左侧提供眼睛按钮。它将该 Shape 临时排除出新绘制、吸色与 Shape 拾取，仍显示既有 Ink；排除 ID 仅进入 Editor Session，不进入作者源、导出、Undo/Redo 或内容 dirty。
 - Shape 视口拖动支持 XZ 移动和 Y 轴旋转，手势结束后才提交一次作者事务。
 - Shape 编辑辅助已与 Painting 当前视觉一致：选中 Surface 使用 `#63c7fa / 0.34`，未选中及 Draw 模式 Surface 使用 `#548097 / 0.16`；相应参考网格使用 `#b9ebff / 0.84` 与 `#7aa0ae / 0.42`。辅助面读取深度但不写入深度，不再使用黄色 wireframe。
@@ -74,7 +74,7 @@
 - Ink Fill 可见材质固定使用 `DoubleSide`，片元在背面翻转光照法线；专属硬阴影 depth material 仍使用 `BackSide`。Cuboid、Sphere、Cylinder 与 Frustum 的表面三角形绕序均保持法线朝外。
 - Ink 阴影目标密度固定为 64 px/世界单位；普通 Three.js PCF 阴影保持关闭。
 - 阴影深度只在 Ink 几何/Transform、摆放或光照方向变化时失效；Reference 地形、灯光颜色和强度不会触发阴影深度重建。
-- 纯 Outline 与 Normal Outset 编辑不再重绘硬阴影；packed-depth 捕获会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
+- 纯 Outline 与 Surface Outline 编辑不再重绘硬阴影；packed-depth 捕获会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
 - Ink Group 渲染按 Shape 复用已上传资源：Transform 只更新对象变换，Fill-only 更新复用 Ribbon，描边变化只替换对应 Shape，而不是重建整组 Ink。
 - 阴影相机范围变化后显式更新投影矩阵。
 - GPU 最大纹理不足时不修改作品数据，界面会显示所需尺寸、设备上限和恢复办法。
@@ -96,8 +96,8 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 8 个 Vitest 文件、69 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
-- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样与固定世界单位 Normal Outset 壳、按 Fill alpha 裁切的 Normal Outset 壳及其资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、旧工作文件升级、篡改派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
+- 8 个 Vitest 文件、68 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、旧工作文件升级、篡改派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
 真实 Chrome 自动验收命令：
@@ -112,20 +112,20 @@ npm.cmd run visual-check
 2. 切换压感关闭并真实拖动画 Outline；
 3. 真实拖动画 Fill；
 4. 重新开启压感；
-5. 切换到 Shape 模式，新建 Cuboid、Cylinder 与 Frustum，验证对应尺寸手柄和 World/Local Transform 切换；在 Cylinder/Frustum 上启用并调整 Normal Outset 颜色与距离，确认双面 Fill 保持可见而 hard-shadow 使用 BackSide，再切回 Draw 模式继续编辑；
+5. 切换到 Shape 模式，新建 Cuboid、Cylinder 与 Frustum，验证对应尺寸手柄和 World/Local Transform 切换；确认 Cuboid/Frustum 不显示 Surface Outline，Cylinder 可启用并调整世界单位宽度，确认双面 Fill 保持可见而 hard-shadow 使用 BackSide，再切回 Draw 模式继续编辑；
 6. 打开调色板编辑器并排序颜色；
 7. 核对 Painting 当前完整灯光初值、全部参数输入和重点昼夜滑杆，修改预览灯光并执行 Undo/Redo/Reset；
 8. 核对独立 Navigate 模式已删除，鼠标拖动不会绘制 Ink；
 9. 核对地块边缘、无限网格和坐标轴三个开关默认开启，并逐个关闭、重新开启；
 10. 进入 Terrain 模式，核对三个 Tile 按钮、四向按钮、X/Y/Z 工作面按钮并用 Pencil 拖动擦除地形；
-11. 导出 JSON，检查 Group、描边点、压力、五类 Shape、Fill 块、Normal Outset v14 配置和地形结果；
+11. 导出 JSON，检查 Group、描边点、压力、五类 Shape、Fill 块、Sphere/Cylinder 的 `surfaceOutline` v15 配置和地形结果；
 12. 新建场景后重新导入刚导出的文件；
 13. 等待 IndexedDB 保存完成；
 14. 断网刷新并确认完整工作场景与 Editor Session 恢复；
 15. 在 1366×900、1024×768 和 768×1024 三种视口检查布局、画布、Group、工具、三个视口辅助开关和页面溢出；
 16. 收集控制台和页面错误。
 
-最近一次结果：2 个 Group、15 个可编辑 Outline 点、4 个稀疏 Fill 块、1 个已启用 Normal Outset、21 个剩余地形格；导出声明 Painting Ink compiled format v14，包含 `plane`、`cuboid`、`cylinder`、`frustum`。自动验收确认 Cylinder 的 Radius/Height、Frustum 的 Top/Bottom/Height 与两者的 Normal Outset 控件可用；World/Local Transform 切换和删除键左侧的临时绘制排除眼睛按钮均可切换、还原并保持为 Session 状态。桌面、离线刷新、1024×768 与 768×1024 视口均无页面溢出；Undo/Redo、重点昼夜控件和三个视口辅助开关在 iPad 横竖屏可见，按钮式 Terrain 工具、Pencil 绘制、鼠标输入隔离、模式切换、开关交互、断网恢复均成功，控制台和页面错误为 0。
+最近一次结果：2 个 Group、15 个可编辑 Outline 点、4 个稀疏 Fill 块、1 个已启用 Surface Outline、21 个剩余地形格；导出声明 Painting Ink compiled format v15，包含 `plane`、`cuboid`、`cylinder`、`frustum`。自动验收确认 Cuboid/Frustum 不显示曲面描边控件，Cylinder 的 Radius/Height 和 Surface Outline 宽度可用并可导出；World/Local Transform 切换和删除键左侧的临时绘制排除眼睛按钮均可切换、还原并保持为 Session 状态。桌面、离线刷新、1024×768 与 768×1024 视口均无页面溢出；Undo/Redo、重点昼夜控件和三个视口辅助开关在 iPad 横竖屏可见，按钮式 Terrain 工具、Pencil 绘制、鼠标输入隔离、模式切换、开关交互、断网恢复均成功，控制台和页面错误为 0。
 
 视觉验收图位于：
 
