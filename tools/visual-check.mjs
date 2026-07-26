@@ -150,11 +150,10 @@ try {
     input.value = '#5a3e16';
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  await normalOutset.getByLabel('Shell Outset').evaluate((input) => {
-    input.value = '0.08';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  await page.waitForFunction(() => document.querySelector('.normal-outset-settings output')?.textContent === '0.080');
+  const normalOutsetDistance = normalOutset.getByLabel('Normal outset distance');
+  await normalOutsetDistance.fill('0.035');
+  await normalOutsetDistance.press('Enter');
+  await page.waitForFunction(() => (document.querySelector('[aria-label="Normal outset distance"]')?.value ?? '') === '0.035');
   await page.waitForTimeout(100);
   await page.screenshot({ path: 'studio-shape-preview.png', fullPage: true });
   await page.getByRole('button', { name: '+ Cylinder', exact: true }).click();
@@ -176,6 +175,14 @@ try {
     input.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await page.getByRole('button', { name: 'Draw', exact: true }).click();
+  for (const [tool, label] of [
+    ['Outline', 'Outline width'],
+    ['Line Erase', 'Outline eraser width'],
+    ['Fill Paint', 'Fill brush size'],
+  ]) {
+    await page.getByRole('button', { name: tool, exact: true }).click();
+    if (!await page.getByLabel(label).isVisible()) throw new Error(`${label} direct numeric input is missing.`);
+  }
 
   await page.locator('button[title="Edit and reorder palette"]').click();
   if (await page.locator('.palette-editor-row').count() < 2) throw new Error('Palette editor did not expose editable colors.');
@@ -183,12 +190,15 @@ try {
   await page.getByRole('button', { name: 'Done' }).click();
 
   await page.getByRole('button', { name: 'Lighting', exact: true }).click();
+  for (const label of ['Day and night phase value', 'Sun path tilt X value', 'Sun path offset Z value']) {
+    if (!await page.getByLabel(label).isVisible()) throw new Error(`${label} direct numeric input is missing.`);
+  }
   const undoButton = page.getByRole('button', { name: 'Undo', exact: true });
   const redoButton = page.getByRole('button', { name: 'Redo', exact: true });
   if (!await undoButton.isVisible() || !await redoButton.isVisible()) throw new Error('Undo and Redo must remain directly visible.');
   if (await page.locator('.lighting-profile-card').count() !== 2) throw new Error('Day and Night lighting profiles are not both visible.');
   if (await page.locator('.lighting-profile-card input[type="color"]').count() !== 10) throw new Error('The complete Day/Night color controls are not available.');
-  if (await page.locator('.lighting-section input[type="number"]').count() !== 9) throw new Error('The complete numeric lighting controls are not available.');
+  if (await page.locator('.lighting-section input[type="number"]').count() !== 12) throw new Error('The complete numeric lighting controls are not available.');
   for (const label of ['Show tile edges', 'Show infinite grid', 'Show coordinate axes']) {
     const toggle = page.getByLabel(label);
     if (!await toggle.isVisible() || !await toggle.isChecked()) throw new Error(`${label} must be visible and enabled by default.`);
@@ -199,32 +209,31 @@ try {
   }
   const currentLighting = await page.evaluate(() => {
     const section = document.querySelector('.lighting-section');
-    const ranges = [...section.querySelectorAll('input[type="range"]')];
-    const numbers = [...section.querySelectorAll('input[type="number"]')];
+    const numberValue = (label) => section.querySelector(`[aria-label="${label}"]`)?.value;
+    const terrainBounce = section.querySelector('.lighting-number-row input[type="number"]')?.value;
+    const profiles = [...section.querySelectorAll('.lighting-profile-card')];
     return {
-      phase: ranges[0]?.value,
-      tilt: ranges[1]?.value,
-      offset: ranges[2]?.value,
-      terrainBounce: numbers[0]?.value,
-      dayMain: numbers[1]?.value,
-      nightMain: numbers[5]?.value,
+      phase: numberValue('Day and night phase value'),
+      tilt: numberValue('Sun path tilt X value'),
+      offset: numberValue('Sun path offset Z value'),
+      terrainBounce,
+      dayMain: profiles[0]?.querySelector('input[type="number"]')?.value,
+      nightMain: profiles[1]?.querySelector('input[type="number"]')?.value,
     };
   });
   if (JSON.stringify(currentLighting) !== JSON.stringify({ phase: '0', tilt: '-12', offset: '15', terrainBounce: '0.5', dayMain: '3.2', nightMain: '0.8' })) {
     throw new Error(`New work scene did not use Painting lighting defaults: ${JSON.stringify(currentLighting)}`);
   }
-  const dayPosition = page.locator('.lighting-section input[type="range"]').first();
-  await dayPosition.evaluate((input) => {
-    input.value = '0.35';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  await page.waitForFunction(() => document.querySelector('.lighting-section output')?.textContent === '0.35');
+  const dayPosition = page.getByLabel('Day and night phase value');
+  await dayPosition.fill('0.35');
+  await dayPosition.press('Enter');
+  await page.waitForFunction(() => (document.querySelector('[aria-label="Day and night phase value"]')?.value ?? '') === '0.35');
   await page.locator('button[title="Undo"]').click();
-  await page.waitForFunction(() => document.querySelector('.lighting-section output')?.textContent === '0.00');
+  await page.waitForFunction(() => (document.querySelector('[aria-label="Day and night phase value"]')?.value ?? '') === '0');
   await page.locator('button[title="Redo"]').click();
-  await page.waitForFunction(() => document.querySelector('.lighting-section output')?.textContent === '0.35');
+  await page.waitForFunction(() => (document.querySelector('[aria-label="Day and night phase value"]')?.value ?? '') === '0.35');
   await page.getByRole('button', { name: 'Reset', exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('.lighting-section output')?.textContent === '0.00');
+  await page.waitForFunction(() => (document.querySelector('[aria-label="Day and night phase value"]')?.value ?? '') === '0');
   const dayMainIntensity = page.locator('.lighting-profile-card').first().locator('input[type="number"]').first();
   await dayMainIntensity.evaluate((input) => {
     input.value = '2.7';
@@ -258,7 +267,7 @@ try {
   if (strokePoints.length < 2) throw new Error('The browser drawing gesture did not produce editable outline points.');
   if (!strokePoints.every((point) => point.pressure === 1)) throw new Error('Pressure Off did not persist pressure: 1 for new points.');
   if (fillBlocks.length < 1) throw new Error('The browser Fill Paint gesture did not produce sparse editable Fill blocks.');
-  if (normalOutsets.length !== 1 || normalOutsets[0].normalOutset.color !== '#5a3e16' || normalOutsets[0].normalOutset.distance !== 0.08) {
+  if (normalOutsets.length !== 1 || normalOutsets[0].normalOutset.color !== '#5a3e16' || normalOutsets[0].normalOutset.distance !== 0.035) {
     throw new Error('Normal Outset author settings were not exported exactly.');
   }
   if (!cylinder || cylinder.radius !== 0.7 || !frustum || frustum.topSize !== 0.7) throw new Error('Cylinder or Frustum dimensions were not exported exactly.');

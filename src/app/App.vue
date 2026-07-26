@@ -461,7 +461,7 @@ function setNormalOutsetColor(event: Event): void {
 
 function setNormalOutsetDistance(event: Event): void {
   const fallback = activeNormalOutset.value?.distance ?? createDefaultInkNormalOutsetSettings().distance;
-  const distance = Math.min(1, Math.max(0.001, finiteInput(event, fallback)));
+  const distance = boundedInput(event, fallback, 0.001, 1);
   updateActiveNormalOutset('Set Ink normal outset distance', 'normal-outset:distance', (current) => ({ ...current, distance }));
 }
 
@@ -491,6 +491,19 @@ function updateLighting(path: string, raw: string | number): void {
     target[key] = raw;
     return { ...value, previewLighting: lighting };
   });
+}
+
+function setLightingRange(path: string, event: Event, fallback: number, minimum: number, maximum: number): void {
+  updateLighting(path, boundedInput(event, fallback, minimum, maximum));
+}
+
+function setSessionRange(
+  field: 'outlineWidth' | 'outlineEraserWidth' | 'fillBrushSize',
+  event: Event,
+  minimum: number,
+  maximum: number,
+): void {
+  session[field] = boundedInput(event, session[field], minimum, maximum);
 }
 
 function resetLightingToPainting(): void {
@@ -539,6 +552,14 @@ function showMessage(text: string, tone: 'info' | 'error' = 'info'): void {
 function finiteInput(event: Event, fallback: number): number {
   const value = Number((event.target as HTMLInputElement).value);
   return Number.isFinite(value) ? value : fallback;
+}
+
+function boundedInput(event: Event, fallback: number, minimum: number, maximum: number): number {
+  const input = event.target as HTMLInputElement;
+  const value = finiteInput(event, fallback);
+  const bounded = Math.min(maximum, Math.max(minimum, value));
+  input.value = String(bounded);
+  return bounded;
 }
 
 function degrees(value: number): number { return Math.round(value * 180 / Math.PI * 100) / 100; }
@@ -699,13 +720,13 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
             <label class="check-row"><input v-model="session.showAxes" type="checkbox" /> Show coordinate axes</label>
           </div>
           <div class="day-phase-control">
-            <label>Day / Night <output>{{ document.previewLighting.dayNightPhase.toFixed(2) }}</output></label>
+            <label>Day / Night <input aria-label="Day and night phase value" class="lighting-range-number" :value="document.previewLighting.dayNightPhase" type="number" min="-1" max="1" step="0.01" @change="setLightingRange('dayNightPhase', $event, 0, -1, 1)" /></label>
             <input aria-label="Day and night phase" :value="document.previewLighting.dayNightPhase" type="range" min="-1" max="1" step="0.01" @input="updateLighting('dayNightPhase', finiteInput($event, 0))" />
             <div class="phase-ticks"><span>−1 Midnight</span><span>0 Noon</span><span>+1 Midnight</span></div>
           </div>
-          <label>Sun Path Tilt X <output>{{ document.previewLighting.sunPathTiltXDegrees.toFixed(1) }}°</output></label>
+          <label>Sun Path Tilt X <input aria-label="Sun path tilt X value" class="lighting-range-number" :value="document.previewLighting.sunPathTiltXDegrees" type="number" min="-89" max="89" step="0.1" @change="setLightingRange('sunPathTiltXDegrees', $event, -12, -89, 89)" /></label>
           <input :value="document.previewLighting.sunPathTiltXDegrees" type="range" min="-89" max="89" step="0.1" @input="updateLighting('sunPathTiltXDegrees', finiteInput($event, -12))" />
-          <label>Path Offset Z <output>{{ document.previewLighting.sunPathOffsetZDegrees.toFixed(1) }}°</output></label>
+          <label>Path Offset Z <input aria-label="Sun path offset Z value" class="lighting-range-number" :value="document.previewLighting.sunPathOffsetZDegrees" type="number" min="-180" max="180" step="0.1" @change="setLightingRange('sunPathOffsetZDegrees', $event, 15, -180, 180)" /></label>
           <input :value="document.previewLighting.sunPathOffsetZDegrees" type="range" min="-180" max="180" step="0.1" @input="updateLighting('sunPathOffsetZDegrees', finiteInput($event, 15))" />
           <label class="lighting-number-row">Terrain Bounce <input type="number" min="0" max="20" step="0.05" :value="document.previewLighting.terrainBounceIntensity" @input="updateLighting('terrainBounceIntensity', finiteInput($event, 0.5))" /></label>
           <div class="lighting-profile-grid">
@@ -773,8 +794,10 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
             <template v-if="activeNormalOutset.enabled">
               <label>Shell Color <input :value="activeNormalOutset.color" type="color" @input="setNormalOutsetColor" /></label>
               <label>Shell Outset
-                <input :value="activeNormalOutset.distance" type="range" min="0.001" max="1" step="0.001" @input="setNormalOutsetDistance" />
-                <output>{{ activeNormalOutset.distance.toFixed(3) }}</output>
+                <span class="range-input-row">
+                  <input :value="activeNormalOutset.distance" type="range" min="0.001" max="1" step="0.001" @input="setNormalOutsetDistance" />
+                  <input aria-label="Normal outset distance" class="precision-number" :value="activeNormalOutset.distance" type="number" min="0.001" max="1" step="0.001" @change="setNormalOutsetDistance" />
+                </span>
               </label>
             </template>
             <p class="note">The shell uses final-dimension Shape geometry, so its world-unit outset remains consistent. It does not enter Ink hard shadows.</p>
@@ -801,9 +824,9 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
       </div>
       <div class="tool-group tool-options">
         <label class="color-field"><span>Color</span><input v-if="session.drawTool === 'outline' || session.drawTool === 'outline-eraser'" v-model="session.outlineColor" type="color" /><input v-else v-model="session.fillColor" type="color" /></label>
-        <label v-if="session.drawTool === 'outline'">Width <input v-model.number="session.outlineWidth" type="range" min="0.005" max="0.5" step="0.005" /><output>{{ session.outlineWidth.toFixed(3) }}</output></label>
-        <label v-else-if="session.drawTool === 'outline-eraser'">Width <input v-model.number="session.outlineEraserWidth" type="range" min="0.01" max="1" step="0.01" /><output>{{ session.outlineEraserWidth.toFixed(2) }}</output></label>
-        <label v-else>Size <input v-model.number="session.fillBrushSize" type="range" min="0.02" max="1" step="0.01" /><output>{{ session.fillBrushSize.toFixed(2) }}</output></label>
+        <label v-if="session.drawTool === 'outline'">Width <span class="range-input-row"><input v-model.number="session.outlineWidth" type="range" min="0.005" max="0.5" step="0.005" /><input aria-label="Outline width" class="precision-number" :value="session.outlineWidth" type="number" min="0.005" max="0.5" step="0.005" @change="setSessionRange('outlineWidth', $event, 0.005, 0.5)" /></span></label>
+        <label v-else-if="session.drawTool === 'outline-eraser'">Width <span class="range-input-row"><input v-model.number="session.outlineEraserWidth" type="range" min="0.01" max="1" step="0.01" /><input aria-label="Outline eraser width" class="precision-number" :value="session.outlineEraserWidth" type="number" min="0.01" max="1" step="0.01" @change="setSessionRange('outlineEraserWidth', $event, 0.01, 1)" /></span></label>
+        <label v-else>Size <span class="range-input-row"><input v-model.number="session.fillBrushSize" type="range" min="0.02" max="1" step="0.01" /><input aria-label="Fill brush size" class="precision-number" :value="session.fillBrushSize" type="number" min="0.02" max="1" step="0.01" @change="setSessionRange('fillBrushSize', $event, 0.02, 1)" /></span></label>
         <div v-if="session.drawTool === 'fill-brush' || session.drawTool === 'fill-eraser'" class="segmented compact"><button :class="{ active: session.fillBrushShape === 'circle' }" @click="session.fillBrushShape = 'circle'">●</button><button :class="{ active: session.fillBrushShape === 'square' }" @click="session.fillBrushShape = 'square'">■</button></div>
         <button class="toggle" :class="{ active: session.pressureEnabled }" title="Use Apple Pencil pressure for new outline points" @click="session.pressureEnabled = !session.pressureEnabled">Pressure {{ session.pressureEnabled ? 'On' : 'Off' }}</button>
         <button v-if="session.drawTool === 'outline'" class="toggle" :class="{ active: session.straightLineEnabled }" @click="session.straightLineEnabled = !session.straightLineEnabled">Straight {{ session.straightLineEnabled ? 'On' : 'Off' }}</button>

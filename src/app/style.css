@@ -99,7 +99,9 @@ output { color: var(--accent); font-variant-numeric: tabular-nums; }
 .normal-outset-settings { display: grid; gap: 8px; margin: 4px 0 0; padding: 9px; border: 1px solid #41484b; border-radius: 8px; }
 .normal-outset-settings legend { padding: 0 5px; color: var(--accent); font-size: 11px; }
 .normal-outset-settings .checkbox-label { display: flex; align-items: center; gap: 7px; }
-.normal-outset-settings input[type="range"] { width: 100%; }
+.range-input-row { display: grid; grid-template-columns: minmax(0, 1fr) 70px; align-items: center; gap: 7px; min-width: 0; }
+.range-input-row input[type="range"] { width: 100%; min-width: 0; }
+.precision-number, .lighting-range-number { width: 70px; min-width: 0; font-variant-numeric: tabular-nums; text-align: right; }
 .snap-settings { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: end; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #191c1e; }
 .snap-settings .check-row { align-self: center; white-space: nowrap; }
 .snap-settings input[type="number"] { min-width: 0; }
@@ -147,9 +149,9 @@ output { color: var(--accent); font-variant-numeric: tabular-nums; }
 .small-button { width: 28px; min-height: 28px; padding: 0; }
 .tool-options { justify-content: flex-end; }
 .tool-options > label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
-.tool-options input[type="range"] { width: 90px; }
+.tool-options .range-input-row { grid-template-columns: 90px 58px; gap: 5px; }
+.tool-options .precision-number { width: 58px; }
 .color-field span { display: none; }
-.tool-options output { width: 38px; font-size: 10px; }
 .toggle { white-space: nowrap; font-size: 11px; }
 .palette-editor { position: fixed; left: 50%; bottom: 62px; z-index: 80; width: min(560px, calc(100% - 28px)); max-height: min(55vh, 440px); transform: translateX(-50%); overflow: auto; padding: 10px; border: 1px solid #54595b; border-radius: 12px; background: #202326f7; box-shadow: 0 14px 46px #000a; }
 .palette-editor header { position: sticky; top: -10px; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: 2px 0 8px; background: #202326; }

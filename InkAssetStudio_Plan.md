@@ -81,6 +81,8 @@ Studio 提供与 Painting 当前 Global Lighting 相同语义的灯光调节，�
 
 所有 Global Lighting 参数均可编辑并随工作场景保存。`-1～1` 的昼夜位置是最高频参数，界面必须将它作为重点触控滑杆直接呈现；太阳路径、全局反弹和完整 Day/Night Profile 也必须保留编辑入口，并提供一键恢复 Painting 当前基线。首次版本中未修改过其它灯光参数的旧草稿可迁移到新基线，同时保留其昼夜位置；已有自定义灯光不得被迁移覆盖。
 
+每个滑条同时提供同范围和步进的直接数字输入，以便输入精确值；滑条保留连续快速调整。无效或超出范围的数字输入恢复为最近有效值，不写入无效工作场景或 Editor Session 数据。
+
 昼夜求值复用 Painting 当前规则：环境光和背景按 `abs(dayNightPhase)` 在线性工作色彩空间插值；太阳/月亮沿相同 X 倾角、Z 偏移与相位路径运行，根据天体方向选择 Day 或 Night 主光，并按地平线高度衰减强度。Studio 遵循 Painting 的 command 式合成边界：Map Reference 先捕获 `referenceColor + referenceDepth`，再以不写主深度的全屏合成进入 HDR 主画面，并由 `OutputPass` 执行 sRGB、ACES Filmic 和 `1.05` 曝光；Ink 随后直接显示其原始作者 sRGB 值，禁止对 Ink 执行 ACES 或 sRGB 解码/编码。Ink 仍可在原始色值上叠加其既有的 Half-Lambert、环境光和 Ink-only 硬阴影；Reference 不写 Ink 使用的主深度，因而绝不遮挡 Ink。编辑辅助最后作为 overlay 绘制。Studio 只支持 `Reference = 1 → 3 → 5 → 7`、`Ink = 6 → 7` 与 `Reference + Ink = 1 → 3 → 5 → 6 → 7` 三种组合。Map Reference 的 Half-Lambert 必须在 Three.js 展开灯光 ShaderChunk 前注入，不能依赖展开后的字符串替换。由于 Studio 明确只运行 Map Reference 而不运行 Map PBR/PMREM/地形色反弹，Sky、Ground、Reflection 和 Bounce 参数在当前预览中只负责兼容保存，仍可编辑但不虚构额外渲染效果。
 
 灯光在 Studio 中首先是**工作场景预览状态**：它随工作场景保存，以便作者下次打开时看到相同效果；它不会自动改写 Painting 中由多个地图共享的 Global Lighting。未来 Painting 导入器可以明确提供一次性“应用此预览灯光”的选择，但该选择不属于本项目当前实现范围。
