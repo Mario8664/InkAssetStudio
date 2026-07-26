@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { createInkOutlineStroke, isInkCompiledCurrent, withCompiledInkGroup } from '../src/domain/ink/ink';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  calculateInkVisualFootprint,
+  compileInkShape,
+  createInkOutlineStroke,
+  hashInkGroupSource,
+  isInkCompiledCurrent,
+  withCompiledInkGroup,
+} from '../src/domain/ink/ink';
 import {
   MAX_INK_GROUPS,
   addInkGroup,
@@ -10,6 +17,8 @@ import {
   updateInkShapeAuthor,
 } from '../src/domain/workspace/workspace';
 import { WorkspaceStore } from '../src/domain/workspace/WorkspaceStore';
+import { InkCompilationCoordinator } from '../src/workers/InkCompilationCoordinator';
+import type { InkCompileRequest, InkCompileResponse } from '../src/workers/inkCompilerMessages';
 
 describe('Ink Studio work files', () => {
   it('round-trips editable terrain and multiple Ink groups', () => {
@@ -176,4 +185,81 @@ describe('Ink Studio work files', () => {
     store.markSaved();
     expect(store.snapshot().savedRevision).toBe(store.snapshot().revision);
   });
+
+  it('notifies a completed Shape only after its derived cache is reconciled', () => {
+    const previousWorker = globalThis.Worker;
+    const workers: TestInkCompilerWorker[] = [];
+    vi.stubGlobal('Worker', class extends TestInkCompilerWorker {
+      constructor() {
+        super();
+        workers.push(this);
+      }
+    });
+    try {
+      const store = new WorkspaceStore(createStudioDocument());
+      const completed: string[] = [];
+      const coordinator = new InkCompilationCoordinator(store, () => undefined, (assetId, shapeId) => {
+        const group = store.getDocument().ink.embeddedAssets.find((entry) => entry.assetId === assetId)?.group;
+        expect(group?.compiled.shapes.find((shape) => shape.shapeId === shapeId)?.ribbon.positions.length).toBeGreaterThan(0);
+        completed.push(`${assetId}:${shapeId}`);
+      });
+      const worker = workers[0]!;
+      const referenceId = store.getDocument().ink.assetReferences[0]!.id;
+      const assetId = store.getDocument().ink.assetReferences[0]!.assetId;
+      const shapeId = getInkSourceByReference(store.getDocument(), referenceId)!.shapes[0]!.id;
+      store.transact('Draw outline', (document) => updateInkShapeAuthor(document, referenceId, shapeId, (shape) => ({
+        ...shape,
+        strokes: [...shape.strokes, createInkOutlineStroke([
+          { x: -0.25, y: 0, pressure: 0.4 },
+          { x: 0.25, y: 0, pressure: 0.8 },
+        ], '#000000', 0.04)],
+      })));
+      const request = worker.requests.find((entry): entry is Extract<InkCompileRequest, { type: 'compile-shape' }> => entry.type === 'compile-shape');
+      expect(request).toBeDefined();
+      if (!request) return;
+      const group = store.getDocument().ink.embeddedAssets.find((entry) => entry.assetId === assetId)!.group;
+      const compiledShape = compileInkShape(request.shape);
+      const compiledShapes = group.compiled.shapes.map((shape) => shape.shapeId === shapeId ? compiledShape : shape);
+      worker.respond({
+        type: 'compiled-shape',
+        requestId: request.requestId,
+        assetId,
+        shapeId,
+        compiledShape,
+        groupSourceHash: hashInkGroupSource(group, compiledShapes),
+        visualFootprint: calculateInkVisualFootprint(group),
+      });
+
+      expect(completed).toEqual([`${assetId}:${shapeId}`]);
+      expect(isInkCompiledCurrent(store.getDocument().ink.embeddedAssets[0]!.group)).toBe(true);
+      coordinator.dispose();
+    } finally {
+      vi.stubGlobal('Worker', previousWorker);
+    }
+  });
 });
+
+class TestInkCompilerWorker {
+  readonly requests: InkCompileRequest[] = [];
+  private readonly listeners = new Map<string, Set<EventListener>>();
+
+  addEventListener(type: string, listener: EventListener): void {
+    const entries = this.listeners.get(type) ?? new Set<EventListener>();
+    entries.add(listener);
+    this.listeners.set(type, entries);
+  }
+
+  removeEventListener(type: string, listener: EventListener): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  postMessage(request: InkCompileRequest): void {
+    this.requests.push(request);
+  }
+
+  terminate(): void {}
+
+  respond(response: InkCompileResponse): void {
+    for (const listener of this.listeners.get('message') ?? []) listener({ data: response } as MessageEvent<InkCompileResponse>);
+  }
+}

@@ -55,6 +55,7 @@
 - 自适应稳定器在采样阶段平滑表面点，不在提交后重解释作者轨迹。
 - 压感默认开启且始终有可见开关。关闭时新 Outline 点写入 `pressure: 1`；旧笔画不会被回写。
 - 正式落笔后的 Ink 编译在常驻编译 Worker 中完成。Worker 在初始载入或 Shape 集合改变时保存 Group 作者源和轻量 Shape hash；每次提交只接收受影响 Shape、只回传该 Shape 的派生缓存，未变 Shape 的 Ribbon/Fill 留在主文档复用。Worker 结果作为派生缓存协调回主文档，不增加历史或内容 revision。
+- 已提交的 Outline 预览会保留至对应 Shape 的 Worker 派生缓存回写并挂载后再释放，避免松笔时出现可见空档；取消手势和切换工作场景会立即清理该预览。
 
 ### 2.4 简化地形与编辑参照
 
@@ -95,8 +96,8 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 8 个 Vitest 文件、67 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
-- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样与固定世界单位 Normal Outset 壳、Normal Outset v14 编译与资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、旧工作文件升级、篡改派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存语义、Undo/Redo 和连续输入合并。
+- 8 个 Vitest 文件、69 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样与固定世界单位 Normal Outset 壳、Normal Outset v14 编译与资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、旧工作文件升级、篡改派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
 真实 Chrome 自动验收命令：

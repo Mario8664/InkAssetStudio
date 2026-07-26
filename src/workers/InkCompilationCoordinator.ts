@@ -26,6 +26,7 @@ export class InkCompilationCoordinator {
   constructor(
     private readonly store: WorkspaceStore,
     private readonly onError: (message: string) => void,
+    private readonly onCompiledShape: (assetId: string, shapeId: string) => void = () => undefined,
   ) {
     this.worker = new Worker(new URL('./inkCompiler.worker.ts', import.meta.url), { type: 'module' });
     this.worker.addEventListener('message', this.handleMessage);
@@ -130,7 +131,7 @@ export class InkCompilationCoordinator {
     const key = shapeKey(pending.assetId, pending.shape.id);
     this.pendingRequestByShape.delete(key);
     this.failedShapeByKey.delete(key);
-    this.store.reconcileDerived((document) => {
+    const reconciled = this.store.reconcileDerived((document) => {
       const embedded = document.ink.embeddedAssets.find((entry) => entry.assetId === pending.assetId);
       const currentShape = embedded?.group.shapes.find((shape) => shape.id === pending.shape.id);
       if (!embedded || currentShape !== pending.shape) return document;
@@ -161,6 +162,7 @@ export class InkCompilationCoordinator {
         },
       };
     });
+    if (reconciled) this.onCompiledShape(response.assetId, response.shapeId);
     if (this.latestShapeByKey.get(key) === pending.shape) this.latestShapeByKey.delete(key);
     this.dispatchLatestShape(pending.assetId, pending.shape.id);
   };

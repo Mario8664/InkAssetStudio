@@ -90,6 +90,15 @@ type InkHelperEntry = InkShapePreview & {
 type StrokePreviewEntry = {
   root: Group;
   preview: InkRibbonPreview;
+  referenceId: string | null;
+  shapeId: string | null;
+};
+
+type HandoffStrokePreviewEntry = {
+  root: Group;
+  preview: InkRibbonPreview;
+  assetId: string;
+  shapeId: string;
 };
 
 const INK_SHAPE_RENDER_OPTIONS = { useSourceNormalOutset: true } as const;
@@ -131,6 +140,7 @@ export class WorkspaceRenderer {
   private readonly groupPivotRoot = new Group();
   private readonly cursorRoot = new Group();
   private readonly strokePreviewRoot = new Group();
+  private readonly strokePreviewHandoffRoot = new Group();
   private readonly terrainPreviewRoot = new Group();
   private readonly terrainToolPreviewRoot = new Group();
   private readonly referenceLayer: MapReferenceLayer;
@@ -147,6 +157,7 @@ export class WorkspaceRenderer {
   private readonly pencilPresence = new PencilPresenceTracker();
   private readonly cursor: Mesh;
   private readonly strokePreviews: StrokePreviewEntry[] = [];
+  private readonly strokePreviewHandoffs: HandoffStrokePreviewEntry[] = [];
   private readonly helperEntries = new Map<string, InkHelperEntry>();
   private helperGroupRoot: Group | null = null;
   private helperGroupReferenceId: string | null = null;
@@ -230,6 +241,7 @@ export class WorkspaceRenderer {
       this.groupPivotRoot,
       this.cursorRoot,
       this.strokePreviewRoot,
+      this.strokePreviewHandoffRoot,
       this.terrainPreviewRoot,
       this.terrainToolPreviewRoot,
       this.mainLight,
@@ -242,6 +254,7 @@ export class WorkspaceRenderer {
     this.groupPivotRoot.name = 'InkGroupPivots';
     this.cursorRoot.name = 'InkBrushCursor';
     this.strokePreviewRoot.name = 'InkStrokePreviewRoot';
+    this.strokePreviewHandoffRoot.name = 'InkStrokePreviewHandoffRoot';
     this.terrainPreviewRoot.name = 'TerrainEditPreviewRoot';
     this.terrainToolPreviewRoot.name = 'TerrainToolPreviewRoot';
     this.cursor = new Mesh(
@@ -259,6 +272,7 @@ export class WorkspaceRenderer {
   }
 
   update(document: InkStudioWorkFile, session: StudioEditorSession): void {
+    if (this.document && this.document.documentId !== document.documentId) this.clearStrokePreviewHandoffs();
     this.document = document;
     this.session = session;
     const terrainChanged = this.terrain.update(document.terrain.tiles);
@@ -456,6 +470,8 @@ export class WorkspaceRenderer {
       const reference = this.document.ink.assetReferences.find((candidate) => candidate.id === segment.referenceId);
       if (!reference) continue;
       const entry = this.ensureStrokePreview(used++);
+      entry.referenceId = segment.referenceId;
+      entry.shapeId = segment.shape.id;
       const previewShape: InkShape = {
         ...segment.shape,
         strokes: [createInkOutlineStroke(segment.points, color, width)],
@@ -467,17 +483,57 @@ export class WorkspaceRenderer {
       entry.root.visible = true;
     }
     for (let index = used; index < this.strokePreviews.length; index += 1) {
-      this.strokePreviews[index]!.preview.clear();
-      this.strokePreviews[index]!.root.visible = false;
+      this.clearStrokePreviewEntry(this.strokePreviews[index]!);
     }
     this.requestRender();
   }
 
   clearStrokePreview(): void {
-    for (const entry of this.strokePreviews) {
-      entry.preview.clear();
-      entry.root.visible = false;
+    for (const entry of this.strokePreviews) this.clearStrokePreviewEntry(entry);
+    this.requestRender();
+  }
+
+  retainStrokePreviewsUntilCompiled(): void {
+    if (!this.document) {
+      this.clearStrokePreview();
+      return;
     }
+    const retained: StrokePreviewEntry[] = [];
+    for (const entry of this.strokePreviews) {
+      const reference = entry.referenceId
+        ? this.document.ink.assetReferences.find((candidate) => candidate.id === entry.referenceId)
+        : null;
+      if (!entry.root.visible || !reference || !entry.shapeId) {
+        retained.push(entry);
+        continue;
+      }
+      this.strokePreviewHandoffRoot.add(entry.root);
+      this.strokePreviewHandoffs.push({
+        root: entry.root,
+        preview: entry.preview,
+        assetId: reference.assetId,
+        shapeId: entry.shapeId,
+      });
+    }
+    this.strokePreviews.length = 0;
+    this.strokePreviews.push(...retained);
+    this.requestRender();
+  }
+
+  releaseStrokePreviewHandoffs(assetId: string, shapeId: string): void {
+    let released = false;
+    const retained: HandoffStrokePreviewEntry[] = [];
+    for (const entry of this.strokePreviewHandoffs) {
+      if (entry.assetId !== assetId || entry.shapeId !== shapeId) {
+        retained.push(entry);
+        continue;
+      }
+      this.recycleHandoffStrokePreview(entry);
+      released = true;
+    }
+    if (!released) return;
+    this.strokePreviewHandoffs.length = 0;
+    this.strokePreviewHandoffs.push(...retained);
     this.requestRender();
   }
 
@@ -593,7 +649,9 @@ export class WorkspaceRenderer {
     this.cursorSquareGeometry.dispose();
     (this.cursor.material as MeshBasicMaterial).dispose();
     for (const entry of this.strokePreviews) entry.preview.dispose();
+    for (const entry of this.strokePreviewHandoffs) entry.preview.dispose();
     this.strokePreviews.length = 0;
+    this.strokePreviewHandoffs.length = 0;
     this.renderPass.dispose();
     this.outputPass.dispose();
     this.composer.dispose();
@@ -830,9 +888,28 @@ export class WorkspaceRenderer {
     const preview = new InkRibbonPreview();
     root.add(preview.mesh);
     this.strokePreviewRoot.add(root);
-    const entry = { root, preview };
+    const entry = { root, preview, referenceId: null, shapeId: null };
     this.strokePreviews.push(entry);
     return entry;
+  }
+
+  private clearStrokePreviewEntry(entry: StrokePreviewEntry): void {
+    entry.preview.clear();
+    entry.root.visible = false;
+    entry.referenceId = null;
+    entry.shapeId = null;
+  }
+
+  private clearStrokePreviewHandoffs(): void {
+    for (const entry of this.strokePreviewHandoffs) this.recycleHandoffStrokePreview(entry);
+    this.strokePreviewHandoffs.length = 0;
+  }
+
+  private recycleHandoffStrokePreview(entry: HandoffStrokePreviewEntry): void {
+    entry.preview.clear();
+    entry.root.visible = false;
+    this.strokePreviewRoot.add(entry.root);
+    this.strokePreviews.push({ root: entry.root, preview: entry.preview, referenceId: null, shapeId: null });
   }
 
   private readonly flushTerrainPreview = (): void => {

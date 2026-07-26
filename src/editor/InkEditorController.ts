@@ -170,7 +170,9 @@ export class InkEditorController {
     if (!isApplePencilPointer(event) || event.pointerId !== this.pointerId) return;
     this.appendEventSamples(event, false, true);
     this.flushLivePreview();
-    this.commitInk(this.options.getSession());
+    const session = this.options.getSession();
+    const committed = this.commitInk(session);
+    if (committed && session.drawTool === 'outline') this.options.renderer.retainStrokePreviewsUntilCompiled();
     this.endGesture(false);
     event.preventDefault();
   };
@@ -310,10 +312,10 @@ export class InkEditorController {
     else this.options.renderer.hideCursor();
   }
 
-  private commitInk(session: StudioEditorSession): void {
-    if (this.pendingInk.length === 0) return;
+  private commitInk(session: StudioEditorSession): boolean {
+    if (this.pendingInk.length === 0) return false;
     const label = getInkHistoryLabel(session.drawTool);
-    this.options.store.transact(label, (document) => {
+    return this.options.store.transact(label, (document) => {
       let next = document;
       if (this.workingShapes.size > 0) {
         for (const working of this.workingShapes.values()) {

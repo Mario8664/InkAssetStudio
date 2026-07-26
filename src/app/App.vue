@@ -119,7 +119,11 @@ onMounted(async () => {
       terrainController?.syncSession();
       if (next.revision > next.savedRevision) scheduleSave(next.document, next.revision);
     });
-    compiler = new InkCompilationCoordinator(store, (error) => showMessage(error, 'error'));
+    compiler = new InkCompilationCoordinator(
+      store,
+      (error) => showMessage(error, 'error'),
+      (assetId, shapeId) => renderer?.releaseStrokePreviewHandoffs(assetId, shapeId),
+    );
   } catch (error) {
     showMessage(error instanceof Error ? error.message : 'Unable to open Ink Asset Studio.', 'error');
   } finally {
