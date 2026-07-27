@@ -56,79 +56,29 @@ describe('Ink Studio work files', () => {
     expect(parsed.document.ink.embeddedAssets[0]!.group.compiled.shapes[0]!.ribbon.positions.length).toBeGreaterThan(0);
   });
 
-  it('upgrades legacy work files to v16 and removes retired Normal Outset data', () => {
-    const legacy = structuredClone(createStudioDocument('Legacy v11')) as any;
-    legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 11;
-    const shape = legacy.ink.embeddedAssets[0].group.shapes[0];
-    shape.normalOutset = { enabled: true, color: '#000000', distance: 0.22 };
-    legacy.ink.embeddedAssets[0].group.compiled.formatVersion = 11;
-
-    const parsed = parseStudioWorkFile(JSON.stringify(legacy));
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    const upgraded = parsed.document.ink.embeddedAssets[0]!.group;
-    expect(parsed.document.sourceCompatibility.paintingInkCompiledFormatVersion).toBe(16);
-    expect(upgraded.compiled.formatVersion).toBe(16);
-    expect('normalOutset' in upgraded.shapes[0]!).toBe(false);
+  it('accepts only the exact v16 source-compatibility header', () => {
+    const workFile = JSON.parse(serializeStudioDocument(createStudioDocument('Current v16'))) as any;
+    for (const sourceCompatibility of [
+      { ...workFile.sourceCompatibility, paintingInkAssetSchemaVersion: 2 },
+      { ...workFile.sourceCompatibility, paintingInkCompiledFormatVersion: 15 },
+      { ...workFile.sourceCompatibility, terrainSchemaVersion: 0 },
+    ]) {
+      expect(parseStudioWorkFile(JSON.stringify({ ...workFile, sourceCompatibility })).ok).toBe(false);
+    }
   });
 
-  it('adds the default curve-only setting while retiring painted Normal Outset data', () => {
-    const legacy = structuredClone(createStudioDocument('Legacy v12')) as any;
-    legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 12;
-    const shape = legacy.ink.embeddedAssets[0].group.shapes[0];
-    shape.kind = 'sphere';
-    delete shape.orientation;
-    delete shape.size;
-    shape.radius = 0.5;
-    shape.normalOutset = { distance: 0.22, fill: { surfaces: [] } };
-    legacy.ink.embeddedAssets[0].group.compiled.formatVersion = 12;
+  it('rejects retired fields and derived payloads outside the v16 source-only contract', () => {
+    const retired = JSON.parse(serializeStudioDocument(createStudioDocument('Retired field'))) as any;
+    retired.ink.embeddedAssets[0].group.shapes[0].normalOutset = { enabled: true };
+    expect(parseStudioWorkFile(JSON.stringify(retired)).ok).toBe(false);
 
-    const parsed = parseStudioWorkFile(JSON.stringify(legacy));
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    const upgraded = parsed.document.ink.embeddedAssets[0]!.group;
-    const upgradedShape = upgraded.shapes[0];
-    expect(upgradedShape?.kind).toBe('sphere');
-    if (!upgradedShape || upgradedShape.kind !== 'sphere') return;
-    expect(upgradedShape.surfaceOutline).toEqual({ enabled: false, width: 0.035 });
-    expect('normalOutset' in upgradedShape).toBe(false);
-    expect(upgraded.compiled.formatVersion).toBe(16);
-  });
+    const incomplete = JSON.parse(serializeStudioDocument(createStudioDocument('Incomplete source'))) as any;
+    delete incomplete.ink.embeddedAssets[0].group.shapes[0].fill;
+    expect(parseStudioWorkFile(JSON.stringify(incomplete)).ok).toBe(false);
 
-  it('upgrades v15 source-only work scenes to the v16 persistence contract', () => {
-    const legacy = JSON.parse(serializeStudioDocument(createStudioDocument('Legacy v15'))) as any;
-    legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 15;
-
-    const parsed = parseStudioWorkFile(JSON.stringify(legacy));
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.document.sourceCompatibility.paintingInkCompiledFormatVersion).toBe(16);
-    expect(parsed.document.ink.embeddedAssets[0]!.group.compiled.formatVersion).toBe(16);
-  });
-
-  it('rebuilds tampered derived Ink payloads even when their persisted hashes still match', () => {
-    const document = createStudioDocument('Untrusted derived payload');
-    const group = document.ink.embeddedAssets[0]!.group;
-    const shape = group.shapes[0]!;
-    const authored = {
-      ...shape,
-      strokes: [createInkOutlineStroke([
-        { x: -0.25, y: 0, pressure: 0.5 },
-        { x: 0.25, y: 0, pressure: 1 },
-      ], '#ff004d', 0.04)],
-    };
-    document.ink.embeddedAssets[0]!.group = withCompiledInkGroup({ ...group, shapes: [authored] });
-    const untrusted = structuredClone(document) as any;
-    const persisted = untrusted.ink.embeddedAssets[0].group.compiled.shapes[0];
-    expect(persisted.ribbon.positions.length).toBeGreaterThan(0);
-    persisted.ribbon.positions = persisted.ribbon.positions.map(() => 999);
-
-    const parsed = parseStudioWorkFile(JSON.stringify(untrusted));
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    const rebuilt = parsed.document.ink.embeddedAssets[0]!.group.compiled.shapes[0]!;
-    expect(rebuilt.sourceHash).toBe(persisted.sourceHash);
-    expect(rebuilt.ribbon.positions).not.toContain(999);
+    const derived = JSON.parse(serializeStudioDocument(createStudioDocument('Derived payload'))) as any;
+    derived.ink.embeddedAssets[0].group.compiled = createStudioDocument().ink.embeddedAssets[0]!.group.compiled;
+    expect(parseStudioWorkFile(JSON.stringify(derived)).ok).toBe(false);
   });
 
   it('rejects duplicate terrain cells', () => {

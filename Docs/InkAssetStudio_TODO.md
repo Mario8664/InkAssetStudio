@@ -22,7 +22,7 @@
 ### 2.2 工作场景、持久化与文件交换
 
 - 工作文件格式：`ink-asset-studio-work`，`formatVersion: 1`。
-- Painting Ink 作者数据兼容版本：资产 schema 3、编译格式 16；v15 及更早文件均从作者源重建派生数据，历史 `normalOutset` 字段会被丢弃。Sphere 与 Cylinder 会补入关闭的 `surfaceOutline` 配置，下一次保存写出规范数据。
+- Painting Ink 作者数据兼容版本：资产 schema 3、编译格式 16；仅接受完整的 v16 source-only 工作文件和 IndexedDB 快照。v15 及更早文件、遗留字段及派生缓存负载均会被拒绝；当前作者源会重新编译派生数据。
 - Terrain schema：1。
 - 一个工作场景可内嵌多个独立 Ink 源和多个摆放引用。
 - IndexedDB 保存当前场景的作者源快照和独立 Editor Session；作者内容修改使用 600 ms 节流自动保存，工具状态使用独立低频保存。Ribbon/Fill 派生缓存不进入该保存事务，恢复时在 Worker 中重建。
@@ -97,7 +97,7 @@ npm.cmd run build
 
 - Vue/TypeScript 类型检查通过。
 - 8 个 Vitest 文件、68 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
-- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、旧工作文件升级、篡改派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v16-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
 真实 Chrome 自动验收命令：

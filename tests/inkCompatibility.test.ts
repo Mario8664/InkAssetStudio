@@ -99,7 +99,6 @@ describe('Painting-compatible Ink Shapes', () => {
 
     expect(INK_COMPILED_FORMAT_VERSION).toBe(16);
     expect(after.ribbon).toBe(before.ribbon);
-    expect('normalOutset' in after).toBe(false);
   });
 
   it('resamples only finite Cuboid Fill charts when intrinsic size changes', () => {

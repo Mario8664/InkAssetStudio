@@ -174,6 +174,9 @@ export type InkGroupData = {
   compiled: CompiledInkGroup;
 };
 
+/** The v16 exchange payload: authoritative author data with no derived caches. */
+export type InkGroupSourceData = Omit<InkGroupData, 'compiled' | 'visualFootprint' | 'placementRotation'>;
+
 /** A scene-owned source asset which is not exposed through the project asset browser. */
 export type InkEmbeddedAsset = {
   assetId: string;
@@ -420,14 +423,16 @@ export function createInkOutlineStroke(
 }
 
 export function withCompiledInkGroup(
-  data: InkGroupData,
-  previous: InkGroupData | null = data,
+  data: Omit<InkGroupData, 'compiled'>,
+  previous?: InkGroupData | null,
 ): InkGroupData {
   const source = { anchorPosition: data.anchorPosition, shapes: data.shapes };
+  const cached = previous === undefined ? (data as Partial<InkGroupData>).compiled : previous?.compiled;
+  const cachedShapes = previous === undefined ? (cached ? data.shapes : undefined) : previous?.shapes;
   return {
     ...data,
     visualFootprint: calculateInkVisualFootprint(source),
-    compiled: compileInkGroup(source, previous?.compiled, previous?.shapes),
+    compiled: compileInkGroup(source, cached, cachedShapes),
   };
 }
 
@@ -1167,7 +1172,7 @@ function modulo(value: number, divisor: number): number { return ((value % divis
 function clampInteger(value: number, minimum: number, maximum: number): number { return Math.min(maximum, Math.max(minimum, value)); }
 
 export function isInkGroupData(value: unknown): value is InkGroupData {
-  if (!isInkGroupSource(value)) return false;
+  if (!isInkGroupRuntimeSource(value)) return false;
   const candidate = value as Partial<InkGroupData>;
   return isCompiledInkGroup(candidate.compiled)
     && candidate.compiled.sourceHash === hashInkGroupSource(
@@ -1180,18 +1185,25 @@ export function isInkGroupData(value: unknown): value is InkGroupData {
     )));
 }
 
-/** Accepts a complete serialized source even while its Worker-derived payload is pending refresh. */
-export function isInkGroupSerializedData(value: unknown): value is InkGroupData {
-  return isInkGroupSource(value) && isCompiledInkGroup((value as Partial<InkGroupData>).compiled);
+/** Validates the v16 source-only exchange payload before rebuilding derived data. */
+export function isInkGroupSourceData(value: unknown): value is InkGroupSourceData {
+  return isInkGroupSource(value, ['id', 'name', 'anchorPosition', 'shapes']);
 }
 
-function isInkGroupSource(value: unknown): value is Omit<InkGroupData, 'compiled'> {
+function isInkGroupRuntimeSource(value: unknown): value is Omit<InkGroupData, 'compiled'> {
+  if (!isInkGroupSource(value, ['id', 'name', 'anchorPosition', 'placementRotation', 'visualFootprint', 'shapes', 'compiled'])) return false;
+  const candidate = value as Partial<InkGroupData>;
+  return (candidate.placementRotation === undefined || isInkGroupRotation(candidate.placementRotation))
+    && (candidate.visualFootprint === undefined || isInkVisualFootprint(candidate.visualFootprint));
+}
+
+function isInkGroupSource(value: unknown, allowedKeys: readonly string[]): boolean {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<InkGroupData>;
-  return typeof candidate.id === 'string' && !!candidate.id
+  return hasOnlyKeys(value, allowedKeys)
+    && typeof candidate.id === 'string' && !!candidate.id
     && typeof candidate.name === 'string' && !!candidate.name.trim()
     && isVector3(candidate.anchorPosition)
-    && (candidate.placementRotation === undefined || isInkGroupRotation(candidate.placementRotation))
     && Array.isArray(candidate.shapes)
     && candidate.shapes.every(isInkShape);
 }
@@ -1214,54 +1226,12 @@ export function isInkCompiledCurrent(data: InkGroupData): boolean {
   return isInkGroupData(data);
 }
 
-/**
- * v1–v5 data stored Canvas Planes directly. v6 Sphere samples used unstable
- * UV coordinates and are intentionally retired rather than reprojected.
- */
-export function upgradeInkManagerCompiledData(value: unknown): InkManagerData | null {
-  if (!value || typeof value !== 'object') return null;
-  const candidate = value as Partial<InkManagerData>;
-  if (!Array.isArray(candidate.groups) || candidate.groups.length !== 0) return null;
-  const ids = new Set<string>();
-  const embeddedAssets: InkEmbeddedAsset[] = [];
-  const assetIds = new Set<string>();
-  for (const rawAsset of candidate.embeddedAssets ?? []) {
-    const asset = upgradeInkEmbeddedAsset(rawAsset);
-    if (!asset || assetIds.has(asset.assetId)) return null;
-    assetIds.add(asset.assetId);
-    embeddedAssets.push(asset);
-  }
-  const assetReferences: InkAssetReference[] = [];
-  for (const rawReference of candidate.assetReferences ?? []) {
-    const reference = upgradeInkAssetReference(rawReference);
-    if (!reference || ids.has(reference.id)) return null;
-    ids.add(reference.id);
-    assetReferences.push(reference);
-  }
-  return {
-    groups: [],
-    embeddedAssets,
-    assetReferences,
-  };
-}
-
 function isInkEmbeddedAsset(value: unknown): value is InkEmbeddedAsset {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<InkEmbeddedAsset>;
   return typeof candidate.assetId === 'string' && !!candidate.assetId
-    && isInkGroupSerializedData(candidate.group)
+    && isInkGroupData(candidate.group)
     && candidate.group.id === candidate.assetId;
-}
-
-function upgradeInkEmbeddedAsset(value: unknown): InkEmbeddedAsset | null {
-  if (!value || typeof value !== 'object') return null;
-  const candidate = value as Partial<InkEmbeddedAsset>;
-  if (typeof candidate.assetId !== 'string' || !candidate.assetId) return null;
-  const group = upgradeInkGroupData(candidate.group);
-  if (!group) return null;
-  return group.id === candidate.assetId
-    ? { assetId: candidate.assetId, group }
-    : createInkEmbeddedAsset(group, candidate.assetId);
 }
 
 function isInkAssetReference(value: unknown): value is InkAssetReference {
@@ -1273,142 +1243,8 @@ function isInkAssetReference(value: unknown): value is InkAssetReference {
     && isInkGroupRotation(candidate.rotation);
 }
 
-function upgradeInkAssetReference(value: unknown): InkAssetReference | null {
-  if (!value || typeof value !== 'object') return null;
-  const candidate = value as Partial<InkAssetReference> & { anchorCell?: unknown };
-  const anchorPosition = isVector3(candidate.anchorPosition)
-    ? candidate.anchorPosition
-    : isGridCell(candidate.anchorCell)
-      ? candidate.anchorCell
-      : null;
-  if (typeof candidate.id !== 'string' || !candidate.id
-    || typeof candidate.assetId !== 'string' || !candidate.assetId
-    || !anchorPosition || !isInkGroupRotation(candidate.rotation)) return null;
-  return {
-    id: candidate.id,
-    assetId: candidate.assetId,
-    anchorPosition: { ...anchorPosition },
-    rotation: candidate.rotation,
-  };
-}
-
 function isInkGroupRotation(value: unknown): value is InkGroupRotation {
   return value === 0 || value === 90 || value === 180 || value === 270;
-}
-
-export function upgradeInkGroupData(value: unknown): InkGroupData | null {
-  // Current assets are loaded as trusted project data. Retaining their
-  // immutable compiled payload avoids re-compiling every large Group on the UI
-  // thread merely to migrate a catalog that is already current.
-  if (isInkGroupSerializedData(value)) return value;
-  if (!value || typeof value !== 'object') return null;
-  const candidate = value as Partial<InkGroupData> & { anchorCell?: unknown; planes?: unknown };
-  const anchorPosition = isVector3(candidate.anchorPosition)
-    ? candidate.anchorPosition
-    : isGridCell(candidate.anchorCell)
-      ? candidate.anchorCell
-      : null;
-  if (typeof candidate.id !== 'string' || !candidate.id
-    || typeof candidate.name !== 'string' || !candidate.name.trim()
-    || !anchorPosition) return null;
-  const shapes = upgradeShapes(candidate.shapes) ?? upgradeLegacyPlanes(candidate.planes);
-  if (!shapes) return null;
-  const source = {
-    id: candidate.id,
-    name: candidate.name,
-    anchorPosition: { ...anchorPosition },
-    shapes,
-  };
-  return { ...source, compiled: compileInkGroup(source) };
-}
-
-function upgradeShapes(value: unknown): InkShape[] | null {
-  if (!Array.isArray(value)) return null;
-  const shapes: InkShape[] = [];
-  for (const rawShape of value) {
-    const upgradedShape = upgradeRetiredNormalOutsetAndSurfaceOutline(rawShape);
-    if (upgradedShape && isInkShape(upgradedShape)) {
-      const withFill = upgradedShape.fill ? upgradedShape : { ...upgradedShape, fill: createEmptyInkFillLayer() };
-      shapes.push((withFill.kind === 'plane' || withFill.kind === 'cuboid' || withFill.kind === 'frustum') && withFill.lastOutlineEnd === undefined
-        ? { ...withFill, lastOutlineEnd: null }
-        : withFill);
-      continue;
-    }
-    const retiredSphere = retireLegacySphereStrokes(rawShape);
-    if (!retiredSphere) return null;
-    shapes.push(retiredSphere);
-  }
-  return shapes;
-}
-
-/** Retires legacy shell data and gives supported curved Shapes their default setting. */
-function upgradeRetiredNormalOutsetAndSurfaceOutline(value: unknown): unknown {
-  if (!value || typeof value !== 'object') return value;
-  const candidate = value as Record<string, unknown>;
-  const { normalOutset: _retiredNormalOutset, surfaceOutline, ...withoutRetiredSetting } = candidate;
-  if (candidate.kind !== 'sphere' && candidate.kind !== 'cylinder') return withoutRetiredSetting;
-  return {
-    ...withoutRetiredSetting,
-    surfaceOutline: isInkSurfaceOutlineSettings(surfaceOutline)
-      ? surfaceOutline
-      : createDefaultInkSurfaceOutlineSettings(),
-  };
-}
-
-/** v6 Sphere UV strokes are not geometrically compatible with v7 and must be redrawn. */
-function retireLegacySphereStrokes(value: unknown): InkSphereShape | null {
-  if (!value || typeof value !== 'object') return null;
-  const candidate = value as Partial<InkSphereShape>;
-  if (candidate.kind !== 'sphere'
-    || typeof candidate.id !== 'string' || !candidate.id
-    || !isVector3(candidate.position) || !isVector3(candidate.rotation)
-    || !isFiniteRange(candidate.radius, 0.05, 64)
-    || !Array.isArray(candidate.strokes) || !candidate.strokes.every(isLegacyInkSphereStroke)) return null;
-  return {
-    id: candidate.id,
-    kind: 'sphere',
-    position: { ...candidate.position },
-    rotation: { ...candidate.rotation },
-    radius: candidate.radius,
-    strokes: [],
-    fill: createEmptyInkFillLayer(),
-    surfaceOutline: createDefaultInkSurfaceOutlineSettings(),
-  };
-}
-
-function upgradeLegacyPlanes(value: unknown): InkShape[] | null {
-  if (!Array.isArray(value)) return null;
-  const shapes: InkShape[] = [];
-  for (const rawPlane of value) {
-    const plane = upgradeLegacyPlane(rawPlane);
-    if (!plane) return null;
-    shapes.push(plane);
-  }
-  return shapes;
-}
-
-function upgradeLegacyPlane(value: unknown): InkPlaneShape | null {
-  if (!value || typeof value !== 'object') return null;
-  const candidate = value as Partial<InkPlaneShape>;
-  if (!isPlaneOrientation(candidate.orientation)
-    || typeof candidate.id !== 'string' || !candidate.id
-    || !isVector3(candidate.position) || !isVector3(candidate.rotation)
-    || !Array.isArray(candidate.strokes) || !candidate.strokes.every(isLegacyInkOutlineStroke)) return null;
-  return {
-    id: candidate.id,
-    kind: 'plane',
-    orientation: candidate.orientation,
-    position: { ...candidate.position },
-    rotation: { ...candidate.rotation },
-    strokes: candidate.strokes.map((stroke) => ({
-      id: stroke.id,
-      color: stroke.color,
-      width: stroke.width,
-      points: (stroke.points as InkPlaneStrokePoint[]).map((point) => ({ x: point.x, y: point.y, pressure: point.pressure })),
-    })),
-    fill: createEmptyInkFillLayer(),
-    lastOutlineEnd: null,
-  };
 }
 
 function appendStrokeRibbon(
@@ -1805,33 +1641,42 @@ function isInkShape(value: unknown): value is InkShape {
   const candidate = value as Partial<InkShape>;
   if (typeof candidate.id !== 'string' || !candidate.id || !isVector3(candidate.position) || !isVector3(candidate.rotation)) return false;
   if (candidate.kind === 'plane') {
-    return isPlaneOrientation(candidate.orientation)
+    return hasOnlyKeys(value, ['id', 'kind', 'orientation', 'position', 'rotation', 'strokes', 'fill', 'lastOutlineEnd'])
+      && isPlaneOrientation(candidate.orientation)
       && isShapeStrokes(candidate.strokes, isInkPlaneStrokePoint)
-      && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
+      && isInkFillLayer(candidate.fill)
       && (candidate.lastOutlineEnd === undefined || candidate.lastOutlineEnd === null || isVector2(candidate.lastOutlineEnd));
   }
   if (candidate.kind === 'cuboid') {
-    return isVector3InRange(candidate.size, 0.05, 64)
+    return hasOnlyKeys(value, ['id', 'kind', 'position', 'rotation', 'size', 'strokes', 'fill', 'lastOutlineEnd'])
+      && isVector3InRange(candidate.size, 0.05, 64)
       && isShapeStrokes(candidate.strokes, isInkCuboidStrokePoint)
-      && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
+      && isInkFillLayer(candidate.fill)
       && (candidate.lastOutlineEnd === undefined || candidate.lastOutlineEnd === null || isInkCuboidStrokePoint(candidate.lastOutlineEnd));
   }
-  if (candidate.kind === 'sphere') return isFiniteRange(candidate.radius, 0.05, 64)
+  if (candidate.kind === 'sphere') return hasOnlyKeys(value, ['id', 'kind', 'position', 'rotation', 'radius', 'strokes', 'fill', 'surfaceOutline'])
+    && isFiniteRange(candidate.radius, 0.05, 64)
     && isShapeStrokes(candidate.strokes, isInkSphereStrokePoint)
-    && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
+    && isInkFillLayer(candidate.fill)
     && isInkSurfaceOutlineSettings(candidate.surfaceOutline);
-  if (candidate.kind === 'cylinder') return isFiniteRange(candidate.radius, 0.05, 64)
+  if (candidate.kind === 'cylinder') return hasOnlyKeys(value, ['id', 'kind', 'position', 'rotation', 'radius', 'height', 'strokes', 'fill', 'surfaceOutline'])
+    && isFiniteRange(candidate.radius, 0.05, 64)
     && isFiniteRange(candidate.height, 0.05, 64)
     && isShapeStrokes(candidate.strokes, isInkCylinderStrokePoint)
-    && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
+    && isInkFillLayer(candidate.fill)
     && isInkSurfaceOutlineSettings(candidate.surfaceOutline);
-  if (candidate.kind === 'frustum') return isFiniteRange(candidate.topSize, 0.05, 64)
+  if (candidate.kind === 'frustum') return hasOnlyKeys(value, ['id', 'kind', 'position', 'rotation', 'topSize', 'bottomSize', 'height', 'strokes', 'fill', 'lastOutlineEnd'])
+    && isFiniteRange(candidate.topSize, 0.05, 64)
     && isFiniteRange(candidate.bottomSize, 0.05, 64)
     && isFiniteRange(candidate.height, 0.05, 64)
     && isShapeStrokes(candidate.strokes, isInkCuboidStrokePoint)
-    && (candidate.fill === undefined || isInkFillLayer(candidate.fill))
+    && isInkFillLayer(candidate.fill)
     && (candidate.lastOutlineEnd === undefined || candidate.lastOutlineEnd === null || isInkCuboidStrokePoint(candidate.lastOutlineEnd));
   return false;
+}
+
+function hasOnlyKeys(value: object, allowedKeys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }
 
 function isInkSurfaceOutlineSettings(value: unknown): value is InkSurfaceOutlineSettings {
@@ -1884,14 +1729,6 @@ function isInkOutlineStroke(value: unknown, pointValidator: (value: unknown) => 
     && Array.isArray(candidate.points) && candidate.points.every(pointValidator);
 }
 
-function isLegacyInkOutlineStroke(value: unknown): value is InkOutlineStroke {
-  return isInkOutlineStroke(value, isInkPlaneStrokePoint);
-}
-
-function isLegacyInkSphereStroke(value: unknown): value is InkOutlineStroke {
-  return isInkOutlineStroke(value, isLegacyInkSphereStrokePoint);
-}
-
 function isInkPlaneStrokePoint(value: unknown): value is InkPlaneStrokePoint {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<InkPlaneStrokePoint>;
@@ -1923,12 +1760,6 @@ function isInkCylinderStrokePoint(value: unknown): value is InkCylinderStrokePoi
 
 function isInkCylinderSurface(value: unknown): value is InkCylinderSurface {
   return value === 'side' || value === 'top' || value === 'bottom';
-}
-
-function isLegacyInkSphereStrokePoint(value: unknown): value is { u: number; v: number; pressure: number } {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as { u?: unknown; v?: unknown; pressure?: unknown };
-  return isFiniteRange(candidate.u, 0, 1) && isFiniteRange(candidate.v, 0, 1) && isFiniteRange(candidate.pressure, 0.05, 8);
 }
 
 function isCompiledInkGroup(value: unknown): value is CompiledInkGroup {
@@ -2071,6 +1902,12 @@ function isVector3(value: unknown): value is InkVector3 {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<InkVector3>;
   return isFiniteNumber(candidate.x) && isFiniteNumber(candidate.y) && isFiniteNumber(candidate.z);
+}
+
+function isInkVisualFootprint(value: unknown): value is InkVisualFootprint {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<InkVisualFootprint>;
+  return isGridCell(candidate.min) && isGridCell(candidate.max);
 }
 
 function isVector2(value: unknown): value is InkVector2 {

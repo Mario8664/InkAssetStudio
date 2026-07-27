@@ -4,11 +4,12 @@ import {
   createInkEmbeddedAsset,
   createInkGroupData,
   createInkPlaneShape,
-  upgradeInkGroupData,
+  isInkGroupSourceData,
   withCompiledInkGroup,
   type InkAssetReference,
   type InkEmbeddedAsset,
   type InkGroupData,
+  type InkGroupSourceData,
   type InkGroupRotation,
   type InkManagerData,
   type InkShape,
@@ -59,7 +60,7 @@ export type SerializedInkStudioWorkFile = Omit<InkStudioWorkFile, 'ink'> & {
   ink: {
     embeddedAssets: Array<{
       assetId: string;
-      group: Omit<InkGroupData, 'compiled' | 'visualFootprint'>;
+      group: InkGroupSourceData;
     }>;
     assetReferences: InkAssetReference[];
   };
@@ -113,6 +114,9 @@ export function normalizeStudioDocument(value: unknown): WorkspaceValidationResu
   if (source.format !== STUDIO_WORK_FORMAT || source.formatVersion !== STUDIO_WORK_FORMAT_VERSION) {
     return invalid('This Ink Studio work-file version is not supported.');
   }
+  if (!isCurrentSourceCompatibility(source.sourceCompatibility)) {
+    return invalid('This Studio version accepts only Painting Ink schema 3, compiled format v16, and terrain schema 1 work files.');
+  }
   if (typeof source.documentId !== 'string' || !source.documentId || typeof source.name !== 'string' || !source.name.trim()) {
     return invalid('The work file has an invalid document id or name.');
   }
@@ -138,20 +142,19 @@ export function normalizeStudioDocument(value: unknown): WorkspaceValidationResu
     if (!candidate || typeof candidate !== 'object') return invalid('The work file contains an invalid Ink source.');
     const raw = candidate as Partial<InkEmbeddedAsset>;
     if (typeof raw.assetId !== 'string' || !raw.assetId || assetIds.has(raw.assetId)) return invalid('Ink source ids must be non-empty and unique.');
-    const upgraded = upgradeInkGroupData(raw.group);
-    if (!upgraded || upgraded.shapes.length > MAX_SHAPES_PER_GROUP) return invalid(`Ink source ${raw.assetId} is invalid or has too many Shapes.`);
-    const counts = countGroupPayload(upgraded);
+    if (!isInkGroupSourceData(raw.group)
+      || raw.group.id !== raw.assetId
+      || raw.group.anchorPosition.x !== 0 || raw.group.anchorPosition.y !== 0 || raw.group.anchorPosition.z !== 0) {
+      return invalid(`Ink source ${raw.assetId} is not a current v16 source payload.`);
+    }
+    if (raw.group.shapes.length > MAX_SHAPES_PER_GROUP) return invalid(`Ink source ${raw.assetId} has too many Shapes.`);
+    const counts = countGroupPayload(raw.group);
     if (counts.strokePoints > MAX_STROKE_POINTS_PER_GROUP || counts.fillBlocks > MAX_FILL_BLOCKS_PER_GROUP) {
       return invalid(`Ink source ${raw.assetId} exceeds the editable-content safety limits.`);
     }
-    // Imported and IndexedDB-restored files are untrusted at this boundary.
-    // Rebuild every derived Ribbon/Fill payload from authoritative author data
-    // even when the persisted hashes look current.
-    const group: InkGroupData = withCompiledInkGroup({
-      ...upgraded,
-      id: raw.assetId,
-      anchorPosition: { x: 0, y: 0, z: 0 },
-    }, null);
+    // Accepted v16 source snapshots contain no derived payloads. Rebuild their
+    // Ribbon/Fill caches from authoritative author data at this boundary.
+    const group: InkGroupData = withCompiledInkGroup(raw.group, null);
     assetIds.add(raw.assetId);
     embeddedAssets.push({ assetId: raw.assetId, group });
   }
@@ -193,7 +196,12 @@ export function createStudioDocumentSourceSnapshot(document: InkStudioWorkFile):
     ...document,
     ink: {
       embeddedAssets: document.ink.embeddedAssets.map((asset) => {
-        const { compiled: _compiled, visualFootprint: _visualFootprint, ...group } = asset.group;
+        const {
+          compiled: _compiled,
+          visualFootprint: _visualFootprint,
+          placementRotation: _placementRotation,
+          ...group
+        } = asset.group;
         return { assetId: asset.assetId, group };
       }),
       assetReferences: document.ink.assetReferences,
@@ -389,7 +397,7 @@ export function getSourceIdForReference(document: InkStudioWorkFile, referenceId
 
 export function isInkGroupRotation(value: number): value is InkGroupRotation { return value === 0 || value === 90 || value === 180 || value === 270; }
 
-function countGroupPayload(group: InkGroupData): { strokePoints: number; fillBlocks: number } {
+function countGroupPayload(group: Pick<InkGroupData, 'shapes'>): { strokePoints: number; fillBlocks: number } {
   let strokePoints = 0;
   let fillBlocks = 0;
   for (const shape of group.shapes) {
@@ -397,6 +405,14 @@ function countGroupPayload(group: InkGroupData): { strokePoints: number; fillBlo
     for (const surface of shape.fill.surfaces) fillBlocks += surface.blocks.length;
   }
   return { strokePoints, fillBlocks };
+}
+
+function isCurrentSourceCompatibility(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const compatibility = value as Partial<InkStudioWorkFile['sourceCompatibility']>;
+  return compatibility.paintingInkAssetSchemaVersion === PAINTING_INK_ASSET_SCHEMA_VERSION
+    && compatibility.paintingInkCompiledFormatVersion === INK_COMPILED_FORMAT_VERSION
+    && compatibility.terrainSchemaVersion === STUDIO_TERRAIN_SCHEMA_VERSION;
 }
 
 function isAssetReference(value: unknown): value is InkAssetReference {
