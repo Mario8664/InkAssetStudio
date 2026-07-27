@@ -2,9 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   BackSide,
   Color,
+  DepthFormat,
+  DepthTexture,
   DirectionalLight,
   DoubleSide,
   Group,
+  LessEqualCompare,
+  LinearFilter,
   LineBasicMaterial,
   LineSegments,
   Mesh,
@@ -14,6 +18,7 @@ import {
   Scene,
   ShaderMaterial,
   Vector3,
+  UnsignedIntType,
   type Material,
   type Intersection,
   type WebGLRenderTarget,
@@ -367,20 +372,21 @@ describe('Reference rendering', () => {
     disposeObjectTree(root);
   });
 
-  it('identifies Line helpers for packed-depth hard-shadow suppression', () => {
+  it('identifies Line helpers for Ink hard-shadow suppression', () => {
     const preview = createInkShapePreview(createInkPlaneShape('z', { x: 0, y: 0, z: 0 }), false);
     expect(hasRendererMaterial(preview.grid)).toBe(true);
     expect(hasRendererMaterial(new Group())).toBe(false);
     disposeInkShapePreviewTree(preview.root);
   });
 
-  it('isolates Reference and other non-Ink casters, then restores every captured state when hard-shadow rendering throws', () => {
+  it('uses native depth PCF and restores every captured state when hard-shadow rendering throws', () => {
     const scene = new Scene();
     const sceneBackground = new Color(0x334455);
     scene.background = sceneBackground;
     const casterMaterial = new MeshBasicMaterial({ color: 0xffffff });
     const caster = new Mesh(new PlaneGeometry(1, 1), casterMaterial);
-    caster.castShadow = true;
+    const casterDepthMaterial = new MeshBasicMaterial({ color: 0xffffff });
+    caster.userData.inkHardShadowDepthMaterial = casterDepthMaterial;
     const referenceMaterial = new MeshBasicMaterial({ color: 0xffffff });
     const referenceCaster = new Mesh(new PlaneGeometry(1, 1), referenceMaterial);
     referenceCaster.castShadow = true;
@@ -396,6 +402,7 @@ describe('Reference rendering', () => {
     let currentTarget: WebGLRenderTarget | null = originalTarget;
     let clearColor = originalClearColor.clone();
     let clearAlpha = 0.4;
+    let shouldThrow = true;
     let observed: { casterMaterial: Material | Material[]; referenceVisible: boolean; nonCasterVisible: boolean; helperVisible: boolean; background: Scene['background'] } | null = null;
     const renderer = {
       capabilities: { maxTextureSize: 4096 },
@@ -418,11 +425,11 @@ describe('Reference rendering', () => {
           helperVisible: helper.visible,
           background: scene.background,
         };
-        throw new Error('synthetic renderer failure');
+        if (shouldThrow) throw new Error('synthetic renderer failure');
       },
     } as unknown as WebGLRenderer;
     const lighting = createInkFillLightingState();
-    const hardShadow = new InkHardShadowMap(renderer, scene, light, lighting, () => undefined, (mesh) => mesh === caster);
+    const hardShadow = new InkHardShadowMap(renderer, scene, light, lighting, () => undefined);
 
     expect(() => hardShadow.renderIfNeeded(true)).toThrow('synthetic renderer failure');
     expect(observed).not.toBeNull();
@@ -445,14 +452,43 @@ describe('Reference rendering', () => {
     expect(clearColor.getHex()).toBe(originalClearColor.getHex());
     expect(clearAlpha).toBe(0.4);
 
+    shouldThrow = false;
+    hardShadow.renderIfNeeded(true);
+    expect(lighting.hardShadowMap.value).toBeInstanceOf(DepthTexture);
+    const depthTexture = lighting.hardShadowMap.value as DepthTexture;
+    expect(depthTexture.format).toBe(DepthFormat);
+    expect(depthTexture.type).toBe(UnsignedIntType);
+    expect(depthTexture.compareFunction).toBe(LessEqualCompare);
+    expect(depthTexture.minFilter).toBe(LinearFilter);
+    expect(depthTexture.magFilter).toBe(LinearFilter);
+
     hardShadow.dispose();
     caster.geometry.dispose();
     casterMaterial.dispose();
+    casterDepthMaterial.dispose();
     referenceCaster.geometry.dispose();
     referenceMaterial.dispose();
     nonCaster.geometry.dispose();
     nonCasterMaterial.dispose();
     helper.geometry.dispose();
     (helper.material as LineBasicMaterial).dispose();
+  });
+
+  it('uses fixed five-tap hardware PCF and binary Fill shadow bands', () => {
+    const shape = paintInkFill(createInkCuboidShape(), [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
+    const root = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState());
+    const fill = root.getObjectByName('InkFillSurface') as Mesh;
+    const material = fill.material as ShaderMaterial;
+    const depthMaterial = fill.userData.inkHardShadowDepthMaterial as ShaderMaterial;
+
+    expect(material.side).toBe(DoubleSide);
+    expect(material.fragmentShader).toContain('uniform sampler2DShadow inkHardShadowMap;');
+    expect(material.fragmentShader).toContain('inkVogelDiskSample(4, 5, phi)');
+    expect(material.fragmentShader).toContain('sampleInkHardShadowPcf(shadowUvDepth) <= 0.5');
+    expect(material.fragmentShader).not.toContain('inkHardShadowBias');
+    expect(depthMaterial.side).toBe(BackSide);
+    expect(depthMaterial.colorWrite).toBe(false);
+    expect(depthMaterial.fragmentShader).not.toContain('packDepthToRGBA');
+    disposeObjectTree(root);
   });
 });

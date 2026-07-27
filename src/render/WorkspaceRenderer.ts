@@ -273,7 +273,6 @@ export class WorkspaceRenderer {
       this.mainLight,
       this.inkLighting,
       onWarning,
-      (mesh) => isDescendantOf(mesh, this.inkRoot),
     );
     this.resizeObserver = new ResizeObserver(this.handleResize);
     this.resizeObserver.observe(canvas);
@@ -1141,11 +1140,6 @@ export function createTerrainPreviewMaterial(overlay: boolean): MeshBasicMateria
 
 function helperKey(referenceId: string, shapeId: string): string {
   return `${referenceId}:${shapeId}`;
-}
-
-function isDescendantOf(object: Object3D, ancestor: Object3D): boolean {
-  for (let current: Object3D | null = object; current; current = current.parent) if (current === ancestor) return true;
-  return false;
 }
 
 function getRawSrgbBackground(background: Scene['background']): Color | null {

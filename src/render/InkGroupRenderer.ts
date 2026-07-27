@@ -42,8 +42,8 @@ export type InkFillLightingState = {
   ambientIrradiance: Vector3;
   hardShadowMap: { value: Texture | null };
   hardShadowMatrix: Matrix4;
-  hardShadowBias: { value: number };
-  hardShadowNormalBias: { value: number };
+  hardShadowTexelSize: Vector2;
+  hardShadowRadius: { value: number };
   hardShadowEnabled: { value: number };
 };
 
@@ -53,8 +53,8 @@ export function createInkFillLightingState(): InkFillLightingState {
     ambientIrradiance: new Vector3(0.22, 0.22, 0.22),
     hardShadowMap: { value: null },
     hardShadowMatrix: new Matrix4(),
-    hardShadowBias: { value: 0.00125 },
-    hardShadowNormalBias: { value: 1 / INK_FILL_PIXELS_PER_WORLD_UNIT },
+    hardShadowTexelSize: new Vector2(1, 1),
+    hardShadowRadius: { value: 1 },
     hardShadowEnabled: { value: 0 },
   };
 }
@@ -682,8 +682,8 @@ function createInkFillSurfaceMaterial(
       inkAmbientIrradiance: { value: lighting.ambientIrradiance },
       inkHardShadowMap: lighting.hardShadowMap,
       inkHardShadowMatrix: { value: lighting.hardShadowMatrix },
-      inkHardShadowBias: lighting.hardShadowBias,
-      inkHardShadowNormalBias: lighting.hardShadowNormalBias,
+      inkHardShadowTexelSize: { value: lighting.hardShadowTexelSize },
+      inkHardShadowRadius: lighting.hardShadowRadius,
       inkHardShadowEnabled: lighting.hardShadowEnabled,
     },
     transparent: false,
@@ -711,17 +711,36 @@ uniform vec2 inkFillUvMin;
 uniform vec2 inkFillUvSize;
 uniform vec3 inkLightDirection;
 uniform vec3 inkAmbientIrradiance;
-uniform sampler2D inkHardShadowMap;
+uniform sampler2DShadow inkHardShadowMap;
 uniform mat4 inkHardShadowMatrix;
-uniform float inkHardShadowBias;
-uniform float inkHardShadowNormalBias;
+uniform vec2 inkHardShadowTexelSize;
+uniform float inkHardShadowRadius;
 uniform float inkHardShadowEnabled;
 varying vec2 vInkFillUv;
 varying vec3 vInkWorldPosition;
 varying vec3 vInkWorldNormal;
 
-float unpackInkDepth(vec4 packedDepth) {
-  return dot(packedDepth, vec4(255.0 / 256.0, 255.0 / 65536.0, 255.0 / 16777216.0, 255.0 / 4294967296.0));
+// Each sampler2DShadow lookup performs a linearly filtered hardware depth
+// comparison. Keep the five Vogel-disk offsets fixed: PBR's per-pixel rotation
+// is appropriate for continuous soft light, but becomes visible dither after
+// Ink thresholds that light to a binary band.
+vec2 inkVogelDiskSample(int sampleIndex, int sampleCount, float phi) {
+  const float goldenAngle = 2.399963229728653;
+  float radius = sqrt((float(sampleIndex) + 0.5) / float(sampleCount));
+  float theta = float(sampleIndex) * goldenAngle + phi;
+  return vec2(cos(theta), sin(theta)) * radius;
+}
+
+float sampleInkHardShadowPcf(vec3 shadowUvDepth) {
+  float radius = inkHardShadowRadius * inkHardShadowTexelSize.x;
+  const float phi = 0.0;
+  return (
+    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(0, 5, phi) * radius, shadowUvDepth.z)) +
+    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(1, 5, phi) * radius, shadowUvDepth.z)) +
+    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(2, 5, phi) * radius, shadowUvDepth.z)) +
+    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(3, 5, phi) * radius, shadowUvDepth.z)) +
+    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(4, 5, phi) * radius, shadowUvDepth.z))
+  ) * 0.2;
 }
 
 void main() {
@@ -736,17 +755,12 @@ void main() {
   float halfLambert = clamp(normalLight * 0.5 + 0.5, 0.0, 1.0);
   float directBand = halfLambert >= 0.5 ? 1.0 : 0.5;
   if (directBand > 0.5 && inkHardShadowEnabled > 0.5) {
-    // A nearest 64 px/world-unit map can otherwise sample a closer point on
-    // a curved Fill surface itself. Offset the receiver by one shadow texel;
-    // at grazing angles scale the normal distance to preserve depth clearance.
-    float normalBiasScale = 1.0 / max(0.25, normalLight);
-    vec3 shadowReceiverPosition = vInkWorldPosition + normal * inkHardShadowNormalBias * normalBiasScale;
-    vec4 shadowPosition = inkHardShadowMatrix * vec4(shadowReceiverPosition, 1.0);
+    vec4 shadowPosition = inkHardShadowMatrix * vec4(vInkWorldPosition, 1.0);
     vec3 shadowUvDepth = shadowPosition.xyz / shadowPosition.w;
     bool inside = shadowUvDepth.x >= 0.0 && shadowUvDepth.x <= 1.0
       && shadowUvDepth.y >= 0.0 && shadowUvDepth.y <= 1.0
       && shadowUvDepth.z >= 0.0 && shadowUvDepth.z <= 1.0;
-    if (inside && shadowUvDepth.z > unpackInkDepth(texture2D(inkHardShadowMap, shadowUvDepth.xy)) + inkHardShadowBias) directBand = 0.5;
+    if (inside && sampleInkHardShadowPcf(shadowUvDepth) <= 0.5) directBand = 0.5;
   }
   gl_FragColor = vec4(colour.rgb * (vec3(directBand) + inkAmbientIrradiance), 1.0);
 }`,
@@ -881,6 +895,7 @@ function createInkFillHardShadowDepthMaterial(fillMaterial: ShaderMaterial): Sha
     },
     depthTest: true,
     depthWrite: true,
+    colorWrite: false,
     side: BackSide,
     vertexShader: `
 varying vec2 vInkFillUv;
@@ -889,7 +904,6 @@ void main() {
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`,
     fragmentShader: `
-#include <packing>
 uniform sampler2D inkFillMap;
 uniform vec2 inkFillUvMin;
 uniform vec2 inkFillUvSize;
@@ -898,7 +912,7 @@ void main() {
   vec2 fillUv = (vInkFillUv - inkFillUvMin) / inkFillUvSize;
   if (fillUv.x < 0.0 || fillUv.x > 1.0 || fillUv.y < 0.0 || fillUv.y > 1.0) discard;
   if (texture2D(inkFillMap, fillUv).a < 0.5) discard;
-  gl_FragColor = packDepthToRGBA(gl_FragCoord.z);
+  gl_FragColor = vec4(1.0);
 }`,
   });
 }

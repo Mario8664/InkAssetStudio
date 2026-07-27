@@ -70,11 +70,11 @@
 
 - Map Reference 在 Three.js 展开灯光 ShaderChunk 前注入有效 Half-Lambert，显示地形体积和基础颜色，背光坡面不再退化为接近纯黑。
 - Ink Ribbon 和 Fill 使用自身真实深度遮挡；Reference 合成不写入该深度，不能遮挡 Ink。
-- Ink Fill 保留当前硬分档光照和专属最近采样硬阴影；Reference 地形不进入 Ink 硬阴影投射或接收。
+- Ink Fill 保留当前硬分档光照和专属原生深度硬阴影：`DepthTexture` 使用 `LessEqual` 比较与线性过滤，亮面接收端进行五次固定朝向 Vogel-disk 硬件 PCF 采样后，仅在可见度 `<= 0.5` 时进入暗档，不保留中间灰度或 PBR 随机旋转带来的二值化点阵；Reference 地形不进入 Ink 硬阴影投射或接收。
 - Ink Fill 可见材质固定使用 `DoubleSide`，片元在背面翻转光照法线；专属硬阴影 depth material 仍使用 `BackSide`。Cuboid、Sphere、Cylinder 与 Frustum 的表面三角形绕序均保持法线朝外。
 - Ink 阴影目标密度固定为 64 px/世界单位；普通 Three.js PCF 阴影保持关闭。
 - 阴影深度只在 Ink 几何/Transform、摆放或光照方向变化时失效；Reference 地形、灯光颜色和强度不会触发阴影深度重建。
-- 纯 Outline 与 Surface Outline 编辑不再重绘硬阴影；packed-depth 捕获会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
+- 纯 Outline 与 Surface Outline 编辑不再重绘硬阴影；原生 depth capture 会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
 - Ink Group 渲染按 Shape 复用已上传资源：Transform 只更新对象变换，Fill-only 更新复用 Ribbon，描边变化只替换对应 Shape，而不是重建整组 Ink。
 - 阴影相机范围变化后显式更新投影矩阵。
 - GPU 最大纹理不足时不修改作品数据，界面会显示所需尺寸、设备上限和恢复办法。
@@ -97,7 +97,7 @@ npm.cmd run build
 
 - Vue/TypeScript 类型检查通过。
 - 8 个 Vitest 文件、68 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
-- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见/阴影背面、packed-depth 辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v16-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见/阴影背面、原生深度 PCF 的辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v16-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
 真实 Chrome 自动验收命令：

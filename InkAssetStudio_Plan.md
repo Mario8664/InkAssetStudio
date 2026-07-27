@@ -71,7 +71,7 @@ Studio 只提供下列渲染路径：
 | Ink 专属硬阴影 | 开启 | 保留 Ink 视觉表现必须的硬阴影。 |
 | 常规 PCF 阴影、GTAO、PMREM | 关闭 | 不运行与移动端 Ink 创作无关的重型路径。 |
 
-Ink 硬阴影复用 Painting 已确认的语义：最近采样深度图、目标密度 `64 px / 世界单位`、不改变 Three.js 的常规 PCF 阴影配置。Studio 的 Reference 地形不投射、不接收此 Ink 专属阴影；该深度图只包含 Ink 自身的已批准投射体，并只在 Ink 投射/接收对象的 Transform 或几何、以及灯光方向等真实输入改变时失效。地形 Reference、灯光颜色和强度的变化不得无故重建阴影深度图。若设备最大纹理尺寸不足，Studio 必须显示清晰的可恢复提示，而不是悄悄改变作品数据。
+Ink 硬阴影复用 Painting 已确认的语义：单张原生 `DepthTexture`（`LessEqual` 比较、线性过滤、无 mipmap）目标密度固定为 `64 px / 世界单位`，不改变 Three.js 的常规 PCF 阴影配置。可见 Fill 保持 `DoubleSide`，专属 alpha-clip depth pass 固定 `BackSide` 且关闭颜色写入；它只捕获 Ink Fill，不包含 Studio 的 Reference、描边或编辑辅助。亮面接收端不使用 depth 或 normal bias，以原始世界位置和深度经 `sampler2DShadow` 进行五次固定朝向 Vogel-disk 硬件 PCF 采样；连续可见度只在最终阈值处二值化，`<= 0.5` 时进入 `0.5` 的暗档，其他情况保持 `1.0`，不保留中间灰度，也不使用 PBR 的逐像素随机旋转核。Studio 的 Reference 地形不投射、不接收此 Ink 专属阴影；该深度图只在 Ink 投射/接收对象的 Transform 或几何、以及灯光方向等真实输入改变时失效。地形 Reference、灯光颜色和强度的变化不得无故重建阴影深度图。若设备最大纹理尺寸不足，Studio 必须显示清晰的可恢复提示，而不是悄悄改变作品数据。
 
 ### 3.5 灯光预览
 

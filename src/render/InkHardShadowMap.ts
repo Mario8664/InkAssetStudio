@@ -1,10 +1,11 @@
 import {
   Color,
+  DepthFormat,
+  DepthTexture,
+  LessEqualCompare,
+  LinearFilter,
   Mesh,
-  MeshDepthMaterial,
-  NearestFilter,
-  RGBADepthPacking,
-  UnsignedByteType,
+  UnsignedIntType,
   WebGLRenderTarget,
   type DirectionalLight,
   type Material,
@@ -20,9 +21,8 @@ type ShadowCasterState = {
   material: Material | Material[];
 };
 
-/** Ink-only depth map. It never changes Three's PCF shadow configuration. */
+/** Ink-only native depth map. It never changes Three's PCF shadow configuration. */
 export class InkHardShadowMap {
-  private readonly depthMaterial = new MeshDepthMaterial({ depthPacking: RGBADepthPacking });
   private target: WebGLRenderTarget | null = null;
   private width = 0;
   private height = 0;
@@ -35,15 +35,13 @@ export class InkHardShadowMap {
     private readonly light: DirectionalLight,
     private readonly lighting: InkFillLightingState,
     private readonly onWarning: (message: string) => void = () => undefined,
-    private readonly isApprovedCaster: (mesh: Mesh) => boolean = () => true,
-  ) {
-    this.depthMaterial.name = 'InkHardShadowDepth';
-  }
+  ) {}
 
   markDirty(): void { this.dirty = true; }
 
-  /** Renders only approved Mesh casters into a nearest-sampled Ink-only map. */
+  /** Captures only alpha-clipped Ink Fill casters into a native depth texture. */
   renderIfNeeded(force = false): void {
+    this.lighting.hardShadowRadius.value = this.light.shadow.radius;
     if (this.disabled || (!force && !this.dirty)) return;
     this.scene.updateMatrixWorld(true);
     this.light.shadow.updateMatrices(this.light);
@@ -67,16 +65,14 @@ export class InkHardShadowMap {
     this.scene.traverse((object) => {
       if (object instanceof Mesh) {
         const inkDepthMaterial = object.userData.inkHardShadowDepthMaterial as Material | undefined;
-        const isCaster = this.isApprovedCaster(object) && (object.castShadow || inkDepthMaterial !== undefined);
         casterStates.set(object, { visible: object.visible, material: object.material });
-        object.visible = object.visible && isCaster;
+        object.visible = object.visible && inkDepthMaterial !== undefined;
         if (inkDepthMaterial) object.material = inkDepthMaterial;
-        else if (isCaster) object.material = this.depthMaterial;
         return;
       }
 
-      // Packed depth lives in colour channels, so depthWrite=false does not
-      // prevent Line/Points/Sprite helpers from corrupting the sampled map.
+      // Suppress non-Mesh renderers so References and editor helpers cannot
+      // affect the isolated Ink-only capture.
       if (hasRendererMaterial(object)) {
         suppressedRenderableStates.set(object, object.visible);
         object.visible = false;
@@ -92,9 +88,8 @@ export class InkHardShadowMap {
       this.renderer.setRenderTarget(target);
       this.renderer.autoClear = true;
       this.renderer.shadowMap.enabled = false;
-      // RGBA depth's clear value must be exactly 1.0 rather than the scene
-      // background colour, which otherwise force-clears the target again from
-      // WebGLBackground.render and becomes a false depth occluder.
+      // The native depth attachment is the only sampled output. Keep the scene
+      // background out of this isolated capture and clear its depth to 1.0.
       this.scene.background = null;
       this.renderer.setClearColor(0xffffff, 1);
       this.renderer.clear(true, true, false);
@@ -119,26 +114,32 @@ export class InkHardShadowMap {
   dispose(): void {
     this.target?.dispose();
     this.target = null;
-    this.depthMaterial.dispose();
     this.lighting.hardShadowMap.value = null;
+    this.lighting.hardShadowTexelSize.set(1, 1);
     this.lighting.hardShadowEnabled.value = 0;
   }
 
   private ensureTarget(width: number, height: number): void {
     if (this.target && this.width === width && this.height === height) return;
     this.target?.dispose();
+    const depthTexture = new DepthTexture(width, height, UnsignedIntType);
+    depthTexture.name = 'InkHardShadowMap.depth';
+    depthTexture.format = DepthFormat;
+    depthTexture.compareFunction = LessEqualCompare;
+    depthTexture.minFilter = LinearFilter;
+    depthTexture.magFilter = LinearFilter;
+    depthTexture.generateMipmaps = false;
     this.target = new WebGLRenderTarget(width, height, {
-      type: UnsignedByteType,
       depthBuffer: true,
+      depthTexture,
       stencilBuffer: false,
     });
-    this.target.texture.name = 'InkHardShadowMap.depth';
-    this.target.texture.minFilter = NearestFilter;
-    this.target.texture.magFilter = NearestFilter;
+    this.target.texture.name = 'InkHardShadowMap.unused-colour';
     this.target.texture.generateMipmaps = false;
     this.width = width;
     this.height = height;
-    this.lighting.hardShadowMap.value = this.target.texture as Texture;
+    this.lighting.hardShadowMap.value = depthTexture as Texture;
+    this.lighting.hardShadowTexelSize.set(1 / width, 1 / height);
   }
 }
 
