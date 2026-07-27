@@ -70,11 +70,11 @@
 
 - Map Reference 在 Three.js 展开灯光 ShaderChunk 前注入有效 Half-Lambert，显示地形体积和基础颜色，背光坡面不再退化为接近纯黑。
 - Ink Ribbon 和 Fill 使用自身真实深度遮挡；Reference 合成不写入该深度，不能遮挡 Ink。
-- Ink Fill 保留当前硬分档光照和专属原生深度硬阴影：`DepthTexture` 使用 `LessEqual` 比较与线性过滤，亮面接收端进行五次固定朝向 Vogel-disk 硬件 PCF 采样后，仅在可见度 `<= 0.5` 时进入暗档，不保留中间灰度或 PBR 随机旋转带来的二值化点阵；Reference 地形不进入 Ink 硬阴影投射或接收。
-- Ink Fill 可见材质固定使用 `DoubleSide`，片元在背面翻转光照法线；专属硬阴影 depth material 仍使用 `BackSide`。Cuboid、Sphere、Cylinder 与 Frustum 的表面三角形绕序均保持法线朝外。
+- Ink Fill 保留当前硬分档光照和专属成对原生深度阴影：两张 `DepthTexture` 均使用 `LessEqual` 比较与线性过滤，正面片元采样 BackSide capture、背面片元采样 FrontSide capture；选定图进行五次固定朝向 Vogel-disk 硬件 PCF 后，仅在可见度 `<= 0.5` 时进入暗档，不保留中间灰度或 PBR 随机旋转带来的二值化点阵；Reference 地形不进入 Ink 硬阴影投射或接收。
+- Ink Fill 可见材质固定使用 `DoubleSide`，片元在背面翻转光照法线；专属硬阴影 depth material 分别使用 `FrontSide` 与 `BackSide`，并均关闭颜色写入。Cuboid、Sphere、Cylinder 与 Frustum 的表面三角形绕序均保持法线朝外。
 - Ink 阴影目标密度固定为 64 px/世界单位；普通 Three.js PCF 阴影保持关闭。
-- 阴影深度只在 Ink 几何/Transform、摆放或光照方向变化时失效；Reference 地形、灯光颜色和强度不会触发阴影深度重建。
-- 纯 Outline 与 Surface Outline 编辑不再重绘硬阴影；原生 depth capture 会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
+- 两张阴影深度图只在 Ink 几何/Transform、摆放或光照方向变化时同时失效；Reference 地形、灯光颜色和强度不会触发阴影深度重建。
+- 纯 Outline 与 Surface Outline 编辑不再重绘硬阴影；两次原生 depth capture 会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
 - Ink Group 渲染按 Shape 复用已上传资源：Transform 只更新对象变换，Fill-only 更新复用 Ribbon，描边变化只替换对应 Shape，而不是重建整组 Ink。
 - 阴影相机范围变化后显式更新投影矩阵。
 - GPU 最大纹理不足时不修改作品数据，界面会显示所需尺寸、设备上限和恢复办法。

@@ -6,6 +6,7 @@ import {
   DepthTexture,
   DirectionalLight,
   DoubleSide,
+  FrontSide,
   Group,
   LessEqualCompare,
   LinearFilter,
@@ -228,7 +229,8 @@ describe('Reference rendering', () => {
     const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState());
     const fill = root.getObjectByName('InkFillSurface') as Mesh;
     expect((fill.material as ShaderMaterial).side).toBe(DoubleSide);
-    expect((fill.userData.inkHardShadowDepthMaterial as ShaderMaterial).side).toBe(BackSide);
+    expect((fill.userData.inkHardShadowBackFaceDepthMaterial as ShaderMaterial).side).toBe(BackSide);
+    expect((fill.userData.inkHardShadowFrontFaceDepthMaterial as ShaderMaterial).side).toBe(FrontSide);
     const fillPositions = fill.geometry.getAttribute('position');
     const fillIndices = fill.geometry.getIndex()!;
     const first = new Vector3().fromBufferAttribute(fillPositions, fillIndices.getX(0));
@@ -236,6 +238,27 @@ describe('Reference rendering', () => {
     const third = new Vector3().fromBufferAttribute(fillPositions, fillIndices.getX(2));
     expect(second.clone().sub(first).cross(third.clone().sub(first)).z).toBeGreaterThan(0);
     disposeObjectTree(root);
+
+    const sphere = paintInkFill(createInkSphereShape(), [
+      { x: 1, y: 0, z: 0, pressure: 1 }, { x: -1, y: 0, z: 0, pressure: 1 },
+      { x: 0, y: 1, z: 0, pressure: 1 }, { x: 0, y: -1, z: 0, pressure: 1 },
+      { x: 0, y: 0, z: 1, pressure: 1 }, { x: 0, y: 0, z: -1, pressure: 1 },
+    ], '#29adff', 0.12, 'circle', false);
+    const sphereRoot = createInkShapeRenderRoot(compileInkShape(sphere), sphere, createInkFillLightingState());
+    const sphereFills: Mesh[] = [];
+    sphereRoot.traverse((object) => {
+      if (!(object instanceof Mesh) || object.name !== 'InkFillSurface') return;
+      sphereFills.push(object);
+      const positions = object.geometry.getAttribute('position');
+      const normals = object.geometry.getAttribute('normal');
+      for (let index = 0; index < positions.count; index += 1) {
+        const position = new Vector3().fromBufferAttribute(positions, index).normalize();
+        const normal = new Vector3().fromBufferAttribute(normals, index);
+        expect(normal.distanceTo(position)).toBeLessThan(0.000001);
+      }
+    });
+    expect(sphereFills).toHaveLength(6);
+    disposeObjectTree(sphereRoot);
   });
   it('renders camera-facing smooth-surface Ribbons only for supported Shapes', () => {
     for (const geometry of [createInkCylinderGeometry(0.75, 1.5), createInkFrustumGeometry(0.6, 1.2, 1.5)]) {
@@ -379,14 +402,16 @@ describe('Reference rendering', () => {
     disposeInkShapePreviewTree(preview.root);
   });
 
-  it('uses native depth PCF and restores every captured state when hard-shadow rendering throws', () => {
+  it('uses paired native depth PCF captures and restores every state when rendering throws', () => {
     const scene = new Scene();
     const sceneBackground = new Color(0x334455);
     scene.background = sceneBackground;
     const casterMaterial = new MeshBasicMaterial({ color: 0xffffff });
     const caster = new Mesh(new PlaneGeometry(1, 1), casterMaterial);
-    const casterDepthMaterial = new MeshBasicMaterial({ color: 0xffffff });
-    caster.userData.inkHardShadowDepthMaterial = casterDepthMaterial;
+    const casterBackFaceDepthMaterial = new MeshBasicMaterial({ color: 0xffffff });
+    const casterFrontFaceDepthMaterial = new MeshBasicMaterial({ color: 0xffffff });
+    caster.userData.inkHardShadowBackFaceDepthMaterial = casterBackFaceDepthMaterial;
+    caster.userData.inkHardShadowFrontFaceDepthMaterial = casterFrontFaceDepthMaterial;
     const referenceMaterial = new MeshBasicMaterial({ color: 0xffffff });
     const referenceCaster = new Mesh(new PlaneGeometry(1, 1), referenceMaterial);
     referenceCaster.castShadow = true;
@@ -403,6 +428,7 @@ describe('Reference rendering', () => {
     let clearColor = originalClearColor.clone();
     let clearAlpha = 0.4;
     let shouldThrow = true;
+    const capturedMaterials: (Material | Material[])[] = [];
     let observed: { casterMaterial: Material | Material[]; referenceVisible: boolean; nonCasterVisible: boolean; helperVisible: boolean; background: Scene['background'] } | null = null;
     const renderer = {
       capabilities: { maxTextureSize: 4096 },
@@ -425,6 +451,7 @@ describe('Reference rendering', () => {
           helperVisible: helper.visible,
           background: scene.background,
         };
+        capturedMaterials.push(caster.material);
         if (shouldThrow) throw new Error('synthetic renderer failure');
       },
     } as unknown as WebGLRenderer;
@@ -433,7 +460,7 @@ describe('Reference rendering', () => {
 
     expect(() => hardShadow.renderIfNeeded(true)).toThrow('synthetic renderer failure');
     expect(observed).not.toBeNull();
-    expect(observed!.casterMaterial).not.toBe(casterMaterial);
+    expect(observed!.casterMaterial).toBe(casterBackFaceDepthMaterial);
     expect(observed!.referenceVisible).toBe(false);
     expect(observed!.nonCasterVisible).toBe(false);
     expect(observed!.helperVisible).toBe(false);
@@ -454,18 +481,23 @@ describe('Reference rendering', () => {
 
     shouldThrow = false;
     hardShadow.renderIfNeeded(true);
-    expect(lighting.hardShadowMap.value).toBeInstanceOf(DepthTexture);
-    const depthTexture = lighting.hardShadowMap.value as DepthTexture;
-    expect(depthTexture.format).toBe(DepthFormat);
-    expect(depthTexture.type).toBe(UnsignedIntType);
-    expect(depthTexture.compareFunction).toBe(LessEqualCompare);
-    expect(depthTexture.minFilter).toBe(LinearFilter);
-    expect(depthTexture.magFilter).toBe(LinearFilter);
+    expect(capturedMaterials).toContain(casterBackFaceDepthMaterial);
+    expect(capturedMaterials).toContain(casterFrontFaceDepthMaterial);
+    for (const shadowMap of [lighting.hardShadowFrontFaceMap.value, lighting.hardShadowBackFaceMap.value]) {
+      expect(shadowMap).toBeInstanceOf(DepthTexture);
+      const depthTexture = shadowMap as DepthTexture;
+      expect(depthTexture!.format).toBe(DepthFormat);
+      expect(depthTexture!.type).toBe(UnsignedIntType);
+      expect(depthTexture!.compareFunction).toBe(LessEqualCompare);
+      expect(depthTexture!.minFilter).toBe(LinearFilter);
+      expect(depthTexture!.magFilter).toBe(LinearFilter);
+    }
 
     hardShadow.dispose();
     caster.geometry.dispose();
     casterMaterial.dispose();
-    casterDepthMaterial.dispose();
+    casterBackFaceDepthMaterial.dispose();
+    casterFrontFaceDepthMaterial.dispose();
     referenceCaster.geometry.dispose();
     referenceMaterial.dispose();
     nonCaster.geometry.dispose();
@@ -474,21 +506,27 @@ describe('Reference rendering', () => {
     (helper.material as LineBasicMaterial).dispose();
   });
 
-  it('uses fixed five-tap hardware PCF and binary Fill shadow bands', () => {
+  it('uses opposite-side fixed five-tap PCF and binary Fill shadow bands', () => {
     const shape = paintInkFill(createInkCuboidShape(), [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
     const root = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState());
     const fill = root.getObjectByName('InkFillSurface') as Mesh;
     const material = fill.material as ShaderMaterial;
-    const depthMaterial = fill.userData.inkHardShadowDepthMaterial as ShaderMaterial;
+    const backFaceDepthMaterial = fill.userData.inkHardShadowBackFaceDepthMaterial as ShaderMaterial;
+    const frontFaceDepthMaterial = fill.userData.inkHardShadowFrontFaceDepthMaterial as ShaderMaterial;
 
     expect(material.side).toBe(DoubleSide);
-    expect(material.fragmentShader).toContain('uniform sampler2DShadow inkHardShadowMap;');
+    expect(material.fragmentShader).toContain('uniform sampler2DShadow inkHardShadowFrontFaceMap;');
+    expect(material.fragmentShader).toContain('uniform sampler2DShadow inkHardShadowBackFaceMap;');
     expect(material.fragmentShader).toContain('inkVogelDiskSample(4, 5, phi)');
-    expect(material.fragmentShader).toContain('sampleInkHardShadowPcf(shadowUvDepth) <= 0.5');
+    expect(material.fragmentShader).toContain('sampleInkHardShadowBackFacePcf(shadowUvDepth)');
+    expect(material.fragmentShader).toContain('sampleInkHardShadowFrontFacePcf(shadowUvDepth)');
     expect(material.fragmentShader).not.toContain('inkHardShadowBias');
-    expect(depthMaterial.side).toBe(BackSide);
-    expect(depthMaterial.colorWrite).toBe(false);
-    expect(depthMaterial.fragmentShader).not.toContain('packDepthToRGBA');
+    expect(backFaceDepthMaterial.side).toBe(BackSide);
+    expect(frontFaceDepthMaterial.side).toBe(FrontSide);
+    expect(backFaceDepthMaterial.colorWrite).toBe(false);
+    expect(frontFaceDepthMaterial.colorWrite).toBe(false);
+    expect(backFaceDepthMaterial.fragmentShader).not.toContain('packDepthToRGBA');
+    expect(frontFaceDepthMaterial.fragmentShader).not.toContain('packDepthToRGBA');
     disposeObjectTree(root);
   });
 });

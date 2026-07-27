@@ -6,8 +6,10 @@ export function disposeObjectTree(root: Object3D): void {
     object.geometry.dispose();
     const materials = Array.isArray(object.material) ? object.material : [object.material];
     materials.forEach(disposeMaterial);
-    const depth = object.userData.inkHardShadowDepthMaterial;
-    if (depth instanceof Material) depth.dispose();
+    const backFaceDepth = object.userData.inkHardShadowBackFaceDepthMaterial;
+    if (backFaceDepth instanceof Material) backFaceDepth.dispose();
+    const frontFaceDepth = object.userData.inkHardShadowFrontFaceDepthMaterial;
+    if (frontFaceDepth instanceof Material) frontFaceDepth.dispose();
     const texture = object.userData.inkFillTexture;
     if (texture instanceof Texture) texture.dispose();
     const surfaceOutlineFallback = object.userData.inkSurfaceOutlineEmptyFillAlphaTexture;
