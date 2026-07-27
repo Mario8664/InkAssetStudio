@@ -2,7 +2,7 @@
 
 Ink Asset Studio 是一个面向 iPad、Apple Pencil 和离线创作的独立 Ink PWA。它在 `E:\MyDemo\InkAssetStudio` 内自包含运行，不会在运行时引用或写入 `E:\MyDemo\Painting`。
 
-当前实现覆盖计划中的 Studio 范围：多 Ink Group、Plane/Cuboid/Sphere、完整 Outline/Fill 工具、Normal Outset、压感开关、简化地形、Map Reference、Ink 专属硬阴影、完整可调的 Painting 兼容预览灯光、直接可见的 Undo/Redo、IndexedDB 自动保存、工作文件导入导出和离线应用外壳。Painting 侧导入器和真实 iPad/Apple Pencil 硬件验收仍属于后续单独工作。
+当前实现覆盖计划中的 Studio 范围：多 Ink Group、Plane/Cuboid/Sphere/Cylinder/Frustum、完整 Outline/Fill 工具、Sphere/Cylinder 曲面描边、压感开关、简化地形、Map Reference、Ink 专属硬阴影、完整可调的 Painting 兼容预览灯光、直接可见的 Undo/Redo、IndexedDB 自动保存、工作文件导入导出和离线应用外壳。Painting 侧导入器和真实 iPad/Apple Pencil 硬件验收仍属于后续单独工作。
 
 正式 PWA：<https://mario8664.github.io/InkAssetStudio/>
 

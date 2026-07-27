@@ -97,7 +97,7 @@ describe('Painting-compatible Ink Shapes', () => {
     } as Extract<InkShape, { kind: 'sphere' }>;
     const after = compileInkShape(enabled, undefined, before);
 
-    expect(INK_COMPILED_FORMAT_VERSION).toBe(15);
+    expect(INK_COMPILED_FORMAT_VERSION).toBe(16);
     expect(after.ribbon).toBe(before.ribbon);
     expect('normalOutset' in after).toBe(false);
   });
@@ -152,10 +152,9 @@ describe('Painting-compatible Ink Shapes', () => {
   it('round-trips Cylinder side and cap chart coordinates for picking', () => {
     const shape = createInkCylinderShape();
     for (const point of [
-      { surface: 'side' as const, u: -0.5, v: -0.2, pressure: 1 },
       { surface: 'side' as const, u: -0.25, v: 0.1, pressure: 1 },
+      { surface: 'side' as const, u: 0, v: -0.2, pressure: 1 },
       { surface: 'side' as const, u: 0.25, v: 0.3, pressure: 1 },
-      { surface: 'side' as const, u: 0.5, v: 0, pressure: 1 },
       { surface: 'top' as const, u: 0.25, v: -0.15, pressure: 1 },
       { surface: 'bottom' as const, u: -0.2, v: 0.4, pressure: 1 },
     ]) {
@@ -164,5 +163,12 @@ describe('Painting-compatible Ink Shapes', () => {
       expect(restored.u).toBeCloseTo(point.u);
       expect(restored.v).toBeCloseTo(point.v);
     }
+  });
+
+  it('maps the Cylinder side chart origin to the positive X axis', () => {
+    const shape = createInkCylinderShape();
+    const position = getInkCylinderSurfacePosition(shape, { surface: 'side', u: 0, v: 0, pressure: 1 });
+    expect(position.x).toBeCloseTo(shape.radius);
+    expect(position.z).toBeCloseTo(0);
   });
 });

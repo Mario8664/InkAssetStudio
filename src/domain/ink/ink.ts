@@ -2,8 +2,8 @@ import { BufferGeometry, Euler, Float32BufferAttribute, Matrix4, Quaternion, Vec
 import { hashDerivedAssetSource } from './derivedAssets';
 
 export const INK_MANAGER_OBJECT_TYPE = 'painting.ink-manager';
-/** v15 retires Normal Outset shells in favour of analytic smooth-surface Ribbons. */
-export const INK_COMPILED_FORMAT_VERSION = 15;
+/** v16 aligns the Cylinder side chart phase with Painting. */
+export const INK_COMPILED_FORMAT_VERSION = 16;
 export const INK_SPHERE_FACE_SEGMENTS = 4;
 export const INK_CYLINDER_SEGMENTS = 16;
 export const INK_FILL_PIXELS_PER_WORLD_UNIT = 64;
@@ -963,7 +963,7 @@ function getInkCuboidFacePosition(face: InkCuboidFace, u: number, v: number): Ve
 
 export function getInkCylinderSurfacePosition(shape: InkCylinderShape, point: InkCylinderStrokePoint): Vector3 {
   if (point.surface === 'side') {
-    const angle = (point.u + 0.5) * Math.PI * 2;
+    const angle = point.u * Math.PI * 2;
     return new Vector3(Math.cos(angle) * shape.radius, point.v * shape.height, Math.sin(angle) * shape.radius);
   }
   const y = point.surface === 'top' ? shape.height * 0.5 : -shape.height * 0.5;
@@ -980,7 +980,8 @@ export function getInkCylinderSurfacePoint(
   if (surface === 'side') {
     const angle = Math.atan2(position.z, position.x);
     const wrappedAngle = angle < 0 ? angle + Math.PI * 2 : angle;
-    return { surface, u: wrappedAngle / (Math.PI * 2) - 0.5, v: position.y / shape.height, pressure };
+    const u = wrappedAngle / (Math.PI * 2);
+    return { surface, u: u >= 0.5 ? u - 1 : u, v: position.y / shape.height, pressure };
   }
   return { surface, u: position.x / (shape.radius * 2), v: position.z / (shape.radius * 2), pressure };
 }

@@ -267,7 +267,7 @@ try {
     throw new Error('Surface Outline author settings were not exported exactly.');
   }
   if (!cylinder || cylinder.radius !== 0.7 || !frustum || frustum.topSize !== 0.7) throw new Error('Cylinder or Frustum dimensions were not exported exactly.');
-  if (exported.sourceCompatibility?.paintingInkCompiledFormatVersion !== 15) throw new Error('The exported work file is not marked Ink compiled format v15.');
+  if (exported.sourceCompatibility?.paintingInkCompiledFormatVersion !== 16) throw new Error('The exported work file is not marked Ink compiled format v16.');
   if ((exported.terrain?.tiles?.length ?? 25) >= 25) throw new Error('The terrain erase gesture did not remove any reference cells.');
 
   await page.getByRole('button', { name: 'New' }).click();

@@ -30,7 +30,7 @@ Studio 不是图片画板、Procreate 导入器、远程桌面，也不是完整
 - 一个工作场景可包含多个 Ink Group、每个 Group 多个 Shape。
 - Group 保留稳定 `id`、名称、局部 Pivot、连续世界坐标摆放和 `0 / 90 / 180 / 270` 度离散 Y 轴旋转。
 - Shape 保留与 Painting 一致的 `plane`、`cuboid`、`sphere`、`cylinder`、`frustum` 五类，以及位置、YXZ 旋转和固有尺寸；Cuboid 使用 XYZ size，Sphere 使用 radius，Cylinder 使用 radius/height，Frustum 使用 top size/bottom size/height；不提供通用 Transform Scale。
-- Cuboid、Sphere、Cylinder 与 Frustum 提供 Painting 当前的 `normalOutset` Shape 配置：可切换启用、设置壳颜色与 `0.001～1` 世界单位外扩距离；默认距离与默认 Outline 宽度同为 `0.035`。壳 Geometry 直接烘焙最终内在尺寸和 `distance`，不在 shader 中按插值 normal 二次外扩：Cuboid、Cylinder、Frustum 使用逐面恒距 miter 壳，Sphere 使用无接缝的 `radius + distance` 径向外球。Plane 不提供该配置；每张壳面复用对应 Fill 图表的纹理与 UV 裁切，并以相同的 `alpha < 0.5` 阈值裁去透明像素；没有 Fill 图表时不创建壳资源。壳不参与 Half-Lambert 或 Ink 硬阴影，关闭时不保留 Mesh 或 GPU 资源。
+- Sphere 与 Cylinder 提供 Painting 当前的 `surfaceOutline` Shape 配置：可切换启用并设置 `0.001～1` 世界单位宽度，默认值与普通 Outline 宽度同为 `0.035`。它们以视角相关的解析 Ribbon 表达 Sphere 外轮廓或 Cylinder 两条侧面母线，并按 Fill alpha 裁切；没有不透明 Fill 时不显示。Cuboid、Frustum 与 Plane 不提供该配置。曲面描边不进入作者描边编译缓存，关闭时不保留 Mesh 或 GPU 资源。
 - Move 与 Rotate 手柄支持 Unity 风格的 World/Local 坐标空间切换；该选择只属于 Editor Session。Shape 列表在删除按钮左侧提供眼睛按钮，可将指定 Shape 临时排除出绘制、吸色与 Shape 拾取，但不隐藏其已提交 Ink 渲染结果，也不写入作者源、导出、Undo/Redo 或内容 dirty。
 - 提供完整 Ink 工具：描边绘制、描边擦除、填色绘制、填色擦除、Bucket Fill、吸色、颜色调整、可编辑色板、笔刷尺寸、直线辅助、Group/Shape 选择、Undo/Redo。
 - Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。
@@ -67,7 +67,7 @@ Studio 只提供下列渲染路径：
 | Map PBR | 关闭 | 不在移动端运行生产级地形材质、GTAO 或环境反射。 |
 | Map Reference | 开启 | 使用当前 Half-Lambert 风格显示地形颜色、体积和坡面。 |
 | 编辑期格子与坡向辅助 | 开启 | 地块真实边缘、近似无限网格与 X/Y/Z 坐标轴可分别开关，清楚显示单元边界、坡向、选择状态和绘制落点；永不作为最终资产内容。 |
-| Ink Ribbon / Fill / Normal Outset | 开启 | 显示最终 Ink 描边、填色、可选法线外扩壳和真实深度遮挡。 |
+| Ink Ribbon / Fill / Surface Outline | 开启 | 显示最终 Ink 描边、填色、可选曲面描边和真实深度遮挡。 |
 | Ink 专属硬阴影 | 开启 | 保留 Ink 视觉表现必须的硬阴影。 |
 | 常规 PCF 阴影、GTAO、PMREM | 关闭 | 不运行与移动端 Ink 创作无关的重型路径。 |
 
@@ -183,7 +183,7 @@ type InkStudioWorkFile = {
   formatVersion: number;
   sourceCompatibility: {
     paintingInkAssetSchemaVersion: 3;
-    paintingInkCompiledFormatVersion: 14;
+    paintingInkCompiledFormatVersion: 16;
     terrainSchemaVersion: number;
   };
   documentId: string;
@@ -249,9 +249,9 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 
 - 指针拖动期间仅维护临时 Ribbon 或 Fill 工作副本；松手后才形成一次作者源写入和一条 Undo/Redo 记录。
 - Ink 编译在常驻 Worker 中完成；页面首次打开或 Group 增删 Shape 时才初始化该 Group 的作者源与轻量 Shape hash。一次笔画提交只跨线程发送受影响的作者 Shape，并只回传该 Shape 的派生缓存；未变化 Shape 的 Ribbon/Fill 数组必须留在主文档并复用。
-- Shape Position/Rotation 使用已有 Mesh Transform 更新；Cuboid size、Sphere radius、Cylinder radius/height 与 Frustum top size/bottom size/height 都是固有尺寸，保存在作者 Shape 数据中，不作为通用 Transform Scale。渲染时仅在 Shape 的内部内容坐标层应用尺寸，Normal Outset 壳以包含真实尺寸和 `distance` 的预外扩 Geometry 独立构建，`distance` 始终保持世界单位；不得由共享顶点的平滑 normal 或 shader 位移推导。尺寸或距离变化只替换当前 Shape 的壳 Geometry、重采样必要的有限 Fill 图表并刷新辅助面和硬阴影，不重建整个场景。
+- Shape Position/Rotation 使用已有 Mesh Transform 更新；Cuboid size、Sphere radius、Cylinder radius/height 与 Frustum top size/bottom size/height 都是固有尺寸，保存在作者 Shape 数据中，不作为通用 Transform Scale。尺寸变化只更新当前 Shape 的内容、重采样必要的有限 Fill 图表并刷新辅助面和硬阴影，不重建整个场景。Sphere/Cylinder 的 `surfaceOutline` 只维护已有的视角相关 Ribbon，配置或相机变化不重编译作者描边。
 - 只要输入不变，普通相机导航、UI 变化和灯光颜色/强度变化不得触发全场景重编译或硬阴影深度重建。
-- Ink 硬阴影捕获必须隔离 Line、Points、Sprite 和全部编辑辅助对象；纯 Outline 与 Normal Outset 编辑不得使硬阴影深度图失效。
+- Ink 硬阴影捕获必须隔离 Line、Points、Sprite 和全部编辑辅助对象；纯 Outline 与曲面描边编辑不得使硬阴影深度图失效。
 - Terrain 修改只重建必要的 Reference 几何与阴影深度；不得以整份文档克隆、全场景序列化或 GPU 资源重建作为普通交互的便利回退。
 - 每个 Three.js Geometry、Material、Texture、RenderTarget、Worker、事件监听、计时器和 PWA 页面 mount 都必须有单一所有者和明确 dispose 路径。
 - IndexedDB 写入必须节流并避免在 Pencil `pointermove` 中阻塞渲染；它与导出均使用一致的作者源快照，不读取半提交的交互状态或复制派生 GPU 上传数组。
@@ -278,7 +278,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 
 - 多个 Group 可在同一工作场景中独立选择、摆放、编辑和撤销/重做。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 都支持现有的 Ink 描边与 Fill 规则；Cylinder 的侧面图表在环绕方向连续，Frustum 使用六个表面图表。
-- Cuboid/Sphere/Cylinder/Frustum 的 Normal Outset 开关、颜色和距离可实时预览、Undo/Redo、保存、导出和重新导入；所有有限 Shape 的壳均保持朝外、逐面恒距且无 Sphere 图表接缝或缺面。
+- Sphere/Cylinder 的 `surfaceOutline` 开关和宽度可实时预览、Undo/Redo、保存、导出和重新导入；Sphere 显示无接缝的外轮廓，Cylinder 仅显示两条侧面母线，二者均按 Fill alpha 裁切。
 - 可见 Fill 使用 `DoubleSide` 并在背面翻转光照法线；专属 alpha-clip hard-shadow depth pass 固定 `BackSide`。
 - 描边/擦除/填色/Fill 擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成。
 - Apple Pencil 压感开启时记录有效压力；关闭时新描边全部记录为 `1`；切换不会改写历史笔画。
@@ -336,7 +336,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 | 常规阴影 / PBR | 不在移动端启用。 |
 | 灯光 | 完整参数可调；初值和 Reset 使用 Painting 当前保存值，不自动影响 Painting 全局灯光。 |
 | 压感 | 默认开启，可随时关闭；只影响新描边采样。 |
-| Normal Outset | Cuboid/Sphere/Cylinder/Frustum Shape 配置；实时预览，不进入 Ink 硬阴影。 |
+| Surface Outline | Sphere/Cylinder Shape 配置；实时预览，不进入作者描边编译缓存。 |
 | 图片导入 | 不做。 |
 | 网络 | 当前不实现；离线能力先完成。 |
 | Painting 修改 | 当前不做；未来导入器另行确认。 |

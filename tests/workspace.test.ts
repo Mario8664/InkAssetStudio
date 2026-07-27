@@ -56,7 +56,7 @@ describe('Ink Studio work files', () => {
     expect(parsed.document.ink.embeddedAssets[0]!.group.compiled.shapes[0]!.ribbon.positions.length).toBeGreaterThan(0);
   });
 
-  it('upgrades legacy work files to v15 and removes retired Normal Outset data', () => {
+  it('upgrades legacy work files to v16 and removes retired Normal Outset data', () => {
     const legacy = structuredClone(createStudioDocument('Legacy v11')) as any;
     legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 11;
     const shape = legacy.ink.embeddedAssets[0].group.shapes[0];
@@ -67,8 +67,8 @@ describe('Ink Studio work files', () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const upgraded = parsed.document.ink.embeddedAssets[0]!.group;
-    expect(parsed.document.sourceCompatibility.paintingInkCompiledFormatVersion).toBe(15);
-    expect(upgraded.compiled.formatVersion).toBe(15);
+    expect(parsed.document.sourceCompatibility.paintingInkCompiledFormatVersion).toBe(16);
+    expect(upgraded.compiled.formatVersion).toBe(16);
     expect('normalOutset' in upgraded.shapes[0]!).toBe(false);
   });
 
@@ -92,7 +92,18 @@ describe('Ink Studio work files', () => {
     if (!upgradedShape || upgradedShape.kind !== 'sphere') return;
     expect(upgradedShape.surfaceOutline).toEqual({ enabled: false, width: 0.035 });
     expect('normalOutset' in upgradedShape).toBe(false);
-    expect(upgraded.compiled.formatVersion).toBe(15);
+    expect(upgraded.compiled.formatVersion).toBe(16);
+  });
+
+  it('upgrades v15 source-only work scenes to the v16 persistence contract', () => {
+    const legacy = JSON.parse(serializeStudioDocument(createStudioDocument('Legacy v15'))) as any;
+    legacy.sourceCompatibility.paintingInkCompiledFormatVersion = 15;
+
+    const parsed = parseStudioWorkFile(JSON.stringify(legacy));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.document.sourceCompatibility.paintingInkCompiledFormatVersion).toBe(16);
+    expect(parsed.document.ink.embeddedAssets[0]!.group.compiled.formatVersion).toBe(16);
   });
 
   it('rebuilds tampered derived Ink payloads even when their persisted hashes still match', () => {
