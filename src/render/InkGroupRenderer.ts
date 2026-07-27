@@ -980,7 +980,10 @@ function createCylinderFillSurfaceGeometry(shape: Extract<InkShape, { kind: 'cyl
     const indices: number[] = [];
     for (let index = 0; index <= INK_CYLINDER_SEGMENTS; index += 1) {
       const fraction = index / INK_CYLINDER_SEGMENTS;
-      const angle = fraction * Math.PI * 2;
+      // The side Fill chart stores the local +X generator at u = 0.5.
+      // Reverse that offset here so the shader's atan2 chart lookup samples
+      // the authored Fill at its matching cylinder-side position.
+      const angle = (fraction - 0.5) * Math.PI * 2;
       const x = Math.cos(angle) * shape.radius;
       const z = Math.sin(angle) * shape.radius;
       positions.push(x, -shape.height * 0.5, z, x, shape.height * 0.5, z);

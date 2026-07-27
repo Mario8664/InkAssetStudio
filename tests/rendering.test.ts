@@ -273,6 +273,37 @@ describe('Reference rendering', () => {
     disposeObjectTree(frustumRoot);
   });
 
+  it('keeps cylinder side Fill geometry in phase with its authored chart', () => {
+    const cylinder = createInkCylinderShape();
+    const painted = paintInkFill(
+      cylinder,
+      [{ surface: 'side', u: 0, v: 0, pressure: 1 }],
+      '#29adff',
+      0.12,
+      'circle',
+      false,
+    );
+    const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState());
+    const fill = root.getObjectByName('InkFillSurface') as Mesh;
+    const positions = fill.geometry.getAttribute('position');
+    const uvs = fill.geometry.getAttribute('uv');
+    const expectedPositions = [
+      { u: 0, x: -cylinder.radius, z: 0 },
+      { u: 0.25, x: 0, z: -cylinder.radius },
+      { u: 0.5, x: cylinder.radius, z: 0 },
+      { u: 0.75, x: 0, z: cylinder.radius },
+    ];
+
+    for (const expected of expectedPositions) {
+      const vertexIndex = Math.round(expected.u * 16) * 2;
+      expect(uvs.getX(vertexIndex)).toBeCloseTo(expected.u, 6);
+      expect(positions.getX(vertexIndex)).toBeCloseTo(expected.x, 6);
+      expect(positions.getZ(vertexIndex)).toBeCloseTo(expected.z, 6);
+    }
+
+    disposeObjectTree(root);
+  });
+
   it('clips a smooth-surface Ribbon to Fill alpha and releases it when disabled', () => {
     const sphere = createInkSphereShape();
     sphere.surfaceOutline = { enabled: true, width: 0.08 };
