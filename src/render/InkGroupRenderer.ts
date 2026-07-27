@@ -3,6 +3,7 @@ import {
   BufferAttribute,
   BufferGeometry,
   Camera,
+  ClampToEdgeWrapping,
   DataTexture,
   DynamicDrawUsage,
   DoubleSide,
@@ -411,7 +412,12 @@ class InkSurfaceOutlineRenderer {
   }
 }
 
-type InkFillAlphaSource = Readonly<{ texture: Texture; crop: Vector4 }>;
+type InkFillAlphaSource = Readonly<{
+  texture: Texture;
+  crop: Vector4;
+  textureUvOffset: Vector2;
+  textureUvScale: Vector2;
+}>;
 
 function createInkSurfaceOutlineRenderer(root: Group, content: Group, shape: InkShape): InkSurfaceOutlineRenderer | null {
   if ((shape.kind !== 'sphere' && shape.kind !== 'cylinder') || !shape.surfaceOutline.enabled) return null;
@@ -451,10 +457,7 @@ function getInkSurfaceOutlineRenderer(root: Object3D): InkSurfaceOutlineRenderer
 
 function createEmptyInkFillAlphaTexture(): DataTexture {
   const texture = new DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1, RGBAFormat, UnsignedByteType);
-  texture.magFilter = NearestFilter;
-  texture.minFilter = NearestFilter;
-  texture.generateMipmaps = false;
-  texture.needsUpdate = true;
+  configureInkFillTexture(texture);
   return texture;
 }
 
@@ -464,16 +467,28 @@ function getInkFillAlphaSource(mesh: Mesh): InkFillAlphaSource | null {
   if (!(texture instanceof Texture) || !(material instanceof ShaderMaterial)) return null;
   const min = material.uniforms.inkFillUvMin?.value;
   const size = material.uniforms.inkFillUvSize?.value;
-  if (!(min instanceof Vector2) || !(size instanceof Vector2)) return null;
-  return { texture, crop: new Vector4(min.x, min.y, size.x, size.y) };
+  const textureUvOffset = material.uniforms.inkFillTextureUvOffset?.value;
+  const textureUvScale = material.uniforms.inkFillTextureUvScale?.value;
+  if (!(min instanceof Vector2) || !(size instanceof Vector2)
+    || !(textureUvOffset instanceof Vector2) || !(textureUvScale instanceof Vector2)) return null;
+  return {
+    texture,
+    crop: new Vector4(min.x, min.y, size.x, size.y),
+    textureUvOffset: textureUvOffset.clone(),
+    textureUvScale: textureUvScale.clone(),
+  };
 }
 
 function setInkFillAlphaUniform(material: ShaderMaterial, name: string, source: InkFillAlphaSource | undefined, fallback: Texture): void {
   material.uniforms[name]!.value = source?.texture ?? fallback;
   (material.uniforms[`${name}Crop`]!.value as Vector4).copy(source?.crop ?? EMPTY_INK_FILL_ALPHA_CROP);
+  (material.uniforms[`${name}TextureUvOffset`]!.value as Vector2).copy(source?.textureUvOffset ?? EMPTY_INK_FILL_TEXTURE_UV_OFFSET);
+  (material.uniforms[`${name}TextureUvScale`]!.value as Vector2).copy(source?.textureUvScale ?? EMPTY_INK_FILL_TEXTURE_UV_SCALE);
 }
 
 const EMPTY_INK_FILL_ALPHA_CROP = new Vector4(0, 0, 1, 1);
+const EMPTY_INK_FILL_TEXTURE_UV_OFFSET = new Vector2();
+const EMPTY_INK_FILL_TEXTURE_UV_SCALE = new Vector2(1, 1);
 const UP_AXIS = new Vector3(0, 1, 0);
 const RIGHT_AXIS = new Vector3(1, 0, 0);
 
@@ -591,12 +606,9 @@ function applyInkShapeContentDimensions(target: Object3D, shape: InkShape): void
 }
 
 function createInkFillSurfaceMesh(fill: CompiledInkFillSurface, shape: InkShape, lighting: InkFillLightingState): Mesh {
-  const texture = new DataTexture(new Uint8Array(fill.rgba), fill.width, fill.height, RGBAFormat, UnsignedByteType);
-  texture.magFilter = NearestFilter;
-  texture.minFilter = NearestFilter;
-  texture.generateMipmaps = false;
-  texture.needsUpdate = true;
-  const material = createInkFillSurfaceMaterial(texture, fill, shape, lighting);
+  const textureLayout = createInkFillTextureLayout(fill, shape);
+  const texture = createInkFillTexture(textureLayout);
+  const material = createInkFillSurfaceMaterial(texture, fill, shape, textureLayout, lighting);
   const mesh = new Mesh(createInkFillSurfaceGeometry(fill, shape), material);
   mesh.name = 'InkFillSurface';
   mesh.userData.inkFillSurfaceId = fill.id;
@@ -609,22 +621,19 @@ function createInkFillSurfaceMesh(fill: CompiledInkFillSurface, shape: InkShape,
 }
 
 function updateInkFillSurfaceMesh(mesh: Mesh, fill: CompiledInkFillSurface, shape: InkShape): void {
+  const textureLayout = createInkFillTextureLayout(fill, shape);
   const texture = mesh.userData.inkFillTexture as DataTexture;
   const image = texture.image as { data: Uint8Array; width: number; height: number };
-  if (image.width !== fill.width || image.height !== fill.height) {
-    const replacement = new DataTexture(new Uint8Array(fill.rgba), fill.width, fill.height, RGBAFormat, UnsignedByteType);
-    replacement.magFilter = NearestFilter;
-    replacement.minFilter = NearestFilter;
-    replacement.generateMipmaps = false;
-    replacement.needsUpdate = true;
+  if (image.width !== textureLayout.width || image.height !== textureLayout.height) {
+    const replacement = createInkFillTexture(textureLayout);
     (mesh.material as ShaderMaterial).uniforms.inkFillMap!.value = replacement;
     mesh.userData.inkFillTexture = replacement;
     texture.dispose();
   } else {
     let firstChanged = -1;
     let lastChanged = -1;
-    for (let index = 0; index < fill.rgba.length; index += 1) {
-      const next = fill.rgba[index] ?? 0;
+    for (let index = 0; index < textureLayout.data.length; index += 1) {
+      const next = textureLayout.data[index] ?? 0;
       if (image.data[index] === next) continue;
       image.data[index] = next;
       if (firstChanged < 0) firstChanged = index;
@@ -651,6 +660,8 @@ function updateInkFillSurfaceMesh(mesh: Mesh, fill: CompiledInkFillSurface, shap
   const material = mesh.material as ShaderMaterial;
   (material.uniforms.inkFillUvMin!.value as Vector2).set(crop.minX, crop.minY);
   (material.uniforms.inkFillUvSize!.value as Vector2).set(crop.width, crop.height);
+  (material.uniforms.inkFillTextureUvOffset!.value as Vector2).copy(textureLayout.uvOffset);
+  (material.uniforms.inkFillTextureUvScale!.value as Vector2).copy(textureLayout.uvScale);
   const geometryKey = getInkFillGeometryKey(fill, shape);
   if (mesh.userData.inkFillGeometryKey !== geometryKey) {
     mesh.geometry.dispose();
@@ -666,10 +677,71 @@ function disposeInkFillSurfaceMesh(mesh: Mesh): void {
   (mesh.material as ShaderMaterial).dispose();
 }
 
+type InkFillTextureLayout = Readonly<{
+  data: Uint8Array;
+  width: number;
+  height: number;
+  uvOffset: Vector2;
+  uvScale: Vector2;
+}>;
+
+/**
+ * Internal compact-chart boundaries receive transparent guard texels. A Fill
+ * touching the finite chart boundary has no guard on that side, so hardware
+ * clamp-to-edge repeats its authored border texel across numerical UV drift.
+ */
+function createInkFillTextureLayout(fill: CompiledInkFillSurface, shape: InkShape): InkFillTextureLayout {
+  const dimensions = getInkFillChartDimensions(fill, shape);
+  if (!dimensions) {
+    return {
+      data: new Uint8Array(fill.rgba),
+      width: fill.width,
+      height: fill.height,
+      uvOffset: new Vector2(),
+      uvScale: new Vector2(1, 1),
+    };
+  }
+  const leftGuard = fill.minX > 0 ? 1 : 0;
+  const rightGuard = fill.minX + fill.width < dimensions.width ? 1 : 0;
+  const bottomGuard = fill.minY > 0 ? 1 : 0;
+  const topGuard = fill.minY + fill.height < dimensions.height ? 1 : 0;
+  const width = leftGuard + fill.width + rightGuard;
+  const height = bottomGuard + fill.height + topGuard;
+  const data = new Uint8Array(width * height * 4);
+  for (let y = 0; y < fill.height; y += 1) {
+    const sourceOffset = y * fill.width * 4;
+    const destinationOffset = ((y + bottomGuard) * width + leftGuard) * 4;
+    data.set(fill.rgba.slice(sourceOffset, sourceOffset + fill.width * 4), destinationOffset);
+  }
+  return {
+    data,
+    width,
+    height,
+    uvOffset: new Vector2(leftGuard / width, bottomGuard / height),
+    uvScale: new Vector2(fill.width / width, fill.height / height),
+  };
+}
+
+function createInkFillTexture(layout: InkFillTextureLayout): DataTexture {
+  const texture = new DataTexture(layout.data, layout.width, layout.height, RGBAFormat, UnsignedByteType);
+  configureInkFillTexture(texture);
+  return texture;
+}
+
+function configureInkFillTexture(texture: DataTexture): void {
+  texture.magFilter = NearestFilter;
+  texture.minFilter = NearestFilter;
+  texture.wrapS = ClampToEdgeWrapping;
+  texture.wrapT = ClampToEdgeWrapping;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+}
+
 function createInkFillSurfaceMaterial(
   texture: DataTexture,
   fill: CompiledInkFillSurface,
   shape: InkShape,
+  textureLayout: InkFillTextureLayout,
   lighting: InkFillLightingState,
 ): ShaderMaterial {
   const crop = getInkFillCrop(fill, shape);
@@ -678,6 +750,8 @@ function createInkFillSurfaceMaterial(
       inkFillMap: { value: texture },
       inkFillUvMin: { value: new Vector2(crop.minX, crop.minY) },
       inkFillUvSize: { value: new Vector2(crop.width, crop.height) },
+      inkFillTextureUvOffset: { value: textureLayout.uvOffset.clone() },
+      inkFillTextureUvScale: { value: textureLayout.uvScale.clone() },
       inkLightDirection: { value: lighting.lightDirection },
       inkAmbientIrradiance: { value: lighting.ambientIrradiance },
       inkHardShadowMap: lighting.hardShadowMap,
@@ -709,6 +783,8 @@ void main() {
 uniform sampler2D inkFillMap;
 uniform vec2 inkFillUvMin;
 uniform vec2 inkFillUvSize;
+uniform vec2 inkFillTextureUvOffset;
+uniform vec2 inkFillTextureUvScale;
 uniform vec3 inkLightDirection;
 uniform vec3 inkAmbientIrradiance;
 uniform sampler2DShadow inkHardShadowMap;
@@ -745,8 +821,7 @@ float sampleInkHardShadowPcf(vec3 shadowUvDepth) {
 
 void main() {
   vec2 fillUv = (vInkFillUv - inkFillUvMin) / inkFillUvSize;
-  if (fillUv.x < 0.0 || fillUv.x > 1.0 || fillUv.y < 0.0 || fillUv.y > 1.0) discard;
-  vec4 colour = texture2D(inkFillMap, fillUv);
+  vec4 colour = texture2D(inkFillMap, inkFillTextureUvOffset + fillUv * inkFillTextureUvScale);
   if (colour.a < 0.5) discard;
   vec3 normal = normalize(vInkWorldNormal);
   if (!gl_FrontFacing) normal = -normal;
@@ -800,28 +875,31 @@ void main() {
   });
 }
 
-function createInkSphereFillAlphaUniforms(emptyFillAlphaTexture: Texture): Record<string, { value: Texture | Vector4 }> {
-  const uniforms: Record<string, { value: Texture | Vector4 }> = {};
+function createInkSphereFillAlphaUniforms(emptyFillAlphaTexture: Texture): Record<string, { value: Texture | Vector2 | Vector4 }> {
+  const uniforms: Record<string, { value: Texture | Vector2 | Vector4 }> = {};
   for (const face of INK_SPHERE_FILL_UNIFORMS) {
     uniforms[face.name] = { value: emptyFillAlphaTexture };
     uniforms[`${face.name}Crop`] = { value: EMPTY_INK_FILL_ALPHA_CROP.clone() };
+    uniforms[`${face.name}TextureUvOffset`] = { value: EMPTY_INK_FILL_TEXTURE_UV_OFFSET.clone() };
+    uniforms[`${face.name}TextureUvScale`] = { value: EMPTY_INK_FILL_TEXTURE_UV_SCALE.clone() };
   }
   return uniforms;
 }
 
-function createInkCylinderFillAlphaUniforms(height: number, emptyFillAlphaTexture: Texture): Record<string, { value: Texture | Vector4 | number }> {
+function createInkCylinderFillAlphaUniforms(height: number, emptyFillAlphaTexture: Texture): Record<string, { value: Texture | Vector2 | Vector4 | number }> {
   return {
     inkFillSide: { value: emptyFillAlphaTexture },
     inkFillSideCrop: { value: EMPTY_INK_FILL_ALPHA_CROP.clone() },
+    inkFillSideTextureUvOffset: { value: EMPTY_INK_FILL_TEXTURE_UV_OFFSET.clone() },
+    inkFillSideTextureUvScale: { value: EMPTY_INK_FILL_TEXTURE_UV_SCALE.clone() },
     inkCylinderHeight: { value: height },
   };
 }
 
 const INK_SURFACE_FILL_ALPHA_HELPER = `
-float sampleInkFillAlpha(sampler2D map, vec4 crop, vec2 chartUv) {
+float sampleInkFillAlpha(sampler2D map, vec4 crop, vec2 textureUvOffset, vec2 textureUvScale, vec2 chartUv) {
   vec2 textureUv = (chartUv - crop.xy) / crop.zw;
-  if (textureUv.x < 0.0 || textureUv.x > 1.0 || textureUv.y < 0.0 || textureUv.y > 1.0) return 0.0;
-  return texture2D(map, textureUv).a;
+  return texture2D(map, textureUvOffset + textureUv * textureUvScale).a;
 }`;
 
 const INK_SPHERE_FILL_ALPHA_FRAGMENT = `
@@ -837,6 +915,18 @@ uniform vec4 inkFillPositiveYCrop;
 uniform vec4 inkFillNegativeYCrop;
 uniform vec4 inkFillPositiveZCrop;
 uniform vec4 inkFillNegativeZCrop;
+uniform vec2 inkFillPositiveXTextureUvOffset;
+uniform vec2 inkFillNegativeXTextureUvOffset;
+uniform vec2 inkFillPositiveYTextureUvOffset;
+uniform vec2 inkFillNegativeYTextureUvOffset;
+uniform vec2 inkFillPositiveZTextureUvOffset;
+uniform vec2 inkFillNegativeZTextureUvOffset;
+uniform vec2 inkFillPositiveXTextureUvScale;
+uniform vec2 inkFillNegativeXTextureUvScale;
+uniform vec2 inkFillPositiveYTextureUvScale;
+uniform vec2 inkFillNegativeYTextureUvScale;
+uniform vec2 inkFillPositiveZTextureUvScale;
+uniform vec2 inkFillNegativeZTextureUvScale;
 ${INK_SURFACE_FILL_ALPHA_HELPER}
 
 float getInkSurfaceFillAlpha() {
@@ -848,8 +938,8 @@ float getInkSurfaceFillAlpha() {
       ? vec2(direction.z / divisor, direction.y / divisor) * 0.5 + 0.5
       : vec2(-direction.z / divisor, direction.y / divisor) * 0.5 + 0.5;
     return direction.x >= 0.0
-      ? sampleInkFillAlpha(inkFillPositiveX, inkFillPositiveXCrop, chartUv)
-      : sampleInkFillAlpha(inkFillNegativeX, inkFillNegativeXCrop, chartUv);
+      ? sampleInkFillAlpha(inkFillPositiveX, inkFillPositiveXCrop, inkFillPositiveXTextureUvOffset, inkFillPositiveXTextureUvScale, chartUv)
+      : sampleInkFillAlpha(inkFillNegativeX, inkFillNegativeXCrop, inkFillNegativeXTextureUvOffset, inkFillNegativeXTextureUvScale, chartUv);
   }
   if (magnitude.y >= magnitude.z) {
     float divisor = max(0.00000001, magnitude.y);
@@ -857,28 +947,30 @@ float getInkSurfaceFillAlpha() {
       ? vec2(direction.x / divisor, direction.z / divisor) * 0.5 + 0.5
       : vec2(direction.x / divisor, -direction.z / divisor) * 0.5 + 0.5;
     return direction.y >= 0.0
-      ? sampleInkFillAlpha(inkFillPositiveY, inkFillPositiveYCrop, chartUv)
-      : sampleInkFillAlpha(inkFillNegativeY, inkFillNegativeYCrop, chartUv);
+      ? sampleInkFillAlpha(inkFillPositiveY, inkFillPositiveYCrop, inkFillPositiveYTextureUvOffset, inkFillPositiveYTextureUvScale, chartUv)
+      : sampleInkFillAlpha(inkFillNegativeY, inkFillNegativeYCrop, inkFillNegativeYTextureUvOffset, inkFillNegativeYTextureUvScale, chartUv);
   }
   float divisor = max(0.00000001, magnitude.z);
   vec2 chartUv = direction.z >= 0.0
     ? vec2(direction.x / divisor, direction.y / divisor) * 0.5 + 0.5
     : vec2(-direction.x / divisor, direction.y / divisor) * 0.5 + 0.5;
   return direction.z >= 0.0
-    ? sampleInkFillAlpha(inkFillPositiveZ, inkFillPositiveZCrop, chartUv)
-    : sampleInkFillAlpha(inkFillNegativeZ, inkFillNegativeZCrop, chartUv);
+    ? sampleInkFillAlpha(inkFillPositiveZ, inkFillPositiveZCrop, inkFillPositiveZTextureUvOffset, inkFillPositiveZTextureUvScale, chartUv)
+    : sampleInkFillAlpha(inkFillNegativeZ, inkFillNegativeZCrop, inkFillNegativeZTextureUvOffset, inkFillNegativeZTextureUvScale, chartUv);
 }`;
 
 const INK_CYLINDER_FILL_ALPHA_FRAGMENT = `
 uniform sampler2D inkFillSide;
 uniform vec4 inkFillSideCrop;
+uniform vec2 inkFillSideTextureUvOffset;
+uniform vec2 inkFillSideTextureUvScale;
 uniform float inkCylinderHeight;
 ${INK_SURFACE_FILL_ALPHA_HELPER}
 
 float getInkSurfaceFillAlpha() {
   float angle = atan(vInkSurfacePosition.z, vInkSurfacePosition.x);
   vec2 chartUv = vec2(angle / (3.141592653589793 * 2.0) + 0.5, vInkSurfacePosition.y / inkCylinderHeight + 0.5);
-  return sampleInkFillAlpha(inkFillSide, inkFillSideCrop, chartUv);
+  return sampleInkFillAlpha(inkFillSide, inkFillSideCrop, inkFillSideTextureUvOffset, inkFillSideTextureUvScale, chartUv);
 }`;
 
 /**
@@ -892,6 +984,8 @@ function createInkFillHardShadowDepthMaterial(fillMaterial: ShaderMaterial): Sha
       inkFillMap: fillMaterial.uniforms.inkFillMap!,
       inkFillUvMin: fillMaterial.uniforms.inkFillUvMin!,
       inkFillUvSize: fillMaterial.uniforms.inkFillUvSize!,
+      inkFillTextureUvOffset: fillMaterial.uniforms.inkFillTextureUvOffset!,
+      inkFillTextureUvScale: fillMaterial.uniforms.inkFillTextureUvScale!,
     },
     depthTest: true,
     depthWrite: true,
@@ -907,11 +1001,12 @@ void main() {
 uniform sampler2D inkFillMap;
 uniform vec2 inkFillUvMin;
 uniform vec2 inkFillUvSize;
+uniform vec2 inkFillTextureUvOffset;
+uniform vec2 inkFillTextureUvScale;
 varying vec2 vInkFillUv;
 void main() {
   vec2 fillUv = (vInkFillUv - inkFillUvMin) / inkFillUvSize;
-  if (fillUv.x < 0.0 || fillUv.x > 1.0 || fillUv.y < 0.0 || fillUv.y > 1.0) discard;
-  if (texture2D(inkFillMap, fillUv).a < 0.5) discard;
+  if (texture2D(inkFillMap, inkFillTextureUvOffset + fillUv * inkFillTextureUvScale).a < 0.5) discard;
   gl_FragColor = vec4(1.0);
 }`,
   });
@@ -1045,16 +1140,21 @@ function createFrustumFillSurfaceGeometry(shape: Extract<InkShape, { kind: 'frus
 
 function getInkFillCrop(fill: CompiledInkFillSurface, shape: InkShape): { minX: number; minY: number; width: number; height: number } {
   if (shape.kind === 'plane') return { minX: 0, minY: 0, width: 1, height: 1 };
-  const dimensions = shape.kind === 'cuboid' && isInkCuboidFace(fill.id)
+  const dimensions = getInkFillChartDimensions(fill, shape) ?? { width: 1, height: 1 };
+  return { minX: fill.minX / dimensions.width, minY: fill.minY / dimensions.height, width: fill.width / dimensions.width, height: fill.height / dimensions.height };
+}
+
+function getInkFillChartDimensions(fill: CompiledInkFillSurface, shape: InkShape): { width: number; height: number } | null {
+  if (shape.kind === 'plane') return null;
+  return shape.kind === 'cuboid' && isInkCuboidFace(fill.id)
     ? getCuboidFaceFillDimensions(shape, fill.id)
     : shape.kind === 'sphere' && isInkCuboidFace(fill.id)
       ? { width: Math.max(1, Math.ceil(shape.radius * 2 * INK_FILL_PIXELS_PER_WORLD_UNIT)), height: Math.max(1, Math.ceil(shape.radius * 2 * INK_FILL_PIXELS_PER_WORLD_UNIT)) }
       : shape.kind === 'cylinder'
         ? getCylinderFillDimensions(shape, fill.id)
-        : shape.kind === 'frustum' && isInkCuboidFace(fill.id)
+      : shape.kind === 'frustum' && isInkCuboidFace(fill.id)
           ? getFrustumFillDimensions(shape, fill.id)
-      : { width: 1, height: 1 };
-  return { minX: fill.minX / dimensions.width, minY: fill.minY / dimensions.height, width: fill.width / dimensions.width, height: fill.height / dimensions.height };
+      : null;
 }
 
 function getInkFillGeometryKey(fill: CompiledInkFillSurface, shape: InkShape): string {

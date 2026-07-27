@@ -25,6 +25,8 @@ import {
   type WebGLRenderer,
 } from 'three';
 import {
+  bucketFillInkShape,
+  compileInkFill,
   compileInkShape,
   createInkCuboidShape,
   createInkCylinderGeometry,
@@ -302,6 +304,49 @@ describe('Reference rendering', () => {
     }
 
     disposeObjectTree(root);
+  });
+
+  it('uses transparent guards for internal Fill crops and clamps authored finite chart edges', () => {
+    const cylinder = createInkCylinderShape();
+    const full = bucketFillInkShape(cylinder, { surface: 'side', u: 0, v: 0, pressure: 1 }, '#29adff');
+    const fullSide = compileInkFill(full).find((surface) => surface.id === 'side')!;
+    const fullRoot = createInkShapeRenderRoot(compileInkShape(full), full, createInkFillLightingState());
+    const fullMesh = fullRoot.getObjectByName('InkFillSurface') as Mesh;
+    const fullTexture = fullMesh.userData.inkFillTexture;
+    const fullMaterial = fullMesh.material as ShaderMaterial;
+    expect(fullTexture.image.width).toBe(fullSide.width);
+    expect(fullTexture.image.height).toBe(fullSide.height);
+    expect(fullMaterial.uniforms.inkFillTextureUvOffset!.value.toArray()).toEqual([0, 0]);
+    expect(fullMaterial.uniforms.inkFillTextureUvScale!.value.toArray()).toEqual([1, 1]);
+
+    const partial = paintInkFill(
+      cylinder,
+      [{ surface: 'side', u: 0, v: 0, pressure: 1 }],
+      '#29adff',
+      0.1,
+      'circle',
+      false,
+    );
+    const partialSide = compileInkFill(partial).find((surface) => surface.id === 'side')!;
+    const partialRoot = createInkShapeRenderRoot(compileInkShape(partial), partial, createInkFillLightingState());
+    const partialMesh = partialRoot.getObjectByName('InkFillSurface') as Mesh;
+    const partialTexture = partialMesh.userData.inkFillTexture;
+    const partialMaterial = partialMesh.material as ShaderMaterial;
+    const { width, height, data } = partialTexture.image;
+    expect(partialSide.minX).toBeGreaterThan(0);
+    expect(partialSide.minY).toBeGreaterThan(0);
+    expect(partialSide.minX + partialSide.width).toBeLessThan(Math.ceil(Math.PI * 2 * cylinder.radius * 64));
+    expect(partialSide.minY + partialSide.height).toBeLessThan(Math.ceil(cylinder.height * 64));
+    expect(width).toBe(partialSide.width + 2);
+    expect(height).toBe(partialSide.height + 2);
+    expect(data[3]).toBe(0);
+    expect(data[(width - 1) * 4 + 3]).toBe(0);
+    expect(data[(height - 1) * width * 4 + 3]).toBe(0);
+    expect(data[(width * height - 1) * 4 + 3]).toBe(0);
+    expect(partialMaterial.uniforms.inkFillTextureUvOffset!.value.toArray()).toEqual([1 / width, 1 / height]);
+
+    disposeObjectTree(fullRoot);
+    disposeObjectTree(partialRoot);
   });
 
   it('clips a smooth-surface Ribbon to Fill alpha and releases it when disabled', () => {

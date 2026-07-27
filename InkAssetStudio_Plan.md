@@ -33,7 +33,7 @@ Studio 不是图片画板、Procreate 导入器、远程桌面，也不是完整
 - Sphere 与 Cylinder 提供 Painting 当前的 `surfaceOutline` Shape 配置：可切换启用并设置 `0.001～1` 世界单位宽度，默认值与普通 Outline 宽度同为 `0.035`。它们以视角相关的解析 Ribbon 表达 Sphere 外轮廓或 Cylinder 两条侧面母线，并按 Fill alpha 裁切；没有不透明 Fill 时不显示。Cuboid、Frustum 与 Plane 不提供该配置。曲面描边不进入作者描边编译缓存，关闭时不保留 Mesh 或 GPU 资源。
 - Move 与 Rotate 手柄支持 Unity 风格的 World/Local 坐标空间切换；该选择只属于 Editor Session。Shape 列表在删除按钮左侧提供眼睛按钮，可将指定 Shape 临时排除出绘制、吸色与 Shape 拾取，但不隐藏其已提交 Ink 渲染结果，也不写入作者源、导出、Undo/Redo 或内容 dirty。
 - 提供完整 Ink 工具：描边绘制、描边擦除、填色绘制、填色擦除、Bucket Fill、吸色、颜色调整、可编辑色板、笔刷尺寸、直线辅助、Group/Shape 选择、Undo/Redo。
-- Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。
+- Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。有限 Shape 的紧凑运行时 Fill 纹理在内部裁剪边使用透明 guard texel，在物理图表边使用 `ClampToEdge` 的真实边缘 texel；可见 Fill、Ink 专属硬阴影和曲面描边只按采样 alpha 裁弃，不得以图表 UV 范围数值裁弃。
 - 描边仍是带压力点的可编辑表面坐标序列，并编译为世界宽度 Ribbon。
 
 ### 3.2 压感开关
@@ -279,7 +279,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - 多个 Group 可在同一工作场景中独立选择、摆放、编辑和撤销/重做。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 都支持现有的 Ink 描边与 Fill 规则；Cylinder 的侧面图表在环绕方向连续，Frustum 使用六个表面图表。
 - Sphere/Cylinder 的 `surfaceOutline` 开关和宽度可实时预览、Undo/Redo、保存、导出和重新导入；Sphere 显示无接缝的外轮廓，Cylinder 仅显示两条侧面母线，二者均按 Fill alpha 裁切。
-- 可见 Fill 使用 `DoubleSide` 并在背面翻转光照法线；专属 alpha-clip hard-shadow depth pass 固定 `BackSide`。
+- 可见 Fill 使用 `DoubleSide` 并在背面翻转光照法线；专属 alpha-clip hard-shadow depth pass 固定 `BackSide`。内部紧凑图表裁剪由透明 guard texel 表达，物理图表边缘使用 `ClampToEdge`，三条 alpha 查询路径共享同一纹理 UV 映射。
 - 描边/擦除/填色/Fill 擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成。
 - Apple Pencil 压感开启时记录有效压力；关闭时新描边全部记录为 `1`；切换不会改写历史笔画。
 - 失焦、取消和 Pointer Capture 丢失不会产生半条已保存笔画或卡住的工具状态。
