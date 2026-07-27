@@ -21,25 +21,9 @@ type ShadowCasterState = {
   material: Material | Material[];
 };
 
-type InkShadowTarget = {
-  target: WebGLRenderTarget;
-  depthTexture: DepthTexture;
-};
-
-type InkShadowTargets = {
-  frontFace: InkShadowTarget;
-  backFace: InkShadowTarget;
-};
-
-type ShadowCaptureMaterialKey = 'inkHardShadowFrontFaceDepthMaterial' | 'inkHardShadowBackFaceDepthMaterial';
-
-/**
- * Ink-only paired native depth maps. The BackSide capture is sampled by
- * visible front faces and the FrontSide capture by visible back faces, so a
- * DoubleSide Fill does not compare either visible side with its own depth.
- */
+/** Ink-only native depth map. It never changes Three's PCF shadow configuration. */
 export class InkHardShadowMap {
-  private targets: InkShadowTargets | null = null;
+  private target: WebGLRenderTarget | null = null;
   private width = 0;
   private height = 0;
   private dirty = true;
@@ -55,7 +39,7 @@ export class InkHardShadowMap {
 
   markDirty(): void { this.dirty = true; }
 
-  /** Captures both alpha-clipped Ink Fill sides into native depth textures. */
+  /** Captures only alpha-clipped Ink Fill casters into a native depth texture. */
   renderIfNeeded(force = false): void {
     this.lighting.hardShadowRadius.value = this.light.shadow.radius;
     if (this.disabled || (!force && !this.dirty)) return;
@@ -73,26 +57,27 @@ export class InkHardShadowMap {
       this.onWarning(message);
       return;
     }
-    this.ensureTargets(width, height);
-    const targets = this.targets;
-    if (!targets) return;
-
+    this.ensureTarget(width, height);
+    const target = this.target;
+    if (!target) return;
     const casterStates = new Map<Mesh, ShadowCasterState>();
     const suppressedRenderableStates = new Map<Object3D, boolean>();
     this.scene.traverse((object) => {
       if (object instanceof Mesh) {
+        const inkDepthMaterial = object.userData.inkHardShadowDepthMaterial as Material | undefined;
         casterStates.set(object, { visible: object.visible, material: object.material });
+        object.visible = object.visible && inkDepthMaterial !== undefined;
+        if (inkDepthMaterial) object.material = inkDepthMaterial;
         return;
       }
 
       // Suppress non-Mesh renderers so References and editor helpers cannot
-      // affect either isolated Ink-only capture.
+      // affect the isolated Ink-only capture.
       if (hasRendererMaterial(object)) {
         suppressedRenderableStates.set(object, object.visible);
         object.visible = false;
       }
     });
-
     const previousTarget = this.renderer.getRenderTarget();
     const previousAutoClear = this.renderer.autoClear;
     const previousShadowEnabled = this.renderer.shadowMap.enabled;
@@ -100,12 +85,15 @@ export class InkHardShadowMap {
     const previousClearAlpha = this.renderer.getClearAlpha();
     const previousBackground = this.scene.background;
     try {
+      this.renderer.setRenderTarget(target);
       this.renderer.autoClear = true;
       this.renderer.shadowMap.enabled = false;
+      // The native depth attachment is the only sampled output. Keep the scene
+      // background out of this isolated capture and clear its depth to 1.0.
       this.scene.background = null;
       this.renderer.setClearColor(0xffffff, 1);
-      this.renderCapture(targets.backFace.target, casterStates, 'inkHardShadowBackFaceDepthMaterial', camera);
-      this.renderCapture(targets.frontFace.target, casterStates, 'inkHardShadowFrontFaceDepthMaterial', camera);
+      this.renderer.clear(true, true, false);
+      this.renderer.render(this.scene, camera);
       this.lighting.hardShadowMatrix.copy(this.light.shadow.matrix);
       this.lighting.hardShadowEnabled.value = 1;
       this.dirty = false;
@@ -124,62 +112,35 @@ export class InkHardShadowMap {
   }
 
   dispose(): void {
-    this.targets?.frontFace.target.dispose();
-    this.targets?.backFace.target.dispose();
-    this.targets = null;
-    this.lighting.hardShadowFrontFaceMap.value = null;
-    this.lighting.hardShadowBackFaceMap.value = null;
+    this.target?.dispose();
+    this.target = null;
+    this.lighting.hardShadowMap.value = null;
     this.lighting.hardShadowTexelSize.set(1, 1);
     this.lighting.hardShadowEnabled.value = 0;
   }
 
-  private renderCapture(
-    target: WebGLRenderTarget,
-    casterStates: Map<Mesh, ShadowCasterState>,
-    materialKey: ShadowCaptureMaterialKey,
-    camera: DirectionalLight['shadow']['camera'],
-  ): void {
-    casterStates.forEach((state, mesh) => {
-      const material = mesh.userData[materialKey] as Material | undefined;
-      mesh.visible = state.visible && material !== undefined;
-      if (material) mesh.material = material;
+  private ensureTarget(width: number, height: number): void {
+    if (this.target && this.width === width && this.height === height) return;
+    this.target?.dispose();
+    const depthTexture = new DepthTexture(width, height, UnsignedIntType);
+    depthTexture.name = 'InkHardShadowMap.depth';
+    depthTexture.format = DepthFormat;
+    depthTexture.compareFunction = LessEqualCompare;
+    depthTexture.minFilter = LinearFilter;
+    depthTexture.magFilter = LinearFilter;
+    depthTexture.generateMipmaps = false;
+    this.target = new WebGLRenderTarget(width, height, {
+      depthBuffer: true,
+      depthTexture,
+      stencilBuffer: false,
     });
-    this.renderer.setRenderTarget(target);
-    this.renderer.clear(true, true, false);
-    this.renderer.render(this.scene, camera);
-  }
-
-  private ensureTargets(width: number, height: number): void {
-    if (this.targets && this.width === width && this.height === height) return;
-    this.targets?.frontFace.target.dispose();
-    this.targets?.backFace.target.dispose();
-    const frontFace = createInkShadowTarget(width, height, 'InkHardShadowMap.front-face');
-    const backFace = createInkShadowTarget(width, height, 'InkHardShadowMap.back-face');
-    this.targets = { frontFace, backFace };
+    this.target.texture.name = 'InkHardShadowMap.unused-colour';
+    this.target.texture.generateMipmaps = false;
     this.width = width;
     this.height = height;
-    this.lighting.hardShadowFrontFaceMap.value = frontFace.depthTexture as Texture;
-    this.lighting.hardShadowBackFaceMap.value = backFace.depthTexture as Texture;
+    this.lighting.hardShadowMap.value = depthTexture as Texture;
     this.lighting.hardShadowTexelSize.set(1 / width, 1 / height);
   }
-}
-
-function createInkShadowTarget(width: number, height: number, name: string): InkShadowTarget {
-  const depthTexture = new DepthTexture(width, height, UnsignedIntType);
-  depthTexture.name = `${name}.depth`;
-  depthTexture.format = DepthFormat;
-  depthTexture.compareFunction = LessEqualCompare;
-  depthTexture.minFilter = LinearFilter;
-  depthTexture.magFilter = LinearFilter;
-  depthTexture.generateMipmaps = false;
-  const target = new WebGLRenderTarget(width, height, {
-    depthBuffer: true,
-    depthTexture,
-    stencilBuffer: false,
-  });
-  target.texture.name = `${name}.unused-colour`;
-  target.texture.generateMipmaps = false;
-  return { target, depthTexture };
 }
 
 /** Mesh is handled separately so it can be tested as an approved caster. */

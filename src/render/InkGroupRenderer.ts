@@ -6,7 +6,6 @@ import {
   DataTexture,
   DynamicDrawUsage,
   DoubleSide,
-  FrontSide,
   Float32BufferAttribute,
   Group,
   Mesh,
@@ -21,7 +20,6 @@ import {
   Vector2,
   Vector3,
   Vector4,
-  type Side,
 } from 'three';
 import {
   DEFAULT_INK_STROKE_COLOR,
@@ -42,8 +40,7 @@ import {
 export type InkFillLightingState = {
   lightDirection: Vector3;
   ambientIrradiance: Vector3;
-  hardShadowFrontFaceMap: { value: Texture | null };
-  hardShadowBackFaceMap: { value: Texture | null };
+  hardShadowMap: { value: Texture | null };
   hardShadowMatrix: Matrix4;
   hardShadowTexelSize: Vector2;
   hardShadowRadius: { value: number };
@@ -54,8 +51,7 @@ export function createInkFillLightingState(): InkFillLightingState {
   return {
     lightDirection: new Vector3(-4.5, 7.5, 4.5).normalize(),
     ambientIrradiance: new Vector3(0.22, 0.22, 0.22),
-    hardShadowFrontFaceMap: { value: null },
-    hardShadowBackFaceMap: { value: null },
+    hardShadowMap: { value: null },
     hardShadowMatrix: new Matrix4(),
     hardShadowTexelSize: new Vector2(1, 1),
     hardShadowRadius: { value: 1 },
@@ -606,11 +602,9 @@ function createInkFillSurfaceMesh(fill: CompiledInkFillSurface, shape: InkShape,
   mesh.userData.inkFillSurfaceId = fill.id;
   mesh.userData.inkFillTexture = texture;
   mesh.userData.inkFillGeometryKey = getInkFillGeometryKey(fill, shape);
-  // These two alpha-clipped materials are used only by InkHardShadowMap.
-  // Front-facing visible fragments sample the BackSide capture; back-facing
-  // visible fragments sample the FrontSide capture.
-  mesh.userData.inkHardShadowBackFaceDepthMaterial = createInkFillHardShadowDepthMaterial(material, BackSide);
-  mesh.userData.inkHardShadowFrontFaceDepthMaterial = createInkFillHardShadowDepthMaterial(material, FrontSide);
+  // This material is used only by InkHardShadowMap. Keeping it separate from
+  // castShadow prevents Ink from entering the shared PBR/Reference shadow map.
+  mesh.userData.inkHardShadowDepthMaterial = createInkFillHardShadowDepthMaterial(material);
   return mesh;
 }
 
@@ -667,8 +661,7 @@ function updateInkFillSurfaceMesh(mesh: Mesh, fill: CompiledInkFillSurface, shap
 
 function disposeInkFillSurfaceMesh(mesh: Mesh): void {
   (mesh.userData.inkFillTexture as DataTexture | undefined)?.dispose();
-  (mesh.userData.inkHardShadowBackFaceDepthMaterial as ShaderMaterial | undefined)?.dispose();
-  (mesh.userData.inkHardShadowFrontFaceDepthMaterial as ShaderMaterial | undefined)?.dispose();
+  (mesh.userData.inkHardShadowDepthMaterial as ShaderMaterial | undefined)?.dispose();
   mesh.geometry.dispose();
   (mesh.material as ShaderMaterial).dispose();
 }
@@ -687,8 +680,7 @@ function createInkFillSurfaceMaterial(
       inkFillUvSize: { value: new Vector2(crop.width, crop.height) },
       inkLightDirection: { value: lighting.lightDirection },
       inkAmbientIrradiance: { value: lighting.ambientIrradiance },
-      inkHardShadowFrontFaceMap: lighting.hardShadowFrontFaceMap,
-      inkHardShadowBackFaceMap: lighting.hardShadowBackFaceMap,
+      inkHardShadowMap: lighting.hardShadowMap,
       inkHardShadowMatrix: { value: lighting.hardShadowMatrix },
       inkHardShadowTexelSize: { value: lighting.hardShadowTexelSize },
       inkHardShadowRadius: lighting.hardShadowRadius,
@@ -719,8 +711,7 @@ uniform vec2 inkFillUvMin;
 uniform vec2 inkFillUvSize;
 uniform vec3 inkLightDirection;
 uniform vec3 inkAmbientIrradiance;
-uniform sampler2DShadow inkHardShadowFrontFaceMap;
-uniform sampler2DShadow inkHardShadowBackFaceMap;
+uniform sampler2DShadow inkHardShadowMap;
 uniform mat4 inkHardShadowMatrix;
 uniform vec2 inkHardShadowTexelSize;
 uniform float inkHardShadowRadius;
@@ -740,27 +731,15 @@ vec2 inkVogelDiskSample(int sampleIndex, int sampleCount, float phi) {
   return vec2(cos(theta), sin(theta)) * radius;
 }
 
-float sampleInkHardShadowFrontFacePcf(vec3 shadowUvDepth) {
+float sampleInkHardShadowPcf(vec3 shadowUvDepth) {
   float radius = inkHardShadowRadius * inkHardShadowTexelSize.x;
   const float phi = 0.0;
   return (
-    texture(inkHardShadowFrontFaceMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(0, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowFrontFaceMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(1, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowFrontFaceMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(2, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowFrontFaceMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(3, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowFrontFaceMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(4, 5, phi) * radius, shadowUvDepth.z))
-  ) * 0.2;
-}
-
-float sampleInkHardShadowBackFacePcf(vec3 shadowUvDepth) {
-  float radius = inkHardShadowRadius * inkHardShadowTexelSize.x;
-  const float phi = 0.0;
-  return (
-    texture(inkHardShadowBackFaceMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(0, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowBackFaceMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(1, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowBackFaceMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(2, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowBackFaceMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(3, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowBackFaceMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(4, 5, phi) * radius, shadowUvDepth.z))
+    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(0, 5, phi) * radius, shadowUvDepth.z)) +
+    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(1, 5, phi) * radius, shadowUvDepth.z)) +
+    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(2, 5, phi) * radius, shadowUvDepth.z)) +
+    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(3, 5, phi) * radius, shadowUvDepth.z)) +
+    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(4, 5, phi) * radius, shadowUvDepth.z))
   ) * 0.2;
 }
 
@@ -781,14 +760,7 @@ void main() {
     bool inside = shadowUvDepth.x >= 0.0 && shadowUvDepth.x <= 1.0
       && shadowUvDepth.y >= 0.0 && shadowUvDepth.y <= 1.0
       && shadowUvDepth.z >= 0.0 && shadowUvDepth.z <= 1.0;
-    if (inside) {
-      // Pair each visible side with the opposite capture side so a DoubleSide
-      // Fill does not compare its inner surface against its own depth.
-      float shadowVisibility = gl_FrontFacing
-        ? sampleInkHardShadowBackFacePcf(shadowUvDepth)
-        : sampleInkHardShadowFrontFacePcf(shadowUvDepth);
-      if (shadowVisibility <= 0.5) directBand = 0.5;
-    }
+    if (inside && sampleInkHardShadowPcf(shadowUvDepth) <= 0.5) directBand = 0.5;
   }
   gl_FragColor = vec4(colour.rgb * (vec3(directBand) + inkAmbientIrradiance), 1.0);
 }`,
@@ -914,7 +886,7 @@ float getInkSurfaceFillAlpha() {
  * the visible Fill shader. Otherwise each sparse Fill atlas would cast its
  * whole rectangular chart into the scene.
  */
-function createInkFillHardShadowDepthMaterial(fillMaterial: ShaderMaterial, side: Side): ShaderMaterial {
+function createInkFillHardShadowDepthMaterial(fillMaterial: ShaderMaterial): ShaderMaterial {
   return new ShaderMaterial({
     uniforms: {
       inkFillMap: fillMaterial.uniforms.inkFillMap!,
@@ -924,7 +896,7 @@ function createInkFillHardShadowDepthMaterial(fillMaterial: ShaderMaterial, side
     depthTest: true,
     depthWrite: true,
     colorWrite: false,
-    side,
+    side: BackSide,
     vertexShader: `
 varying vec2 vInkFillUv;
 void main() {
@@ -995,12 +967,8 @@ function createSphereFillSurfaceGeometry(id: InkCuboidFace): BufferGeometry {
   }
   geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
   geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
-  // Sphere Fill keeps six independent UV charts, so chart-edge vertices must
-  // remain duplicated. Their positions already lie on the unit sphere: reuse
-  // that radial direction as the normal so matching seam positions shade
-  // identically instead of receiving each chart's one-sided face normal.
-  geometry.setAttribute('normal', new Float32BufferAttribute(positions, 3));
   geometry.setIndex(indices);
+  geometry.computeVertexNormals();
   return geometry;
 }
 

@@ -71,7 +71,7 @@ Studio 只提供下列渲染路径：
 | Ink 专属硬阴影 | 开启 | 保留 Ink 视觉表现必须的硬阴影。 |
 | 常规 PCF 阴影、GTAO、PMREM | 关闭 | 不运行与移动端 Ink 创作无关的重型路径。 |
 
-Ink 硬阴影复用 Painting 已确认的语义：两张原生 `DepthTexture`（`LessEqual` 比较、线性过滤、无 mipmap）目标密度各固定为 `64 px / 世界单位`，不改变 Three.js 的常规 PCF 阴影配置。可见 Fill 保持 `DoubleSide`，专属 alpha-clip depth pass 分别固定为 `FrontSide` 与 `BackSide` 且关闭颜色写入；它们只捕获 Ink Fill，不包含 Studio 的 Reference、描边或编辑辅助。屏幕正面 Fill 片元只采样 BackSide capture，背面片元只采样 FrontSide capture。接收端不使用 depth 或 normal bias，以原始世界位置和深度经 `sampler2DShadow` 对选定图进行五次固定朝向 Vogel-disk 硬件 PCF 采样；连续可见度只在最终阈值处二值化，`<= 0.5` 时进入 `0.5` 的暗档，其他情况保持 `1.0`，不保留中间灰度，也不使用 PBR 的逐像素随机旋转核。Studio 的 Reference 地形不投射、不接收此 Ink 专属阴影；两张深度图只在 Ink 投射/接收对象的 Transform 或几何、以及灯光方向等真实输入改变时失效，并在失效时连续重建。地形 Reference、灯光颜色和强度的变化不得无故重建阴影深度图。若设备最大纹理尺寸不足，Studio 必须显示清晰的可恢复提示，而不是悄悄改变作品数据。
+Ink 硬阴影复用 Painting 已确认的语义：单张原生 `DepthTexture`（`LessEqual` 比较、线性过滤、无 mipmap）目标密度固定为 `64 px / 世界单位`，不改变 Three.js 的常规 PCF 阴影配置。可见 Fill 保持 `DoubleSide`，专属 alpha-clip depth pass 固定 `BackSide` 且关闭颜色写入；它只捕获 Ink Fill，不包含 Studio 的 Reference、描边或编辑辅助。亮面接收端不使用 depth 或 normal bias，以原始世界位置和深度经 `sampler2DShadow` 进行五次固定朝向 Vogel-disk 硬件 PCF 采样；连续可见度只在最终阈值处二值化，`<= 0.5` 时进入 `0.5` 的暗档，其他情况保持 `1.0`，不保留中间灰度，也不使用 PBR 的逐像素随机旋转核。Studio 的 Reference 地形不投射、不接收此 Ink 专属阴影；该深度图只在 Ink 投射/接收对象的 Transform 或几何、以及灯光方向等真实输入改变时失效。地形 Reference、灯光颜色和强度的变化不得无故重建阴影深度图。若设备最大纹理尺寸不足，Studio 必须显示清晰的可恢复提示，而不是悄悄改变作品数据。
 
 ### 3.5 灯光预览
 
@@ -279,7 +279,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - 多个 Group 可在同一工作场景中独立选择、摆放、编辑和撤销/重做。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 都支持现有的 Ink 描边与 Fill 规则；Cylinder 的侧面图表在环绕方向连续，Frustum 使用六个表面图表。
 - Sphere/Cylinder 的 `surfaceOutline` 开关和宽度可实时预览、Undo/Redo、保存、导出和重新导入；Sphere 显示无接缝的外轮廓，Cylinder 仅显示两条侧面母线，二者均按 Fill alpha 裁切。
-- 可见 Fill 使用 `DoubleSide` 并在背面翻转光照法线；专属 alpha-clip hard-shadow depth pass 成对使用 `FrontSide` 与 `BackSide`。Sphere 保留六张独立 UV 图表，但 Fill 顶点法线固定使用单位位置方向，以保证跨图表的相同位置法线完全一致。
+- 可见 Fill 使用 `DoubleSide` 并在背面翻转光照法线；专属 alpha-clip hard-shadow depth pass 固定 `BackSide`。
 - 描边/擦除/填色/Fill 擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成。
 - Apple Pencil 压感开启时记录有效压力；关闭时新描边全部记录为 `1`；切换不会改写历史笔画。
 - 失焦、取消和 Pointer Capture 丢失不会产生半条已保存笔画或卡住的工具状态。
