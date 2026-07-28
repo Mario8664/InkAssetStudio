@@ -1,5 +1,4 @@
 import {
-  BackSide,
   BufferAttribute,
   BufferGeometry,
   Camera,
@@ -42,22 +41,47 @@ export type InkFillLightingState = {
   lightDirection: Vector3;
   ambientIrradiance: Vector3;
   hardShadowMap: { value: Texture | null };
+  hardShadowOwnerMap: { value: Texture | null };
   hardShadowMatrix: Matrix4;
-  hardShadowTexelSize: Vector2;
-  hardShadowRadius: { value: number };
   hardShadowEnabled: { value: number };
+  hardShadowOwnerMapEnabled: { value: number };
 };
+
+/** Zero is background; the red owner channel provides 255 concurrent Shape IDs. */
+export const INK_HARD_SHADOW_OWNER_ID_LIMIT = 255;
+
+export type InkHardShadowOwnerState = {
+  id: { value: number };
+};
+
+const INK_HARD_SHADOW_OWNER_STATE_KEY = 'inkHardShadowOwnerState';
 
 export function createInkFillLightingState(): InkFillLightingState {
   return {
     lightDirection: new Vector3(-4.5, 7.5, 4.5).normalize(),
     ambientIrradiance: new Vector3(0.22, 0.22, 0.22),
     hardShadowMap: { value: null },
+    hardShadowOwnerMap: { value: null },
     hardShadowMatrix: new Matrix4(),
-    hardShadowTexelSize: new Vector2(1, 1),
-    hardShadowRadius: { value: 1 },
     hardShadowEnabled: { value: 0 },
+    hardShadowOwnerMapEnabled: { value: 0 },
   };
+}
+
+function getInkHardShadowOwnerState(root: Object3D): InkHardShadowOwnerState {
+  const existing = root.userData[INK_HARD_SHADOW_OWNER_STATE_KEY] as InkHardShadowOwnerState | undefined;
+  if (existing) return existing;
+  const created: InkHardShadowOwnerState = { id: { value: 0 } };
+  root.userData[INK_HARD_SHADOW_OWNER_STATE_KEY] = created;
+  return created;
+}
+
+/** Owner IDs are transient preview state and never enter a Studio work file. */
+export function setInkHardShadowOwnerId(shapeRoot: Object3D, ownerId: number): void {
+  const normalized = Number.isInteger(ownerId) && ownerId > 0
+    ? Math.min(INK_HARD_SHADOW_OWNER_ID_LIMIT, ownerId)
+    : 0;
+  getInkHardShadowOwnerState(shapeRoot).id.value = normalized;
 }
 
 /**
@@ -89,10 +113,11 @@ export function createInkShapeRenderRoot(
   const root = new Group();
   root.name = 'InkShape';
   root.userData.inkShapeId = shape.shapeId;
+  const hardShadowOwner = getInkHardShadowOwnerState(root);
   root.add(createInkShapeContentRoot());
   applyInkShapeRenderTransform(root, source);
   const content = getInkShapeContentRoot(root);
-  for (const fill of shape.fill) content.add(createInkFillSurfaceMesh(fill, source, lighting));
+  for (const fill of shape.fill) content.add(createInkFillSurfaceMesh(fill, source, lighting, hardShadowOwner));
   const outline = createInkShapeRenderMesh(shape, source, false);
   if (outline) content.add(outline);
   const surfaceOutline = createInkSurfaceOutlineRenderer(root, content, source);
@@ -122,7 +147,7 @@ export function updateInkShapeFillSurfaces(
   for (const fill of fills) {
     const mesh = existing.get(fill.id);
     if (mesh) updateInkFillSurfaceMesh(mesh, fill, source);
-    else content.add(createInkFillSurfaceMesh(fill, source, lighting));
+    else content.add(createInkFillSurfaceMesh(fill, source, lighting, getInkHardShadowOwnerState(root)));
   }
 
   updateInkShapeSurfaceOutline(root, source);
@@ -605,10 +630,15 @@ function applyInkShapeContentDimensions(target: Object3D, shape: InkShape): void
   else target.scale.set(1, 1, 1);
 }
 
-function createInkFillSurfaceMesh(fill: CompiledInkFillSurface, shape: InkShape, lighting: InkFillLightingState): Mesh {
+function createInkFillSurfaceMesh(
+  fill: CompiledInkFillSurface,
+  shape: InkShape,
+  lighting: InkFillLightingState,
+  hardShadowOwner: InkHardShadowOwnerState,
+): Mesh {
   const textureLayout = createInkFillTextureLayout(fill, shape);
   const texture = createInkFillTexture(textureLayout);
-  const material = createInkFillSurfaceMaterial(texture, fill, shape, textureLayout, lighting);
+  const material = createInkFillSurfaceMaterial(texture, fill, shape, textureLayout, lighting, hardShadowOwner);
   const mesh = new Mesh(createInkFillSurfaceGeometry(fill, shape), material);
   mesh.name = 'InkFillSurface';
   mesh.userData.inkFillSurfaceId = fill.id;
@@ -743,6 +773,7 @@ function createInkFillSurfaceMaterial(
   shape: InkShape,
   textureLayout: InkFillTextureLayout,
   lighting: InkFillLightingState,
+  hardShadowOwner: InkHardShadowOwnerState,
 ): ShaderMaterial {
   const crop = getInkFillCrop(fill, shape);
   return new ShaderMaterial({
@@ -755,10 +786,11 @@ function createInkFillSurfaceMaterial(
       inkLightDirection: { value: lighting.lightDirection },
       inkAmbientIrradiance: { value: lighting.ambientIrradiance },
       inkHardShadowMap: lighting.hardShadowMap,
+      inkHardShadowOwnerMap: lighting.hardShadowOwnerMap,
       inkHardShadowMatrix: { value: lighting.hardShadowMatrix },
-      inkHardShadowTexelSize: { value: lighting.hardShadowTexelSize },
-      inkHardShadowRadius: lighting.hardShadowRadius,
       inkHardShadowEnabled: lighting.hardShadowEnabled,
+      inkHardShadowOwnerMapEnabled: lighting.hardShadowOwnerMapEnabled,
+      inkHardShadowOwnerId: hardShadowOwner.id,
     },
     transparent: false,
     depthTest: true,
@@ -788,35 +820,19 @@ uniform vec2 inkFillTextureUvScale;
 uniform vec3 inkLightDirection;
 uniform vec3 inkAmbientIrradiance;
 uniform sampler2DShadow inkHardShadowMap;
+uniform sampler2D inkHardShadowOwnerMap;
 uniform mat4 inkHardShadowMatrix;
-uniform vec2 inkHardShadowTexelSize;
-uniform float inkHardShadowRadius;
 uniform float inkHardShadowEnabled;
+uniform float inkHardShadowOwnerMapEnabled;
+uniform float inkHardShadowOwnerId;
 varying vec2 vInkFillUv;
 varying vec3 vInkWorldPosition;
 varying vec3 vInkWorldNormal;
 
-// Each sampler2DShadow lookup performs a linearly filtered hardware depth
-// comparison. Keep the five Vogel-disk offsets fixed: PBR's per-pixel rotation
-// is appropriate for continuous soft light, but becomes visible dither after
-// Ink thresholds that light to a binary band.
-vec2 inkVogelDiskSample(int sampleIndex, int sampleCount, float phi) {
-  const float goldenAngle = 2.399963229728653;
-  float radius = sqrt((float(sampleIndex) + 0.5) / float(sampleCount));
-  float theta = float(sampleIndex) * goldenAngle + phi;
-  return vec2(cos(theta), sin(theta)) * radius;
-}
-
-float sampleInkHardShadowPcf(vec3 shadowUvDepth) {
-  float radius = inkHardShadowRadius * inkHardShadowTexelSize.x;
-  const float phi = 0.0;
-  return (
-    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(0, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(1, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(2, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(3, 5, phi) * radius, shadowUvDepth.z)) +
-    texture(inkHardShadowMap, vec3(shadowUvDepth.xy + inkVogelDiskSample(4, 5, phi) * radius, shadowUvDepth.z))
-  ) * 0.2;
+bool isInkHardShadowSelfOwner(vec2 shadowUv) {
+  if (inkHardShadowOwnerMapEnabled < 0.5 || inkHardShadowOwnerId < 0.5) return false;
+  float capturedOwnerId = floor(texture2D(inkHardShadowOwnerMap, shadowUv).r * 255.0 + 0.5);
+  return abs(capturedOwnerId - inkHardShadowOwnerId) < 0.5;
 }
 
 void main() {
@@ -835,7 +851,8 @@ void main() {
     bool inside = shadowUvDepth.x >= 0.0 && shadowUvDepth.x <= 1.0
       && shadowUvDepth.y >= 0.0 && shadowUvDepth.y <= 1.0
       && shadowUvDepth.z >= 0.0 && shadowUvDepth.z <= 1.0;
-    if (inside && sampleInkHardShadowPcf(shadowUvDepth) <= 0.5) directBand = 0.5;
+    if (inside && !isInkHardShadowSelfOwner(shadowUvDepth.xy)
+      && texture(inkHardShadowMap, shadowUvDepth) <= 0.5) directBand = 0.5;
   }
   gl_FragColor = vec4(colour.rgb * (vec3(directBand) + inkAmbientIrradiance), 1.0);
 }`,
@@ -986,11 +1003,12 @@ function createInkFillHardShadowDepthMaterial(fillMaterial: ShaderMaterial): Sha
       inkFillUvSize: fillMaterial.uniforms.inkFillUvSize!,
       inkFillTextureUvOffset: fillMaterial.uniforms.inkFillTextureUvOffset!,
       inkFillTextureUvScale: fillMaterial.uniforms.inkFillTextureUvScale!,
+      inkHardShadowOwnerId: fillMaterial.uniforms.inkHardShadowOwnerId!,
     },
     depthTest: true,
     depthWrite: true,
-    colorWrite: false,
-    side: BackSide,
+    colorWrite: true,
+    side: DoubleSide,
     vertexShader: `
 varying vec2 vInkFillUv;
 void main() {
@@ -1003,11 +1021,12 @@ uniform vec2 inkFillUvMin;
 uniform vec2 inkFillUvSize;
 uniform vec2 inkFillTextureUvOffset;
 uniform vec2 inkFillTextureUvScale;
+uniform float inkHardShadowOwnerId;
 varying vec2 vInkFillUv;
 void main() {
   vec2 fillUv = (vInkFillUv - inkFillUvMin) / inkFillUvSize;
   if (texture2D(inkFillMap, inkFillTextureUvOffset + fillUv * inkFillTextureUvScale).a < 0.5) discard;
-  gl_FragColor = vec4(1.0);
+  gl_FragColor = vec4(inkHardShadowOwnerId / 255.0, 0.0, 0.0, 1.0);
 }`,
   });
 }

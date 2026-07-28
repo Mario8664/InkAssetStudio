@@ -3,8 +3,8 @@ import {
   DepthFormat,
   DepthTexture,
   LessEqualCompare,
-  LinearFilter,
   Mesh,
+  NearestFilter,
   UnsignedIntType,
   WebGLRenderTarget,
   type DirectionalLight,
@@ -21,7 +21,7 @@ type ShadowCasterState = {
   material: Material | Material[];
 };
 
-/** Ink-only native depth map. It never changes Three's PCF shadow configuration. */
+/** Ink-only nearest depth and owner map. It never changes Three's PBR shadow configuration. */
 export class InkHardShadowMap {
   private target: WebGLRenderTarget | null = null;
   private width = 0;
@@ -39,9 +39,8 @@ export class InkHardShadowMap {
 
   markDirty(): void { this.dirty = true; }
 
-  /** Captures only alpha-clipped Ink Fill casters into a native depth texture. */
+  /** Captures alpha-clipped Ink Fill casters for one hard depth comparison. */
   renderIfNeeded(force = false): void {
-    this.lighting.hardShadowRadius.value = this.light.shadow.radius;
     if (this.disabled || (!force && !this.dirty)) return;
     this.scene.updateMatrixWorld(true);
     this.light.shadow.updateMatrices(this.light);
@@ -52,6 +51,7 @@ export class InkHardShadowMap {
     if (width > maximum || height > maximum) {
       this.disabled = true;
       this.lighting.hardShadowEnabled.value = 0;
+      this.lighting.hardShadowOwnerMapEnabled.value = 0;
       const message = `Ink hard shadow requires ${width} × ${height}px at 64 px/world-unit, exceeding this GPU's ${maximum}px texture limit. Move distant content closer together, then reopen the Studio to restore hard shadows.`;
       console.error(message);
       this.onWarning(message);
@@ -88,14 +88,15 @@ export class InkHardShadowMap {
       this.renderer.setRenderTarget(target);
       this.renderer.autoClear = true;
       this.renderer.shadowMap.enabled = false;
-      // The native depth attachment is the only sampled output. Keep the scene
-      // background out of this isolated capture and clear its depth to 1.0.
+      // Keep scene background out of this isolated capture. Depth clears to
+      // 1.0 and the colour attachment's zero means "no Shape owner".
       this.scene.background = null;
-      this.renderer.setClearColor(0xffffff, 1);
+      this.renderer.setClearColor(0x000000, 0);
       this.renderer.clear(true, true, false);
       this.renderer.render(this.scene, camera);
       this.lighting.hardShadowMatrix.copy(this.light.shadow.matrix);
       this.lighting.hardShadowEnabled.value = 1;
+      this.lighting.hardShadowOwnerMapEnabled.value = 1;
       this.dirty = false;
     } finally {
       this.renderer.shadowMap.enabled = previousShadowEnabled;
@@ -115,8 +116,9 @@ export class InkHardShadowMap {
     this.target?.dispose();
     this.target = null;
     this.lighting.hardShadowMap.value = null;
-    this.lighting.hardShadowTexelSize.set(1, 1);
+    this.lighting.hardShadowOwnerMap.value = null;
     this.lighting.hardShadowEnabled.value = 0;
+    this.lighting.hardShadowOwnerMapEnabled.value = 0;
   }
 
   private ensureTarget(width: number, height: number): void {
@@ -126,20 +128,22 @@ export class InkHardShadowMap {
     depthTexture.name = 'InkHardShadowMap.depth';
     depthTexture.format = DepthFormat;
     depthTexture.compareFunction = LessEqualCompare;
-    depthTexture.minFilter = LinearFilter;
-    depthTexture.magFilter = LinearFilter;
+    depthTexture.minFilter = NearestFilter;
+    depthTexture.magFilter = NearestFilter;
     depthTexture.generateMipmaps = false;
     this.target = new WebGLRenderTarget(width, height, {
       depthBuffer: true,
       depthTexture,
       stencilBuffer: false,
     });
-    this.target.texture.name = 'InkHardShadowMap.unused-colour';
+    this.target.texture.name = 'InkHardShadowMap.closest-owner-id';
+    this.target.texture.minFilter = NearestFilter;
+    this.target.texture.magFilter = NearestFilter;
     this.target.texture.generateMipmaps = false;
     this.width = width;
     this.height = height;
     this.lighting.hardShadowMap.value = depthTexture as Texture;
-    this.lighting.hardShadowTexelSize.set(1 / width, 1 / height);
+    this.lighting.hardShadowOwnerMap.value = this.target.texture;
   }
 }
 

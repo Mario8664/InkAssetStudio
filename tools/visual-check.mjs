@@ -222,7 +222,7 @@ try {
   }
   const dayPosition = page.getByLabel('Day and night phase value');
   await dayPosition.fill('0.35');
-  await dayPosition.press('Enter');
+  await dayPosition.dispatchEvent('change');
   await page.waitForFunction(() => (document.querySelector('[aria-label="Day and night phase value"]')?.value ?? '') === '0.35');
   await page.locator('button[title="Undo"]').click();
   await page.waitForFunction(() => (document.querySelector('[aria-label="Day and night phase value"]')?.value ?? '') === '0');

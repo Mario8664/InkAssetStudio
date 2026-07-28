@@ -52,6 +52,8 @@ import {
   createInkFillLightingState,
   createInkGroupRenderRoot,
   createInkShapeRenderRoot,
+  INK_HARD_SHADOW_OWNER_ID_LIMIT,
+  setInkHardShadowOwnerId,
   type InkFillLightingState,
   updateInkSurfaceOutlines,
   updateInkShapeFillSurfaces,
@@ -290,7 +292,7 @@ export class WorkspaceRenderer {
     this.editorGuides.setAxesVisible(session.showAxes);
     const inkUpdate = this.updateInkGroups(document);
     const lightingDirectionChanged = this.applyLighting(document);
-    if (inkUpdate.hardShadowChanged || lightingDirectionChanged) this.hardShadow.markDirty();
+    if (inkUpdate.hardShadowChanged || lightingDirectionChanged) this.markInkHardShadowDirty();
     if (inkUpdate.boundsChanged) this.updateShadowBounds(document);
     const editHelperStateKey = `${session.mode}|${session.activeReferenceId ?? ''}|${session.activeShapeId ?? ''}|${session.excludedShapeIds.join('|')}`;
     const selectionChanged = this.editHelperStateKey !== editHelperStateKey || inkUpdate.changed;
@@ -558,7 +560,7 @@ export class WorkspaceRenderer {
     );
     applyInkShapeRenderTransform(root, shape);
     this.syncSingleInkHelper(referenceId, shape);
-    this.hardShadow.markDirty();
+    this.markInkHardShadowDirty();
     this.requestRender();
   }
 
@@ -581,7 +583,7 @@ export class WorkspaceRenderer {
     }
     const pivot = this.pivotPickers.find((candidate) => candidate.userData.referenceId === referenceId);
     pivot?.position.set(position.x, position.y, position.z);
-    if (entry && hasInkHardShadowCasterInGroup(entry.source)) this.hardShadow.markDirty();
+    if (entry && hasInkHardShadowCasterInGroup(entry.source)) this.markInkHardShadowDirty();
     this.requestRender();
   }
 
@@ -591,7 +593,7 @@ export class WorkspaceRenderer {
     const helper = this.helperEntries.get(helperKey(referenceId, shape.id));
     if (helper) applyInkShapeRenderTransform(helper.root, shape);
     const compiled = this.inkEntries.get(referenceId)?.source.compiled.shapes.find((entry) => entry.shapeId === shape.id);
-    if (hasInkHardShadowCasterInShape(compiled)) this.hardShadow.markDirty();
+    if (hasInkHardShadowCasterInShape(compiled)) this.markInkHardShadowDirty();
     this.requestRender();
   }
 
@@ -604,7 +606,7 @@ export class WorkspaceRenderer {
       applyInkShapeRenderTransform(root, shape);
     }
     this.syncSingleInkHelper(referenceId, shape);
-    if (fills.length > 0) this.hardShadow.markDirty();
+    if (fills.length > 0) this.markInkHardShadowDirty();
     this.requestRender();
   }
 
@@ -663,6 +665,26 @@ export class WorkspaceRenderer {
     this.outputPass.dispose();
     this.composer.dispose();
     this.renderer.dispose();
+  }
+
+  /** Reassigns transient owner IDs only when the Ink hard-shadow input is dirty. */
+  private markInkHardShadowDirty(): void {
+    this.assignInkHardShadowOwnerIds();
+    this.hardShadow.markDirty();
+  }
+
+  private assignInkHardShadowOwnerIds(): void {
+    let nextOwnerId = 1;
+    for (const entry of this.inkEntries.values()) {
+      for (const shapeRoot of entry.shapes.values()) {
+        let hasFill = false;
+        shapeRoot.traverse((object) => {
+          if (object instanceof Mesh && object.name === 'InkFillSurface') hasFill = true;
+        });
+        const ownerId = hasFill && nextOwnerId <= INK_HARD_SHADOW_OWNER_ID_LIMIT ? nextOwnerId++ : 0;
+        setInkHardShadowOwnerId(shapeRoot, ownerId);
+      }
+    }
   }
 
   private updateInkGroups(document: InkStudioWorkFile): InkRenderUpdate {
