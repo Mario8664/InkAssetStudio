@@ -56,18 +56,18 @@ describe('Ink Studio work files', () => {
     expect(parsed.document.ink.embeddedAssets[0]!.group.compiled.shapes[0]!.ribbon.positions.length).toBeGreaterThan(0);
   });
 
-  it('accepts only the exact v16 source-compatibility header', () => {
-    const workFile = JSON.parse(serializeStudioDocument(createStudioDocument('Current v16'))) as any;
+  it('accepts only the exact v1 source-compatibility header', () => {
+    const workFile = JSON.parse(serializeStudioDocument(createStudioDocument('Current v1'))) as any;
     for (const sourceCompatibility of [
-      { ...workFile.sourceCompatibility, paintingInkAssetSchemaVersion: 2 },
-      { ...workFile.sourceCompatibility, paintingInkCompiledFormatVersion: 15 },
+      { ...workFile.sourceCompatibility, paintingInkAssetSchemaVersion: 3 },
+      { ...workFile.sourceCompatibility, paintingInkCompiledFormatVersion: 16 },
       { ...workFile.sourceCompatibility, terrainSchemaVersion: 0 },
     ]) {
       expect(parseStudioWorkFile(JSON.stringify({ ...workFile, sourceCompatibility })).ok).toBe(false);
     }
   });
 
-  it('rejects retired fields and derived payloads outside the v16 source-only contract', () => {
+  it('rejects retired fields and derived payloads outside the v1 source-only contract', () => {
     const retired = JSON.parse(serializeStudioDocument(createStudioDocument('Retired field'))) as any;
     retired.ink.embeddedAssets[0].group.shapes[0].normalOutset = { enabled: true };
     expect(parseStudioWorkFile(JSON.stringify(retired)).ok).toBe(false);

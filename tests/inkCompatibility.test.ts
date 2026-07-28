@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_INK_STROKE_WIDTH,
   INK_COMPILED_FORMAT_VERSION,
+  compileInkFill,
   compileInkShape,
   createInkCuboidShape,
   createInkCylinderShape,
@@ -18,6 +19,27 @@ import {
 } from '../src/domain/ink/ink';
 
 describe('Painting-compatible Ink Shapes', () => {
+  it('trims transparent sparse-block padding from compiled Fill charts', () => {
+    const rgba = new Array(16 * 16 * 4).fill(0);
+    const localX = 4;
+    const localY = 5;
+    const offset = (localY * 16 + localX) * 4;
+    rgba.splice(offset, 4, 0x29, 0xad, 0xff, 0xff);
+    const shape = {
+      ...createInkPlaneShape('z', { x: 0, y: 0, z: 0 }),
+      fill: { surfaces: [{ id: 'plane' as const, blocks: [{ x: 2, y: -3, rgba }] }] },
+    };
+
+    expect(compileInkFill(shape)).toEqual([{
+      id: 'plane',
+      minX: 2 * 16 + localX,
+      minY: -3 * 16 + localY,
+      width: 1,
+      height: 1,
+      rgba: [0x29, 0xad, 0xff, 0xff],
+    }]);
+  });
+
   it('uses the authored Outline width as the default smooth-surface outline width', () => {
     expect(createInkSphereShape().surfaceOutline.width).toBe(DEFAULT_INK_STROKE_WIDTH);
     expect(createInkCylinderShape().surfaceOutline.width).toBe(DEFAULT_INK_STROKE_WIDTH);
@@ -97,7 +119,7 @@ describe('Painting-compatible Ink Shapes', () => {
     } as Extract<InkShape, { kind: 'sphere' }>;
     const after = compileInkShape(enabled, undefined, before);
 
-    expect(INK_COMPILED_FORMAT_VERSION).toBe(16);
+    expect(INK_COMPILED_FORMAT_VERSION).toBe(1);
     expect(after.ribbon).toBe(before.ribbon);
   });
 

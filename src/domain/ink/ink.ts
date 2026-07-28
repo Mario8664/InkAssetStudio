@@ -2,8 +2,8 @@ import { BufferGeometry, Euler, Float32BufferAttribute, Matrix4, Quaternion, Vec
 import { hashDerivedAssetSource } from './derivedAssets';
 
 export const INK_MANAGER_OBJECT_TYPE = 'painting.ink-manager';
-/** v16 aligns the Cylinder side chart phase with Painting. */
-export const INK_COMPILED_FORMAT_VERSION = 16;
+/** The single supported Ink compiled payload contract. */
+export const INK_COMPILED_FORMAT_VERSION = 1;
 export const INK_SPHERE_FACE_SEGMENTS = 4;
 export const INK_CYLINDER_SEGMENTS = 16;
 export const INK_FILL_PIXELS_PER_WORLD_UNIT = 64;
@@ -174,7 +174,7 @@ export type InkGroupData = {
   compiled: CompiledInkGroup;
 };
 
-/** The v16 exchange payload: authoritative author data with no derived caches. */
+/** The v1 exchange payload: authoritative author data with no derived caches. */
 export type InkGroupSourceData = Omit<InkGroupData, 'compiled' | 'visualFootprint' | 'placementRotation'>;
 
 /** A scene-owned source asset which is not exposed through the project asset browser. */
@@ -799,7 +799,7 @@ export function resampleInkShapeFill(previous: InkShape, next: InkShape): InkSha
   return { ...next, fill };
 }
 
-/** Builds compact RGBA rectangles for the renderer; empty sparse blocks are omitted. */
+/** Builds compact RGBA rectangles for the renderer; sparse-block padding is omitted. */
 export function compileInkFill(shape: InkShape): CompiledInkFillSurface[] {
   const compiled: CompiledInkFillSurface[] = [];
   for (const surface of shape.fill.surfaces) {
@@ -1101,14 +1101,18 @@ function rasterizeInkFillBoundary(shape: InkShape, id: InkFillSurfaceId, bounds:
 }
 
 function getInkFillOccupiedBounds(surface: InkFillSurface): { minX: number; minY: number; maxX: number; maxY: number } | null {
-  const blocks = surface.blocks.filter((block) => hasInkFillBlockColor(block));
-  if (blocks.length === 0) return null;
-  return {
-    minX: Math.min(...blocks.map((block) => block.x * INK_FILL_BLOCK_SIZE)),
-    minY: Math.min(...blocks.map((block) => block.y * INK_FILL_BLOCK_SIZE)),
-    maxX: Math.max(...blocks.map((block) => (block.x + 1) * INK_FILL_BLOCK_SIZE)),
-    maxY: Math.max(...blocks.map((block) => (block.y + 1) * INK_FILL_BLOCK_SIZE)),
-  };
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  forEachInkFillPixel(surface, (x, y, rgba) => {
+    if ((rgba[3] ?? 0) === 0) return;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + 1);
+    maxY = Math.max(maxY, y + 1);
+  });
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
 }
 
 function readInkFillPixel(surface: InkFillSurface, x: number, y: number): number[] {
@@ -1185,7 +1189,7 @@ export function isInkGroupData(value: unknown): value is InkGroupData {
     )));
 }
 
-/** Validates the v16 source-only exchange payload before rebuilding derived data. */
+/** Validates the v1 source-only exchange payload before rebuilding derived data. */
 export function isInkGroupSourceData(value: unknown): value is InkGroupSourceData {
   return isInkGroupSource(value, ['id', 'name', 'anchorPosition', 'shapes']);
 }

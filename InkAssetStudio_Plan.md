@@ -182,8 +182,8 @@ type InkStudioWorkFile = {
   format: 'ink-asset-studio-work';
   formatVersion: number;
   sourceCompatibility: {
-    paintingInkAssetSchemaVersion: 3;
-    paintingInkCompiledFormatVersion: 16;
+    paintingInkAssetSchemaVersion: 1;
+    paintingInkCompiledFormatVersion: 1;
     terrainSchemaVersion: number;
   };
   documentId: string;
@@ -199,7 +199,7 @@ type InkStudioWorkFile = {
 };
 ```
 
-其中 `InkEmbeddedAsset`、`InkAssetReference`、`InkGroupData`、`TileCell` 的字段和几何语义必须与目标 Painting 兼容版本一致。Studio 只接受 schema 3、Ink compiled format v16、terrain schema 1 的 source-only 工作文件和 IndexedDB 快照；Open/恢复会从作者源重建派生缓存，不升级或修复旧格式。Studio 不保存已解析的冗余 `groups` 视图数组。
+其中 `InkEmbeddedAsset`、`InkAssetReference`、`InkGroupData`、`TileCell` 的字段和几何语义必须与目标 Painting v1 契约一致。Studio 只接受 schema 1、Ink compiled format v1、terrain schema 1 的 source-only 工作文件和 IndexedDB 快照；Open/恢复会从作者源重建派生缓存，不升级或修复旧格式。Studio 不保存已解析的冗余 `groups` 视图数组。
 
 `compiled` 数据是由作者源生成的派生缓存。`.inkstudio-work.json` 导出与 IndexedDB 草稿快照只保存作者源，不保存 Ribbon 顶点、Fill 上传数组、源哈希或 `visualFootprint`；重新打开、导入或未来进入 Painting 时均在 Worker 中重建派生数据。这样交换文件保持为可编辑的场景数据而非位图，避免重复保存渲染缓存。导入方必须拒绝携带派生缓存或不满足当前版本的文件；只在验证当前 source-only 作者源后用目标项目的编译器重建派生数据。交换文件的权威永远是作者源。
 

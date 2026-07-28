@@ -26,7 +26,7 @@ import { compareTiles, createTerrainTile, isTileCell, tileKey, type TileCell } f
 
 export const STUDIO_WORK_FORMAT = 'ink-asset-studio-work';
 export const STUDIO_WORK_FORMAT_VERSION = 1;
-export const PAINTING_INK_ASSET_SCHEMA_VERSION = 3;
+export const PAINTING_INK_ASSET_SCHEMA_VERSION = 1;
 export const STUDIO_TERRAIN_SCHEMA_VERSION = 1;
 /** iPad import budget; author-content limits below remain the primary safety guard. */
 export const MAX_WORK_FILE_BYTES = 512 * 1024 * 1024;
@@ -115,7 +115,7 @@ export function normalizeStudioDocument(value: unknown): WorkspaceValidationResu
     return invalid('This Ink Studio work-file version is not supported.');
   }
   if (!isCurrentSourceCompatibility(source.sourceCompatibility)) {
-    return invalid('This Studio version accepts only Painting Ink schema 3, compiled format v16, and terrain schema 1 work files.');
+    return invalid('This Studio version accepts only Painting Ink schema 1, compiled format v1, and terrain schema 1 work files.');
   }
   if (typeof source.documentId !== 'string' || !source.documentId || typeof source.name !== 'string' || !source.name.trim()) {
     return invalid('The work file has an invalid document id or name.');
@@ -145,14 +145,14 @@ export function normalizeStudioDocument(value: unknown): WorkspaceValidationResu
     if (!isInkGroupSourceData(raw.group)
       || raw.group.id !== raw.assetId
       || raw.group.anchorPosition.x !== 0 || raw.group.anchorPosition.y !== 0 || raw.group.anchorPosition.z !== 0) {
-      return invalid(`Ink source ${raw.assetId} is not a current v16 source payload.`);
+      return invalid(`Ink source ${raw.assetId} is not a current v1 source payload.`);
     }
     if (raw.group.shapes.length > MAX_SHAPES_PER_GROUP) return invalid(`Ink source ${raw.assetId} has too many Shapes.`);
     const counts = countGroupPayload(raw.group);
     if (counts.strokePoints > MAX_STROKE_POINTS_PER_GROUP || counts.fillBlocks > MAX_FILL_BLOCKS_PER_GROUP) {
       return invalid(`Ink source ${raw.assetId} exceeds the editable-content safety limits.`);
     }
-    // Accepted v16 source snapshots contain no derived payloads. Rebuild their
+    // Accepted v1 source snapshots contain no derived payloads. Rebuild their
     // Ribbon/Fill caches from authoritative author data at this boundary.
     const group: InkGroupData = withCompiledInkGroup(raw.group, null);
     assetIds.add(raw.assetId);
