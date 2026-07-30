@@ -681,8 +681,12 @@ export function sampleInkFillColor(shape: InkShape, point: InkSurfacePoint): str
     .join('')}`;
 }
 
-/** Fills one chart-connected region; outlined pixels form immutable Bucket Fill boundaries. */
-export function bucketFillInkShape(shape: InkShape, point: InkSurfacePoint, color: string): InkShape {
+/**
+ * Fills either one chart-connected region or every matching pixel in the
+ * Shape's Fill domain. Only connected fills treat authored outlines as
+ * boundaries.
+ */
+export function bucketFillInkShape(shape: InkShape, point: InkSurfacePoint, color: string, contiguous = true): InkShape {
   const start = getInkFillPixelCoordinate(shape, point);
   if (!start) return shape;
   const fill = cloneInkFillLayer(shape.fill);
@@ -705,6 +709,7 @@ export function bucketFillInkShape(shape: InkShape, point: InkSurfacePoint, colo
   const replacement = toInkFillRgba(color);
   const target = readInkFillPixel(startSurface, startX, startY);
   if (sameInkFillRgba(target, replacement)) return shape;
+  if (!contiguous) return replaceAllMatchingInkFillPixels(shape, fill, start, target, replacement, copiedBlocks);
   if (barrierBySurface.get(start.id)!.has(`${startX},${startY}`)) return shape;
 
   const pending: Array<InkFillPixelCoordinate> = [{ ...start, x: startX, y: startY }];
@@ -735,6 +740,47 @@ export function bucketFillInkShape(shape: InkShape, point: InkSurfacePoint, colo
   }
   normalizeInkFillLayer(fill);
   return { ...shape, fill };
+}
+
+/** Replaces every matching RGBA pixel in one Shape without traversing its outline boundaries. */
+function replaceAllMatchingInkFillPixels(
+  shape: InkShape,
+  fill: InkFillLayer,
+  start: InkFillPixelCoordinate,
+  target: readonly number[],
+  replacement: readonly number[],
+  copiedBlocks: Set<InkFillBlock>,
+): InkShape {
+  type FillScope = { id: InkFillSurfaceId; surface: InkFillSurface | undefined; minX: number; minY: number; maxX: number; maxY: number };
+  const scopes: FillScope[] = [];
+  let pixelCount = 0;
+  for (const id of getInkFillSurfaceIds(shape)) {
+    const surface = fill.surfaces.find((candidate) => candidate.id === id);
+    const dimensions = getInkFillSurfaceDimensions(shape, id);
+    const bounds = dimensions
+      ? { minX: 0, minY: 0, maxX: dimensions.width, maxY: dimensions.height }
+      : getInkFillBounds(shape, surface ?? ensureInkFillSurface(fill, id), start);
+    pixelCount += (bounds.maxX - bounds.minX) * (bounds.maxY - bounds.minY);
+    // Keep Bucket Fill atomic: a Shape too large to inspect is left unchanged.
+    if (pixelCount > 524_288) return shape;
+    scopes.push({ id, surface, ...bounds });
+  }
+  let changed = false;
+  for (const scope of scopes) for (let y = scope.minY; y < scope.maxY; y += 1) for (let x = scope.minX; x < scope.maxX; x += 1) {
+    const rgba = scope.surface ? readInkFillPixel(scope.surface, x, y) : [0, 0, 0, 0];
+    if (!sameInkFillRgba(rgba, target)) continue;
+    writeInkFillPixel(ensureInkFillSurface(fill, scope.id), x, y, replacement, copiedBlocks);
+    changed = true;
+  }
+  if (!changed) return shape;
+  normalizeInkFillLayer(fill);
+  return { ...shape, fill };
+}
+
+function getInkFillSurfaceIds(shape: InkShape): readonly InkFillSurfaceId[] {
+  if (shape.kind === 'plane') return ['plane'];
+  if (shape.kind === 'cylinder') return ['side', 'top', 'bottom'];
+  return CUBOID_FACE_ORDER;
 }
 
 /** Moves one pixel through a finite Shape chart edge without introducing a UV seam. */

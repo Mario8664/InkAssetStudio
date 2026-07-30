@@ -30,6 +30,7 @@ export type StudioEditorSession = {
   outlineEraserWidth: number;
   fillBrushSize: number;
   fillBrushShape: InkFillBrushShape;
+  fillBucketContiguous: boolean;
   terrainKind: TileKind;
   terrainAction: TerrainAction;
   terrainOperation: TerrainOperation;
@@ -68,6 +69,7 @@ export function createStudioEditorSession(): StudioEditorSession {
     outlineEraserWidth: 0.1,
     fillBrushSize: DEFAULT_INK_FILL_BRUSH_SIZE,
     fillBrushShape: 'circle',
+    fillBucketContiguous: true,
     terrainKind: 'block',
     terrainAction: 'place',
     terrainOperation: 'brush',
@@ -122,6 +124,7 @@ export function normalizeStudioEditorSession(value: unknown): StudioEditorSessio
     outlineEraserWidth: number(source.outlineEraserWidth, fallback.outlineEraserWidth, 0.01, 1),
     fillBrushSize: number(source.fillBrushSize, fallback.fillBrushSize, 0.02, 1),
     fillBrushShape: isOneOf(source.fillBrushShape, ['circle', 'square']) ? source.fillBrushShape : fallback.fillBrushShape,
+    fillBucketContiguous: typeof source.fillBucketContiguous === 'boolean' ? source.fillBucketContiguous : fallback.fillBucketContiguous,
     terrainKind: isOneOf(source.terrainKind, ['block', 'slope', 'corner-slope']) ? source.terrainKind : fallback.terrainKind,
     terrainAction: isOneOf(source.terrainAction, ['place', 'erase']) ? source.terrainAction : fallback.terrainAction,
     terrainOperation: isOneOf(source.terrainOperation, ['brush', 'rectangle']) ? source.terrainOperation : fallback.terrainOperation,

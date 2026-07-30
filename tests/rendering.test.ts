@@ -37,6 +37,7 @@ import {
   createInkSphereGeometry,
   createInkSphereShape,
   paintInkFill,
+  sampleInkFillColor,
 } from '../src/domain/ink/ink';
 import type { InkCuboidFace, InkShape } from '../src/domain/ink/ink';
 import { createTerrainTile } from '../src/domain/terrain/terrain';
@@ -347,6 +348,37 @@ describe('Reference rendering', () => {
 
     disposeObjectTree(fullRoot);
     disposeObjectTree(partialRoot);
+  });
+
+  it('replaces every matching colour across a Shape when Bucket Contiguous is disabled', () => {
+    const first = { face: 'positive-z' as const, u: -0.25, v: 0, pressure: 1 };
+    const second = { face: 'positive-z' as const, u: 0.25, v: 0, pressure: 1 };
+    const painted = paintInkFill(
+      paintInkFill(createInkCuboidShape(), [first], '#ff004d', 0.05, 'square', false),
+      [second],
+      '#ff004d',
+      0.05,
+      'square',
+      false,
+    );
+
+    const connectedOnly = bucketFillInkShape(painted, first, '#29adff');
+    expect(sampleInkFillColor(connectedOnly, first)).toBe('#29adff');
+    expect(sampleInkFillColor(connectedOnly, second)).toBe('#ff004d');
+
+    const wholeShape = bucketFillInkShape(painted, first, '#29adff', false);
+    expect(sampleInkFillColor(wholeShape, first)).toBe('#29adff');
+    expect(sampleInkFillColor(wholeShape, second)).toBe('#29adff');
+
+    const transparentWholeShape = bucketFillInkShape(
+      createInkCuboidShape(),
+      { face: 'positive-z', u: 0, v: 0, pressure: 1 },
+      '#29adff',
+      false,
+    );
+    const surfaces = compileInkFill(transparentWholeShape);
+    expect(surfaces).toHaveLength(6);
+    expect(surfaces.every((surface) => surface.rgba.every((value, index) => index % 4 !== 3 || value === 255))).toBe(true);
   });
 
   it('clips a smooth-surface Ribbon to Fill alpha and releases it when disabled', () => {

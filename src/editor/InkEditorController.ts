@@ -125,7 +125,7 @@ export class InkEditorController {
         document,
         hit.referenceId,
         hit.shapeId,
-        (shape) => bucketFillInkShape(shape, hit.point, session.fillColor),
+        (shape) => bucketFillInkShape(shape, hit.point, session.fillColor, session.fillBucketContiguous),
       ));
       event.preventDefault();
       return;
