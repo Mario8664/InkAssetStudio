@@ -287,6 +287,7 @@ export class WorkspaceRenderer {
     this.document = document;
     this.session = session;
     this.terrain.update(document.terrain.tiles);
+    this.referenceLayer.setEnabled(session.showReferenceTerrain);
     this.referenceLayer.setTerrainEdgesVisible(session.showTerrainEdges);
     this.editorGuides.setGridVisible(session.showInfiniteGrid);
     this.editorGuides.setAxesVisible(session.showAxes);

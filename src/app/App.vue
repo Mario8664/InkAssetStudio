@@ -153,6 +153,7 @@ watch(() => [
   session.activeReferenceId,
   session.activeShapeId,
   session.excludedShapeIds,
+  session.showReferenceTerrain,
   session.showTerrainEdges,
   session.showInfiniteGrid,
   session.showAxes,
@@ -696,6 +697,7 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
           <p class="note">Terrain uses only the fixed PICO-8 16-color set. Pencil edits; fingers always navigate.</p>
           <div class="viewport-guide-options">
             <strong>Viewport Guides</strong>
+            <label class="check-row"><input v-model="session.showReferenceTerrain" type="checkbox" /> Show reference terrain</label>
             <label class="check-row"><input v-model="session.showTerrainEdges" type="checkbox" /> Show tile edges</label>
             <label class="check-row"><input v-model="session.showInfiniteGrid" type="checkbox" /> Show infinite grid</label>
             <label class="check-row"><input v-model="session.showAxes" type="checkbox" /> Show coordinate axes</label>
@@ -711,6 +713,7 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
         <section v-if="document" class="lighting-section">
           <div class="viewport-guide-options">
             <strong>Viewport Guides</strong>
+            <label class="check-row"><input v-model="session.showReferenceTerrain" type="checkbox" /> Show reference terrain</label>
             <label class="check-row"><input v-model="session.showTerrainEdges" type="checkbox" /> Show tile edges</label>
             <label class="check-row"><input v-model="session.showInfiniteGrid" type="checkbox" /> Show infinite grid</label>
             <label class="check-row"><input v-model="session.showAxes" type="checkbox" /> Show coordinate axes</label>

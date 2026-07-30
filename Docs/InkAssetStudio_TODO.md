@@ -63,7 +63,7 @@
 - 地形格保存整数 `x/y/z`、0/90/180/270° 旋转和 PICO-8 基础颜色。
 - 支持已有地块射线相邻放置、X/Y/Z 零坐标工作面、Brush/Rectangle 连续放置与擦除，以及按钮式类型/四向旋转和固定 PICO-8 颜色切换。
 - 地形 Reference 几何携带 barycentric 与真实边界掩码，边缘暗化不会显示内部三角形对角线；描边使用与地块协调的深色并设有非纯黑下限。
-- 无限网格与 X/Y/Z 坐标轴是 Studio 所有的编辑器视口辅助，可分别开关；地块边缘也有独立开关。三个设置仅进入 Editor Session，不进入工作场景、Ink 作者源或导出文件。
+- 参考地形、无限网格与 X/Y/Z 坐标轴是 Studio 所有的编辑器视口显示项，可分别开关；地块边缘也有独立开关。参考地形默认显示，关闭时停止 Map Reference 的捕获与合成，但不删除地形数据、不影响地形拾取或放置预览。四个设置仅进入 Editor Session，不进入工作场景、Ink 作者源或导出文件。
 - Terrain、Group、Shape 和 Draw 模式中手指始终只驱动 OrbitControls；Apple Pencil 只驱动编辑，鼠标不驱动编辑或镜头。相机轨道保留极点安全余量，但可越过水平面旋转到目标下方的负 Y 视角。
 
 ### 2.5 渲染与灯光
@@ -96,8 +96,8 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 8 个 Vitest 文件、71 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
-- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、无限网格/坐标轴资源、三个辅助开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见与 owner-aware 单中心硬阴影、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
+- 8 个 Vitest 文件、72 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、参考地形/地块边缘/无限网格/坐标轴四个显示开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见与 owner-aware 单中心硬阴影、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
 真实 Chrome 自动验收命令：
@@ -116,16 +116,16 @@ npm.cmd run visual-check
 6. 打开调色板编辑器并排序颜色；
 7. 核对 Painting 当前完整灯光初值、全部参数输入和重点昼夜滑杆，修改预览灯光并执行 Undo/Redo/Reset；
 8. 核对独立 Navigate 模式已删除，鼠标拖动不会绘制 Ink；
-9. 核对地块边缘、无限网格和坐标轴三个开关默认开启，并逐个关闭、重新开启；
+9. 核对参考地形、地块边缘、无限网格和坐标轴四个开关默认开启，并逐个关闭、重新开启；
 10. 进入 Terrain 模式，核对三个 Tile 按钮、四向按钮、X/Y/Z 工作面按钮并用 Pencil 拖动擦除地形；
 11. 导出 JSON，检查 Group、描边点、压力、五类 Shape、Fill 块、Sphere/Cylinder 的 `surfaceOutline` v1 配置和地形结果；
 12. 新建场景后重新导入刚导出的文件；
 13. 等待 IndexedDB 保存完成；
 14. 断网刷新并确认完整工作场景与 Editor Session 恢复；
-15. 在 1366×900、1024×768 和 768×1024 三种视口检查布局、画布、Group、工具、三个视口辅助开关和页面溢出；
+15. 在 1366×900、1024×768 和 768×1024 三种视口检查布局、画布、Group、工具、四个视口显示开关和页面溢出；
 16. 收集控制台和页面错误。
 
-最近一次结果：2 个 Group、15 个可编辑 Outline 点、4 个稀疏 Fill 块、1 个已启用 Surface Outline、21 个剩余地形格；导出声明 Painting Ink compiled format v1，包含 `plane`、`cuboid`、`cylinder`、`frustum`。自动验收确认 Cuboid/Frustum 不显示曲面描边控件，Cylinder 的 Radius/Height 和 Surface Outline 宽度可用并可导出；World/Local Transform 切换和删除键左侧的临时绘制排除眼睛按钮均可切换、还原并保持为 Session 状态。桌面、离线刷新、1024×768 与 768×1024 视口均无页面溢出；Undo/Redo、重点昼夜控件和三个视口辅助开关在 iPad 横竖屏可见，按钮式 Terrain 工具、Pencil 绘制、鼠标输入隔离、模式切换、开关交互、断网恢复均成功，控制台和页面错误为 0。
+最近一次结果：2 个 Group、15 个可编辑 Outline 点、4 个稀疏 Fill 块、1 个已启用 Surface Outline、21 个剩余地形格；导出声明 Painting Ink compiled format v1，包含 `plane`、`cuboid`、`cylinder`、`frustum`。自动验收确认 Cuboid/Frustum 不显示曲面描边控件，Cylinder 的 Radius/Height 和 Surface Outline 宽度可用并可导出；World/Local Transform 切换和删除键左侧的临时绘制排除眼睛按钮均可切换、还原并保持为 Session 状态。桌面、离线刷新、1024×768 与 768×1024 视口均无页面溢出；Undo/Redo、重点昼夜控件和四个视口显示开关在 iPad 横竖屏可见，按钮式 Terrain 工具、Pencil 绘制、鼠标输入隔离、模式切换、开关交互、断网恢复均成功，控制台和页面错误为 0。
 
 视觉验收图位于：
 

@@ -195,7 +195,7 @@ try {
   if (await page.locator('.lighting-profile-card').count() !== 2) throw new Error('Day and Night lighting profiles are not both visible.');
   if (await page.locator('.lighting-profile-card input[type="color"]').count() !== 10) throw new Error('The complete Day/Night color controls are not available.');
   if (await page.locator('.lighting-section input[type="number"]').count() !== 12) throw new Error('The complete numeric lighting controls are not available.');
-  for (const label of ['Show tile edges', 'Show infinite grid', 'Show coordinate axes']) {
+  for (const label of ['Show reference terrain', 'Show tile edges', 'Show infinite grid', 'Show coordinate axes']) {
     const toggle = page.getByLabel(label);
     if (!await toggle.isVisible() || !await toggle.isChecked()) throw new Error(`${label} must be visible and enabled by default.`);
     await toggle.uncheck();
@@ -267,7 +267,7 @@ try {
     throw new Error('Surface Outline author settings were not exported exactly.');
   }
   if (!cylinder || cylinder.radius !== 0.7 || !frustum || frustum.topSize !== 0.7) throw new Error('Cylinder or Frustum dimensions were not exported exactly.');
-  if (exported.sourceCompatibility?.paintingInkCompiledFormatVersion !== 16) throw new Error('The exported work file is not marked Ink compiled format v16.');
+  if (exported.sourceCompatibility?.paintingInkCompiledFormatVersion !== 1) throw new Error('The exported work file is not marked Ink compiled format v1.');
   if ((exported.terrain?.tiles?.length ?? 25) >= 25) throw new Error('The terrain erase gesture did not remove any reference cells.');
 
   await page.getByRole('button', { name: 'New' }).click();

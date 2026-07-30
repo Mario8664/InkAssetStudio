@@ -3,8 +3,9 @@ import { reactive } from 'vue';
 import { cloneStudioEditorSession, createStudioEditorSession, normalizeStudioEditorSession } from '../src/domain/workspace/session';
 
 describe('Editor viewport session', () => {
-  it('enables all three independent viewport guides by default', () => {
+  it('enables reference terrain and all three independent viewport guides by default', () => {
     const session = createStudioEditorSession();
+    expect(session.showReferenceTerrain).toBe(true);
     expect(session.showTerrainEdges).toBe(true);
     expect(session.showInfiniteGrid).toBe(true);
     expect(session.showAxes).toBe(true);
@@ -19,10 +20,12 @@ describe('Editor viewport session', () => {
 
   it('round-trips independent viewport guide choices', () => {
     const session = normalizeStudioEditorSession({
+      showReferenceTerrain: false,
       showTerrainEdges: false,
       showInfiniteGrid: false,
       showAxes: true,
     });
+    expect(session.showReferenceTerrain).toBe(false);
     expect(session.showTerrainEdges).toBe(false);
     expect(session.showInfiniteGrid).toBe(false);
     expect(session.showAxes).toBe(true);

@@ -41,6 +41,7 @@ export type StudioEditorSession = {
   transformSpace: TransformSpace;
   snapEnabled: boolean;
   transformSnapUnit: number;
+  showReferenceTerrain: boolean;
   showTerrainEdges: boolean;
   showInfiniteGrid: boolean;
   showAxes: boolean;
@@ -78,6 +79,7 @@ export function createStudioEditorSession(): StudioEditorSession {
     transformSpace: 'world',
     snapEnabled: false,
     transformSnapUnit: 0.5,
+    showReferenceTerrain: true,
     showTerrainEdges: true,
     showInfiniteGrid: true,
     showAxes: true,
@@ -131,6 +133,9 @@ export function normalizeStudioEditorSession(value: unknown): StudioEditorSessio
     transformSpace: isOneOf(source.transformSpace, ['world', 'local']) ? source.transformSpace : fallback.transformSpace,
     snapEnabled: typeof source.snapEnabled === 'boolean' ? source.snapEnabled : fallback.snapEnabled,
     transformSnapUnit: number(source.transformSnapUnit, fallback.transformSnapUnit, 0.001, 1_000),
+    showReferenceTerrain: typeof source.showReferenceTerrain === 'boolean'
+      ? source.showReferenceTerrain
+      : fallback.showReferenceTerrain,
     showTerrainEdges: typeof source.showTerrainEdges === 'boolean'
       ? source.showTerrainEdges
       : typeof source.showGrid === 'boolean'
