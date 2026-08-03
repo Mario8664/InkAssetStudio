@@ -795,6 +795,14 @@ export class WorkspaceRenderer {
         );
         continue;
       }
+      // An Outline-only Worker result changes its Ribbon hash but leaves both
+      // Fill payload and Shape transform intact. Keep the Shape root so its
+      // transient hard-shadow owner state remains paired with the capture.
+      if (priorShape && priorCompiled && !shapeTransformChanged && !fillChanged) {
+        applyInkShapeRenderTransform(existing, shape);
+        updateInkShapeRibbon(existing, compiled.ribbon);
+        continue;
+      }
 
       disposeObjectTree(existing);
       existing.removeFromParent();

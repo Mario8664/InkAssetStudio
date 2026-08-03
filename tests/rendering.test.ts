@@ -32,12 +32,14 @@ import {
   createInkCylinderShape,
   createInkFrustumGeometry,
   createInkFrustumShape,
+  createInkGroupData,
   createInkOutlineStroke,
   createInkPlaneShape,
   createInkSphereGeometry,
   createInkSphereShape,
   paintInkFill,
   sampleInkFillColor,
+  withCompiledInkGroup,
 } from '../src/domain/ink/ink';
 import type { InkCuboidFace, InkShape } from '../src/domain/ink/ink';
 import { createTerrainTile } from '../src/domain/terrain/terrain';
@@ -64,11 +66,15 @@ import {
   setInkHardShadowOwnerId,
   updateInkSurfaceOutlines,
   updateInkShapeFillSurfaces,
-  updateInkShapeRibbon,
 } from '../src/render/InkGroupRenderer';
 import { hasRendererMaterial, InkHardShadowMap } from '../src/render/InkHardShadowMap';
 import { disposeObjectTree } from '../src/render/dispose';
-import { createTerrainPreviewMaterial, TERRAIN_PREVIEW_COLOR, TERRAIN_PREVIEW_OPACITY } from '../src/render/WorkspaceRenderer';
+import {
+  createTerrainPreviewMaterial,
+  TERRAIN_PREVIEW_COLOR,
+  TERRAIN_PREVIEW_OPACITY,
+  WorkspaceRenderer,
+} from '../src/render/WorkspaceRenderer';
 
 describe('Reference rendering', () => {
   it('uses the Painting fixed blue placement preview for both depth-tested and overlay previews', () => {
@@ -465,19 +471,62 @@ describe('Reference rendering', () => {
     disposeObjectTree(root);
   });
 
-  it('updates an erased Ribbon without recreating the Shape Fill resources', () => {
+  it('routes an Outline-only Worker result through Ribbon replacement without losing Fill shadow ownership', () => {
     const shape = createInkCuboidShape();
     shape.strokes = [createInkOutlineStroke([
       { face: 'positive-z', u: -0.2, v: 0, pressure: 1 },
       { face: 'positive-z', u: 0.2, v: 0, pressure: 1 },
     ], '#000000', 0.04)];
     const painted = paintInkFill(shape, [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
-    const root = createInkShapeRenderRoot(compileInkShape(painted), painted, createInkFillLightingState());
+    const source = withCompiledInkGroup({
+      ...createInkGroupData('Outline-only update', 'outline-only-update'),
+      shapes: [painted],
+    });
+    const outlined = {
+      ...painted,
+      strokes: [...painted.strokes, createInkOutlineStroke([
+        { face: 'positive-z', u: -0.2, v: 0.1, pressure: 1 },
+        { face: 'positive-z', u: 0.2, v: 0.1, pressure: 1 },
+      ], '#000000', 0.04)],
+    };
+    const updated = withCompiledInkGroup({ ...source, shapes: [outlined] });
+    const lighting = createInkFillLightingState();
+    const root = createInkShapeRenderRoot(source.compiled.shapes[0]!, painted, lighting);
+    const groupRoot = new Group();
+    groupRoot.add(root);
+    type TestInkRenderEntry = {
+      source: typeof source;
+      anchorKey: string;
+      root: Group;
+      shapes: Map<string, Group>;
+    };
+    const entry: TestInkRenderEntry = {
+      source,
+      anchorKey: '0:0:0:0',
+      root: groupRoot,
+      shapes: new Map([[painted.id, root]]),
+    };
     const fill = root.getObjectByName('InkFillSurface') as Mesh;
-    updateInkShapeRibbon(root, compileInkShape({ ...painted, strokes: [] }).ribbon);
-    expect(root.getObjectByName('InkShapeRibbon')).toBeUndefined();
+    const texture = fill.userData.inkFillTexture;
+    const material = fill.material;
+    const depthMaterial = fill.userData.inkHardShadowDepthMaterial as ShaderMaterial;
+    const previousRibbon = root.getObjectByName('InkShapeRibbon');
+    setInkHardShadowOwnerId(root, 37);
+
+    const updateInkGroupShapes = (WorkspaceRenderer.prototype as unknown as {
+      updateInkGroupShapes: (entry: TestInkRenderEntry, next: typeof updated) => boolean;
+    }).updateInkGroupShapes;
+    expect(updateInkGroupShapes.call({ inkLighting: lighting }, entry, updated)).toBe(false);
+
+    expect(entry.shapes.get(painted.id)).toBe(root);
     expect(root.getObjectByName('InkFillSurface')).toBe(fill);
-    disposeObjectTree(root);
+    expect(fill.userData.inkFillTexture).toBe(texture);
+    expect(fill.material).toBe(material);
+    expect(fill.userData.inkHardShadowDepthMaterial).toBe(depthMaterial);
+    expect((material as ShaderMaterial).uniforms.inkHardShadowOwnerId!.value).toBe(37);
+    expect(depthMaterial.uniforms.inkHardShadowOwnerId!.value).toBe(37);
+    expect(root.getObjectByName('InkShapeRibbon')).not.toBe(previousRibbon);
+    disposeObjectTree(groupRoot);
   });
 
   it('identifies Line helpers for Ink hard-shadow suppression', () => {

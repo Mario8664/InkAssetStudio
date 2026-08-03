@@ -152,6 +152,7 @@ npm.cmd run visual-check
 - [x] Terrain 改为已有地形射线相邻放置、X/Y/Z 工作面、Brush/Rectangle 和批量半透明预览。
 - [x] Terrain 改为固定 PICO-8 颜色、按钮式 Tile/四向旋转，并增加一秒工具形状预览。
 - [x] 修复 Plane 同笔越界扩展、扩大后的局部坐标映射、多 Shape Outline/Fill 预览与提交。
+- [x] 修复 Outline Worker 回写整体替换 Shape；现在只替换 Ribbon，保留 Fill GPU 资源和运行期硬阴影 owner。
 - [x] 将 Fill、Terrain、Helper 与 Transform 热路径改为精确局部更新。
 - [x] 增加 Group/Shape Transform Handle、Cuboid Size Handle、Sphere Radius Handle、Cylinder Radius/Height Handle、Frustum Top/Height/Bottom Handle、World/Local 空间与持久化 Snap 设置。
 - [x] 将 Group/Shape 删除按钮移到左侧列表对应项，并增加 X/Y/Z/Camera Plane 创建按钮、Cylinder/Frustum 创建按钮和删除键左侧的 Shape 绘制排除眼睛按钮。
