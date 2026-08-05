@@ -2,6 +2,12 @@ import type { InkFillBrushShape, InkPlaneOrientation } from '../ink/ink';
 import { DEFAULT_INK_FILL_BRUSH_SIZE, DEFAULT_INK_STROKE_COLOR, DEFAULT_INK_STROKE_WIDTH } from '../ink/ink';
 import { DEFAULT_TILE_COLOR, isPico8ColorId, type Pico8ColorId } from '../terrain/pico8';
 import type { TileKind, TileRotation } from '../terrain/terrain';
+import {
+  cloneStudioInkAppearance,
+  createStudioInkAppearance,
+  normalizeStudioInkAppearance,
+  type StudioInkAppearance,
+} from './inkAppearance';
 
 export type WorkspaceMode = 'terrain' | 'select' | 'shape' | 'draw';
 export type InkDrawTool = 'outline' | 'outline-eraser' | 'fill-brush' | 'fill-eraser' | 'fill-bucket' | 'picker';
@@ -46,6 +52,8 @@ export type StudioEditorSession = {
   showTerrainEdges: boolean;
   showInfiniteGrid: boolean;
   showAxes: boolean;
+  /** Source/Watercolor presentation and non-temporal Watercolor parameters. */
+  inkAppearance: StudioInkAppearance;
   leftPanelOpen: boolean;
   rightPanelOpen: boolean;
   /** Editor-only Shape IDs skipped by drawing, colour picking and Shape selection. */
@@ -85,6 +93,7 @@ export function createStudioEditorSession(): StudioEditorSession {
     showTerrainEdges: true,
     showInfiniteGrid: true,
     showAxes: true,
+    inkAppearance: createStudioInkAppearance(),
     leftPanelOpen: true,
     rightPanelOpen: true,
     excludedShapeIds: [],
@@ -97,6 +106,7 @@ export function cloneStudioEditorSession(session: StudioEditorSession): StudioEd
     ...session,
     palette: [...session.palette],
     excludedShapeIds: [...session.excludedShapeIds],
+    inkAppearance: cloneStudioInkAppearance(session.inkAppearance),
   };
 }
 
@@ -146,6 +156,7 @@ export function normalizeStudioEditorSession(value: unknown): StudioEditorSessio
         : fallback.showTerrainEdges,
     showInfiniteGrid: typeof source.showInfiniteGrid === 'boolean' ? source.showInfiniteGrid : fallback.showInfiniteGrid,
     showAxes: typeof source.showAxes === 'boolean' ? source.showAxes : fallback.showAxes,
+    inkAppearance: normalizeStudioInkAppearance(source.inkAppearance),
     leftPanelOpen: typeof source.leftPanelOpen === 'boolean' ? source.leftPanelOpen : fallback.leftPanelOpen,
     rightPanelOpen: typeof source.rightPanelOpen === 'boolean' ? source.rightPanelOpen : fallback.rightPanelOpen,
     excludedShapeIds: Array.isArray(source.excludedShapeIds)

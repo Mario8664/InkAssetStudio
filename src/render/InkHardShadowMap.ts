@@ -2,7 +2,6 @@ import {
   Color,
   DepthFormat,
   DepthTexture,
-  LessEqualCompare,
   Mesh,
   NearestFilter,
   UnsignedIntType,
@@ -14,7 +13,7 @@ import {
   type Texture,
   type WebGLRenderer,
 } from 'three';
-import type { InkFillLightingState } from './InkGroupRenderer';
+import { INK_FILL_RENDER_LAYER, type InkFillLightingState } from './InkGroupRenderer';
 
 type ShadowCasterState = {
   visible: boolean;
@@ -84,6 +83,7 @@ export class InkHardShadowMap {
     const previousClearColor = this.renderer.getClearColor(new Color());
     const previousClearAlpha = this.renderer.getClearAlpha();
     const previousBackground = this.scene.background;
+    const previousCameraLayers = camera.layers.mask;
     try {
       this.renderer.setRenderTarget(target);
       this.renderer.autoClear = true;
@@ -91,6 +91,7 @@ export class InkHardShadowMap {
       // Keep scene background out of this isolated capture. Depth clears to
       // 1.0 and the colour attachment's zero means "no Shape owner".
       this.scene.background = null;
+      camera.layers.set(INK_FILL_RENDER_LAYER);
       this.renderer.setClearColor(0x000000, 0);
       this.renderer.clear(true, true, false);
       this.renderer.render(this.scene, camera);
@@ -104,6 +105,7 @@ export class InkHardShadowMap {
       this.renderer.setRenderTarget(previousTarget);
       this.renderer.setClearColor(previousClearColor, previousClearAlpha);
       this.scene.background = previousBackground;
+      camera.layers.mask = previousCameraLayers;
       casterStates.forEach((state, mesh) => {
         mesh.visible = state.visible;
         mesh.material = state.material;
@@ -117,6 +119,7 @@ export class InkHardShadowMap {
     this.target = null;
     this.lighting.hardShadowMap.value = null;
     this.lighting.hardShadowOwnerMap.value = null;
+    this.lighting.hardShadowTexelSize.set(1, 1);
     this.lighting.hardShadowEnabled.value = 0;
     this.lighting.hardShadowOwnerMapEnabled.value = 0;
   }
@@ -127,7 +130,9 @@ export class InkHardShadowMap {
     const depthTexture = new DepthTexture(width, height, UnsignedIntType);
     depthTexture.name = 'InkHardShadowMap.depth';
     depthTexture.format = DepthFormat;
-    depthTexture.compareFunction = LessEqualCompare;
+    // Source performs one raw centre comparison; Watercolor reconstructs
+    // continuous visibility from the same nearest depth texels.
+    depthTexture.compareFunction = null;
     depthTexture.minFilter = NearestFilter;
     depthTexture.magFilter = NearestFilter;
     depthTexture.generateMipmaps = false;
@@ -144,6 +149,7 @@ export class InkHardShadowMap {
     this.height = height;
     this.lighting.hardShadowMap.value = depthTexture as Texture;
     this.lighting.hardShadowOwnerMap.value = this.target.texture;
+    this.lighting.hardShadowTexelSize.set(1 / width, 1 / height);
   }
 }
 

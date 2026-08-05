@@ -5,8 +5,8 @@ import {
   DepthTexture,
   DirectionalLight,
   DoubleSide,
+  GLSL3,
   Group,
-  LessEqualCompare,
   NearestFilter,
   LineBasicMaterial,
   LineSegments,
@@ -43,6 +43,7 @@ import {
 } from '../src/domain/ink/ink';
 import type { InkCuboidFace, InkShape } from '../src/domain/ink/ink';
 import { createTerrainTile } from '../src/domain/terrain/terrain';
+import { SAVED_PAINTING_INK_APPEARANCE } from '../src/domain/workspace/inkAppearance';
 import { EditorViewportGuides } from '../src/render/EditorViewportGuides';
 import {
   ACTIVE_INK_SHAPE_GRID,
@@ -62,12 +63,17 @@ import { createTerrainBatchGeometry } from '../src/render/terrainGeometry';
 import { TerrainRenderer } from '../src/render/TerrainRenderer';
 import {
   createInkFillLightingState,
+  createInkRenderAppearanceState,
   createInkShapeRenderRoot,
+  INK_FILL_RENDER_LAYER,
+  INK_RIBBON_RENDER_LAYER,
+  INK_WATERCOLOR_FILL_CAPTURE_MATERIAL_KEY,
   setInkHardShadowOwnerId,
   updateInkSurfaceOutlines,
   updateInkShapeFillSurfaces,
 } from '../src/render/InkGroupRenderer';
 import { hasRendererMaterial, InkHardShadowMap } from '../src/render/InkHardShadowMap';
+import { InkWatercolorFillLayer } from '../src/render/InkWatercolorFillLayer';
 import { disposeObjectTree } from '../src/render/dispose';
 import {
   createTerrainPreviewMaterial,
@@ -246,6 +252,84 @@ describe('Reference rendering', () => {
     expect(second.clone().sub(first).cross(third.clone().sub(first)).z).toBeGreaterThan(0);
     disposeObjectTree(root);
   });
+
+  it('mounts separate Source and Watercolor resources on dedicated Fill and Ribbon layers', () => {
+    const shape = createInkCuboidShape();
+    shape.strokes = [createInkOutlineStroke([
+      { face: 'positive-z', u: -0.2, v: 0, pressure: 1 },
+      { face: 'positive-z', u: 0.2, v: 0, pressure: 1 },
+    ], '#000000', 0.04)];
+    const painted = paintInkFill(shape, [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
+    const appearance = createInkRenderAppearanceState();
+    const root = createInkShapeRenderRoot(
+      compileInkShape(painted),
+      painted,
+      createInkFillLightingState(),
+      appearance,
+    );
+    const fill = root.getObjectByName('InkFillSurface') as Mesh;
+    const sourceRibbon = root.getObjectByName('InkShapeRibbon') as Mesh;
+    const watercolorRibbon = root.getObjectByName('InkShapeWatercolorRibbon') as Mesh;
+    const fillMaterial = fill.material as ShaderMaterial;
+    const sourceMaterial = sourceRibbon.material as ShaderMaterial;
+    const watercolorMaterial = watercolorRibbon.material as ShaderMaterial;
+    const captureMaterial = fill.userData[INK_WATERCOLOR_FILL_CAPTURE_MATERIAL_KEY] as ShaderMaterial;
+
+    expect(fill.layers.mask).toBe(1 << INK_FILL_RENDER_LAYER);
+    expect(sourceRibbon.layers.mask).toBe(1 << INK_RIBBON_RENDER_LAYER);
+    expect(watercolorRibbon.layers.mask).toBe(1 << INK_RIBBON_RENDER_LAYER);
+    expect(fillMaterial.uniforms.inkWatercolorEnabled).toBe(appearance.watercolorEnabled);
+    expect(sourceMaterial.uniforms.inkWatercolorEnabled).toBe(appearance.watercolorEnabled);
+    expect(watercolorMaterial.uniforms.inkWatercolorEnabled).toBe(appearance.watercolorEnabled);
+    expect(fillMaterial.fragmentShader).toContain('sampleInkWatercolorNearestSource');
+    expect(fillMaterial.fragmentShader).toContain('sampleInkWatercolorContouredSource');
+    expect(sourceMaterial.fragmentShader).toContain('inkWatercolorEnabled > 0.5');
+    expect(watercolorMaterial.fragmentShader).toContain('inkWatercolorEnabled < 0.5');
+    expect(captureMaterial).toBeInstanceOf(ShaderMaterial);
+    expect(captureMaterial.glslVersion).toBe(GLSL3);
+    expect(captureMaterial.fragmentShader).toContain('layout(location = 0) out highp vec4 inkWatercolorShaded;');
+    expect(captureMaterial.fragmentShader).toContain('layout(location = 1) out highp vec4 inkWatercolorNoise;');
+    expect(captureMaterial.uniforms.inkWatercolorNoiseScale).toBe(appearance.watercolorNoiseScale);
+
+    const disposeCapture = vi.spyOn(captureMaterial, 'dispose');
+    disposeObjectTree(root);
+    expect(disposeCapture).toHaveBeenCalledOnce();
+  });
+
+  it('builds a three-level immediate Watercolor diffusion composite without temporal state', () => {
+    const layer = new InkWatercolorFillLayer({} as WebGLRenderer);
+    layer.setSize(320, 180, 2);
+    layer.setSettings(SAVED_PAINTING_INK_APPEARANCE.watercolorFill);
+    const internals = layer as unknown as {
+      ensureTargets: () => void;
+      captureTarget: WebGLRenderTarget;
+      softTailTargets: WebGLRenderTarget[];
+      softTailScratchTargets: WebGLRenderTarget[];
+      seedMaterial: ShaderMaterial;
+      downsampleMaterial: ShaderMaterial;
+      blurMaterial: ShaderMaterial;
+      compositeMaterial: ShaderMaterial;
+    };
+    internals.ensureTargets();
+    expect(internals.captureTarget.textures).toHaveLength(2);
+    expect(internals.softTailTargets).toHaveLength(3);
+    expect(internals.softTailScratchTargets).toHaveLength(3);
+    expect(internals.compositeMaterial.fragmentShader).toContain('inkWatercolorSoftTailMap0');
+    expect(internals.compositeMaterial.fragmentShader).toContain('inkWatercolorSoftTailMap1');
+    expect(internals.compositeMaterial.fragmentShader).toContain('inkWatercolorSoftTailMap2');
+    expect(internals.seedMaterial.uniforms.inkWatercolorWaterEdgeWidth!.value).toBe(4);
+    expect(internals.compositeMaterial.uniforms.inkWatercolorSoftTailRadius!.value).toBe(15);
+    expect(internals.compositeMaterial.uniforms.inkWatercolorColorMixRadius!.value).toBe(5);
+    const shaderSource = [
+      internals.seedMaterial.fragmentShader,
+      internals.downsampleMaterial.fragmentShader,
+      internals.blurMaterial.fragmentShader,
+      internals.compositeMaterial.fragmentShader,
+    ].join('\n');
+    expect(shaderSource).not.toMatch(/temporal|history|reprojection|jitter/i);
+    layer.dispose();
+  });
+
   it('renders camera-facing smooth-surface Ribbons only for supported Shapes', () => {
     for (const geometry of [createInkCylinderGeometry(0.75, 1.5), createInkFrustumGeometry(0.6, 1.2, 1.5)]) {
       const positions = geometry.getAttribute('position');
@@ -615,15 +699,20 @@ describe('Reference rendering', () => {
     const depthTexture = lighting.hardShadowMap.value as DepthTexture;
     expect(depthTexture.format).toBe(DepthFormat);
     expect(depthTexture.type).toBe(UnsignedIntType);
-    expect(depthTexture.compareFunction).toBe(LessEqualCompare);
+    expect(depthTexture.compareFunction).toBeNull();
     expect(depthTexture.minFilter).toBe(NearestFilter);
     expect(depthTexture.magFilter).toBe(NearestFilter);
     expect(lighting.hardShadowOwnerMap.value).not.toBeNull();
     expect(lighting.hardShadowOwnerMap.value!.minFilter).toBe(NearestFilter);
     expect(lighting.hardShadowOwnerMap.value!.magFilter).toBe(NearestFilter);
     expect(lighting.hardShadowOwnerMapEnabled.value).toBe(1);
+    expect(lighting.hardShadowTexelSize.x).toBeGreaterThan(0);
+    expect(lighting.hardShadowTexelSize.x).toBeLessThan(1);
+    expect(lighting.hardShadowTexelSize.y).toBeGreaterThan(0);
+    expect(lighting.hardShadowTexelSize.y).toBeLessThan(1);
 
     hardShadow.dispose();
+    expect(lighting.hardShadowTexelSize.toArray()).toEqual([1, 1]);
     caster.geometry.dispose();
     casterMaterial.dispose();
     casterDepthMaterial.dispose();
@@ -635,7 +724,7 @@ describe('Reference rendering', () => {
     (helper.material as LineBasicMaterial).dispose();
   });
 
-  it('uses owner-aware single-center hard Fill shadow bands', () => {
+  it('uses owner-aware Source-center and Watercolor-contoured hard Fill shadow bands', () => {
     const shape = paintInkFill(createInkCuboidShape(), [{ face: 'positive-z', u: 0, v: 0, pressure: 1 }], '#29adff', 0.12, 'circle', false);
     const root = createInkShapeRenderRoot(compileInkShape(shape), shape, createInkFillLightingState());
     const fill = root.getObjectByName('InkFillSurface') as Mesh;
@@ -643,10 +732,14 @@ describe('Reference rendering', () => {
     const depthMaterial = fill.userData.inkHardShadowDepthMaterial as ShaderMaterial;
 
     expect(material.side).toBe(DoubleSide);
-    expect(material.fragmentShader).toContain('uniform sampler2DShadow inkHardShadowMap;');
+    expect(material.fragmentShader).toContain('uniform sampler2D inkHardShadowMap;');
     expect(material.fragmentShader).toContain('uniform sampler2D inkHardShadowOwnerMap;');
-    expect(material.fragmentShader).toContain('isInkHardShadowSelfOwner(shadowUvDepth.xy)');
-    expect(material.fragmentShader).toContain('texture(inkHardShadowMap, shadowUvDepth) <= 0.5');
+    expect(material.fragmentShader).toContain('uniform vec2 inkHardShadowTexelSize;');
+    expect(material.fragmentShader).toContain('isInkHardShadowSelfOwner(shadowUv)');
+    expect(material.fragmentShader).toContain('receiverDepth <= casterDepth');
+    expect(material.fragmentShader).toContain('sampleInkHardShadowCenterVisibility(shadowUvDepth)');
+    expect(material.fragmentShader).toContain('sampleInkWatercolorContouredHardShadowVisibility(shadowUvDepth)');
+    expect(material.fragmentShader).not.toContain('sampler2DShadow');
     expect(material.fragmentShader).not.toContain('inkVogelDiskSample');
     expect(material.fragmentShader).not.toContain('sampleInkHardShadowPcf');
     expect(material.fragmentShader).not.toContain('inkHardShadowBias');

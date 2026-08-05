@@ -7,7 +7,10 @@ import {
   DynamicDrawUsage,
   DoubleSide,
   Float32BufferAttribute,
+  GLSL3,
   Group,
+  type IUniform,
+  Matrix3,
   Mesh,
   Object3D,
   PlaneGeometry,
@@ -35,6 +38,19 @@ import {
   type InkGroupData,
   type InkShape,
 } from '../domain/ink/ink';
+import { SAVED_PAINTING_INK_APPEARANCE } from '../domain/workspace/inkAppearance';
+
+/** Dedicated camera layers used by Studio's Ink subpasses. */
+export const INK_FILL_RENDER_LAYER = 1;
+export const INK_RIBBON_RENDER_LAYER = 2;
+
+export function setInkDisplayRenderLayer(root: Object3D): void {
+  root.traverse((object) => object.layers.set(
+    object instanceof Mesh && object.name === 'InkFillSurface'
+      ? INK_FILL_RENDER_LAYER
+      : INK_RIBBON_RENDER_LAYER,
+  ));
+}
 
 /** Shared mutable uniforms for every Fill material mounted by one GridSceneView. */
 export type InkFillLightingState = {
@@ -42,10 +58,40 @@ export type InkFillLightingState = {
   ambientIrradiance: Vector3;
   hardShadowMap: { value: Texture | null };
   hardShadowOwnerMap: { value: Texture | null };
+  hardShadowTexelSize: Vector2;
   hardShadowMatrix: Matrix4;
   hardShadowEnabled: { value: number };
   hardShadowOwnerMapEnabled: { value: number };
 };
+
+/** Shared mutable preview choice and Watercolor material parameters. */
+export type InkRenderAppearanceState = {
+  watercolorEnabled: { value: number };
+  crayonGrainDensity: { value: number };
+  crayonMinimumOpacity: { value: number };
+  watercolorNoiseScale: { value: number };
+};
+
+type InkDisplayDepthState = {
+  sceneDepth: { value: Texture | null };
+  sceneDepthSize: Vector2;
+  sceneDepthEnabled: { value: number };
+};
+
+type InkRenderFeatures = Readonly<{
+  sceneDepth: boolean;
+  hardShadows: boolean;
+}>;
+
+const STUDIO_INK_RENDER_FEATURES: InkRenderFeatures = { sceneDepth: false, hardShadows: true };
+
+function createInkDisplayDepthState(): InkDisplayDepthState {
+  return {
+    sceneDepth: { value: null },
+    sceneDepthSize: new Vector2(1, 1),
+    sceneDepthEnabled: { value: 0 },
+  };
+}
 
 /** Zero is background; the red owner channel provides 255 concurrent Shape IDs. */
 export const INK_HARD_SHADOW_OWNER_ID_LIMIT = 255;
@@ -55,6 +101,13 @@ export type InkHardShadowOwnerState = {
 };
 
 const INK_HARD_SHADOW_OWNER_STATE_KEY = 'inkHardShadowOwnerState';
+const INK_WATERCOLOR_CAPTURE_STATE_KEY = 'inkWatercolorCaptureState';
+export const INK_WATERCOLOR_FILL_CAPTURE_MATERIAL_KEY = 'inkWatercolorFillCaptureMaterial';
+
+/** Shared by Fill Shapes in one Group; transient and never serialized. */
+export type InkWatercolorCaptureState = {
+  stableSeed: { value: number };
+};
 
 export function createInkFillLightingState(): InkFillLightingState {
   return {
@@ -62,11 +115,212 @@ export function createInkFillLightingState(): InkFillLightingState {
     ambientIrradiance: new Vector3(0.22, 0.22, 0.22),
     hardShadowMap: { value: null },
     hardShadowOwnerMap: { value: null },
+    hardShadowTexelSize: new Vector2(1, 1),
     hardShadowMatrix: new Matrix4(),
     hardShadowEnabled: { value: 0 },
     hardShadowOwnerMapEnabled: { value: 0 },
   };
 }
+
+export function createInkRenderAppearanceState(): InkRenderAppearanceState {
+  const defaults = SAVED_PAINTING_INK_APPEARANCE;
+  return {
+    watercolorEnabled: { value: defaults.appearance === 'watercolor' ? 1 : 0 },
+    crayonGrainDensity: { value: defaults.crayonGrainDensity },
+    crayonMinimumOpacity: { value: defaults.crayonMinimumOpacity },
+    watercolorNoiseScale: { value: defaults.watercolorFill.noiseScale },
+  };
+}
+
+function createInkWatercolorCaptureState(stableId: string): InkWatercolorCaptureState {
+  return { stableSeed: { value: createInkStableSeed(stableId) } };
+}
+
+export function getInkWatercolorCaptureState(root: Object3D): InkWatercolorCaptureState | null {
+  return (root.userData[INK_WATERCOLOR_CAPTURE_STATE_KEY] as InkWatercolorCaptureState | undefined) ?? null;
+}
+
+function getOrCreateInkWatercolorCaptureState(root: Object3D, stableId: string): InkWatercolorCaptureState {
+  const existing = getInkWatercolorCaptureState(root);
+  if (existing) return existing;
+  const created = createInkWatercolorCaptureState(stableId);
+  root.userData[INK_WATERCOLOR_CAPTURE_STATE_KEY] = created;
+  return created;
+}
+
+const INK_WATERCOLOR_MARCHING_SQUARES_GLSL = `
+float getInkWatercolorMarchingSquaresCoverage(
+  float bottomLeft,
+  float bottomRight,
+  float topRight,
+  float topLeft,
+  vec2 localPosition
+) {
+  float caseIndex = bottomLeft + bottomRight * 2.0 + topRight * 4.0 + topLeft * 8.0;
+  if (caseIndex < 0.5) return 0.0;
+  if (caseIndex > 14.5) return 1.0;
+  if (caseIndex < 1.5) return localPosition.x + localPosition.y < 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 2.5) return (1.0 - localPosition.x) + localPosition.y < 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 3.5) return localPosition.y < 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 4.5) return (1.0 - localPosition.x) + (1.0 - localPosition.y) < 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 5.5) return localPosition.x + localPosition.y < 0.5
+    || localPosition.x + localPosition.y > 1.5 ? 1.0 : 0.0;
+  if (caseIndex < 6.5) return localPosition.x > 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 7.5) return localPosition.x + (1.0 - localPosition.y) >= 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 8.5) return localPosition.x + (1.0 - localPosition.y) < 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 9.5) return localPosition.x < 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 10.5) return (1.0 - localPosition.x) + localPosition.y < 0.5
+    || localPosition.x + (1.0 - localPosition.y) < 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 11.5) return (1.0 - localPosition.x) + (1.0 - localPosition.y) >= 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 12.5) return localPosition.y > 0.5 ? 1.0 : 0.0;
+  if (caseIndex < 13.5) return (1.0 - localPosition.x) + localPosition.y >= 0.5 ? 1.0 : 0.0;
+  return localPosition.x + localPosition.y >= 0.5 ? 1.0 : 0.0;
+}`;
+
+/**
+ * Watercolor keeps authored RGB at a nearest opaque texel and reconstructs
+ * only its binary alpha contour. This display-time interpretation never
+ * changes source pixels, their compact layout, or Source appearance.
+ */
+const INK_WATERCOLOR_CONTOURED_FILL_GLSL = `
+vec2 getInkWatercolorContourDomainUv(vec2 textureUv) {
+  // Keep the continuous position inside the authored chart, including the
+  // half-cell range between a guard texel and its first authored texel.
+  vec2 contentMin = inkFillTextureUvOffset;
+  vec2 contentMax = inkFillTextureUvOffset + inkFillTextureUvScale - inkFillTexelSize * 0.0001;
+  return clamp(textureUv, contentMin, max(contentMin, contentMax));
+}
+
+vec2 getInkWatercolorContourTexelUv(vec2 texelCell) {
+  vec2 halfTexel = inkFillTexelSize * 0.5;
+  return clamp((texelCell + vec2(0.5)) * inkFillTexelSize, halfTexel, vec2(1.0) - halfTexel);
+}
+
+vec4 sampleInkWatercolorContourTexel(vec2 texelCell) {
+  return texture2D(inkFillMap, getInkWatercolorContourTexelUv(texelCell));
+}
+
+vec4 sampleInkWatercolorNearestSource(vec2 textureUv) {
+  vec2 texelCell = floor(textureUv / inkFillTexelSize);
+  return sampleInkWatercolorContourTexel(texelCell);
+}
+
+bool hasInkWatercolorSameRgb(vec4 left, vec4 right) {
+  return all(equal(left.rgb, right.rgb));
+}
+
+float getInkWatercolorContourCoverage(vec2 textureUv) {
+  vec2 domainUv = getInkWatercolorContourDomainUv(textureUv);
+  vec2 texelPosition = domainUv / inkFillTexelSize - vec2(0.5);
+  vec2 texelCell = floor(texelPosition);
+  vec2 localPosition = fract(texelPosition);
+  float bottomLeft = step(0.5, sampleInkWatercolorContourTexel(texelCell).a);
+  float bottomRight = step(0.5, sampleInkWatercolorContourTexel(texelCell + vec2(1.0, 0.0)).a);
+  float topRight = step(0.5, sampleInkWatercolorContourTexel(texelCell + vec2(1.0, 1.0)).a);
+  float topLeft = step(0.5, sampleInkWatercolorContourTexel(texelCell + vec2(0.0, 1.0)).a);
+  return getInkWatercolorMarchingSquaresCoverage(bottomLeft, bottomRight, topRight, topLeft, localPosition);
+}
+
+vec4 sampleInkWatercolorContouredSource(vec2 textureUv) {
+  vec2 domainUv = getInkWatercolorContourDomainUv(textureUv);
+  vec2 texelPosition = domainUv / inkFillTexelSize - vec2(0.5);
+  vec2 texelCell = floor(texelPosition);
+  vec2 localPosition = fract(texelPosition);
+  vec4 bottomLeft = sampleInkWatercolorContourTexel(texelCell);
+  vec4 bottomRight = sampleInkWatercolorContourTexel(texelCell + vec2(1.0, 0.0));
+  vec4 topRight = sampleInkWatercolorContourTexel(texelCell + vec2(1.0, 1.0));
+  vec4 topLeft = sampleInkWatercolorContourTexel(texelCell + vec2(0.0, 1.0));
+
+  // Only reconstruct an interior colour edge when every corner is authored
+  // opaque and the cell has exactly two RGB labels. The selected label owns a
+  // Marching Squares region; the other label owns its complement. No RGBs are
+  // interpolated, and ambiguous checkerboards remain raw nearest samples.
+  bool allOpaque = bottomLeft.a >= 0.5
+    && bottomRight.a >= 0.5
+    && topRight.a >= 0.5
+    && topLeft.a >= 0.5;
+  if (allOpaque) {
+    vec4 selectedColour = bottomLeft;
+    bool bottomRightIsSelected = hasInkWatercolorSameRgb(bottomRight, selectedColour);
+    bool topRightIsSelected = hasInkWatercolorSameRgb(topRight, selectedColour);
+    bool topLeftIsSelected = hasInkWatercolorSameRgb(topLeft, selectedColour);
+    bool hasAlternateColour = !bottomRightIsSelected || !topRightIsSelected || !topLeftIsSelected;
+    vec4 alternateColour = !bottomRightIsSelected ? bottomRight
+      : (!topRightIsSelected ? topRight : topLeft);
+    bool hasExactlyTwoColours = hasAlternateColour
+      && (bottomRightIsSelected || hasInkWatercolorSameRgb(bottomRight, alternateColour))
+      && (topRightIsSelected || hasInkWatercolorSameRgb(topRight, alternateColour))
+      && (topLeftIsSelected || hasInkWatercolorSameRgb(topLeft, alternateColour));
+    if (hasExactlyTwoColours) {
+      float selectedBottomLeft = 1.0;
+      float selectedBottomRight = bottomRightIsSelected ? 1.0 : 0.0;
+      float selectedTopRight = topRightIsSelected ? 1.0 : 0.0;
+      float selectedTopLeft = topLeftIsSelected ? 1.0 : 0.0;
+      float selectedCase = selectedBottomLeft + selectedBottomRight * 2.0
+        + selectedTopRight * 4.0 + selectedTopLeft * 8.0;
+      bool checkerboard = abs(selectedCase - 5.0) < 0.5 || abs(selectedCase - 10.0) < 0.5;
+      if (!checkerboard) {
+        float selectedCoverage = getInkWatercolorMarchingSquaresCoverage(
+          selectedBottomLeft,
+          selectedBottomRight,
+          selectedTopRight,
+          selectedTopLeft,
+          localPosition
+        );
+        return selectedCoverage >= 0.5 ? selectedColour : alternateColour;
+      }
+    }
+  }
+
+  vec4 nearestOpaque = bottomLeft;
+  float nearestDistance = 1000000.0;
+  float bottomLeftDistance = dot(localPosition, localPosition);
+  float bottomRightDistance = dot(localPosition - vec2(1.0, 0.0), localPosition - vec2(1.0, 0.0));
+  float topRightDistance = dot(localPosition - vec2(1.0), localPosition - vec2(1.0));
+  float topLeftDistance = dot(localPosition - vec2(0.0, 1.0), localPosition - vec2(0.0, 1.0));
+  if (bottomLeft.a >= 0.5 && bottomLeftDistance < nearestDistance) { nearestOpaque = bottomLeft; nearestDistance = bottomLeftDistance; }
+  if (bottomRight.a >= 0.5 && bottomRightDistance < nearestDistance) { nearestOpaque = bottomRight; nearestDistance = bottomRightDistance; }
+  if (topRight.a >= 0.5 && topRightDistance < nearestDistance) { nearestOpaque = topRight; nearestDistance = topRightDistance; }
+  if (topLeft.a >= 0.5 && topLeftDistance < nearestDistance) nearestOpaque = topLeft;
+  return nearestOpaque;
+}`;
+
+/** Watercolor-only nearest visibility with continuous Marching Squares edges. */
+const INK_WATERCOLOR_CONTOURED_HARD_SHADOW_GLSL = `
+bool isInkHardShadowSelfOwner(vec2 shadowUv) {
+  if (inkHardShadowOwnerMapEnabled < 0.5 || inkHardShadowOwnerId < 0.5) return false;
+  float capturedOwnerId = floor(texture2D(inkHardShadowOwnerMap, shadowUv).r * 255.0 + 0.5);
+  return abs(capturedOwnerId - inkHardShadowOwnerId) < 0.5;
+}
+
+float sampleInkHardShadowVisibilityTap(vec2 shadowUv, float receiverDepth) {
+  if (isInkHardShadowSelfOwner(shadowUv)) return 1.0;
+  float casterDepth = texture2D(inkHardShadowMap, shadowUv).r;
+  return receiverDepth <= casterDepth ? 1.0 : 0.0;
+}
+
+float sampleInkHardShadowCenterVisibility(vec3 shadowUvDepth) {
+  return sampleInkHardShadowVisibilityTap(shadowUvDepth.xy, shadowUvDepth.z);
+}
+
+float sampleInkWatercolorHardShadowVisibilityCell(vec2 texelCell, float receiverDepth) {
+  vec2 halfTexel = inkHardShadowTexelSize * 0.5;
+  vec2 shadowUv = clamp((texelCell + vec2(0.5)) * inkHardShadowTexelSize, halfTexel, vec2(1.0) - halfTexel);
+  return sampleInkHardShadowVisibilityTap(shadowUv, receiverDepth);
+}
+
+float sampleInkWatercolorContouredHardShadowVisibility(vec3 shadowUvDepth) {
+  vec2 clampedUv = clamp(shadowUvDepth.xy, vec2(0.0), vec2(1.0) - inkHardShadowTexelSize * 0.0001);
+  vec2 texelPosition = clampedUv / inkHardShadowTexelSize - vec2(0.5);
+  vec2 texelCell = floor(texelPosition);
+  vec2 localPosition = fract(texelPosition);
+  float bottomLeft = sampleInkWatercolorHardShadowVisibilityCell(texelCell, shadowUvDepth.z);
+  float bottomRight = sampleInkWatercolorHardShadowVisibilityCell(texelCell + vec2(1.0, 0.0), shadowUvDepth.z);
+  float topRight = sampleInkWatercolorHardShadowVisibilityCell(texelCell + vec2(1.0, 1.0), shadowUvDepth.z);
+  float topLeft = sampleInkWatercolorHardShadowVisibilityCell(texelCell + vec2(0.0, 1.0), shadowUvDepth.z);
+  return getInkWatercolorMarchingSquaresCoverage(bottomLeft, bottomRight, topRight, topLeft, localPosition);
+}`;
+
 
 function getInkHardShadowOwnerState(root: Object3D): InkHardShadowOwnerState {
   const existing = root.userData[INK_HARD_SHADOW_OWNER_STATE_KEY] as InkHardShadowOwnerState | undefined;
@@ -91,14 +345,16 @@ export function setInkHardShadowOwnerId(shapeRoot: Object3D, ownerId: number): v
 export function createInkGroupRenderRoot(
   data: InkGroupData,
   lighting = createInkFillLightingState(),
+  appearance = createInkRenderAppearanceState(),
 ): Group {
   const root = new Group();
   root.name = 'InkGroup';
+  const watercolorCapture = getOrCreateInkWatercolorCaptureState(root, data.id);
   root.position.set(data.anchorPosition.x, data.anchorPosition.y, data.anchorPosition.z);
   root.rotation.y = ((data.placementRotation ?? 0) * Math.PI) / 180;
   for (const shape of data.compiled.shapes) {
     const source = data.shapes.find((candidate) => candidate.id === shape.shapeId);
-    const shapeRoot = source ? createInkShapeRenderRoot(shape, source, lighting) : null;
+    const shapeRoot = source ? createInkShapeRenderRoot(shape, source, lighting, appearance, watercolorCapture) : null;
     if (shapeRoot) root.add(shapeRoot);
   }
   return root;
@@ -109,18 +365,31 @@ export function createInkShapeRenderRoot(
   shape: CompiledInkShape,
   source: InkShape,
   lighting = createInkFillLightingState(),
+  appearance = createInkRenderAppearanceState(),
+  watercolorCaptureState?: InkWatercolorCaptureState,
 ): Group {
   const root = new Group();
   root.name = 'InkShape';
   root.userData.inkShapeId = shape.shapeId;
+  const watercolorCapture = watercolorCaptureState ?? createInkWatercolorCaptureState(source.id);
+  root.userData[INK_WATERCOLOR_CAPTURE_STATE_KEY] = watercolorCapture;
   const hardShadowOwner = getInkHardShadowOwnerState(root);
   root.add(createInkShapeContentRoot());
   applyInkShapeRenderTransform(root, source);
   const content = getInkShapeContentRoot(root);
-  for (const fill of shape.fill) content.add(createInkFillSurfaceMesh(fill, source, lighting, hardShadowOwner));
-  const outline = createInkShapeRenderMesh(shape, source, false);
+  for (const fill of shape.fill) content.add(createInkFillSurfaceMesh(
+    fill,
+    source,
+    lighting,
+    hardShadowOwner,
+    appearance,
+    watercolorCapture,
+  ));
+  const outline = createInkShapeRenderMesh(shape, source, false, appearance);
   if (outline) content.add(outline);
-  const surfaceOutline = createInkSurfaceOutlineRenderer(root, content, source);
+  const watercolorOutline = createInkShapeWatercolorOutlineMesh(shape, source, false, appearance);
+  if (watercolorOutline) content.add(watercolorOutline);
+  const surfaceOutline = createInkSurfaceOutlineRenderer(root, content, source, appearance);
   if (surfaceOutline) content.add(surfaceOutline.mesh);
   return root;
 }
@@ -131,7 +400,9 @@ export function updateInkShapeFillSurfaces(
   fills: readonly CompiledInkFillSurface[],
   source: InkShape,
   lighting = createInkFillLightingState(),
+  appearance = createInkRenderAppearanceState(),
 ): void {
+  const watercolorCapture = getOrCreateInkWatercolorCaptureState(root, source.id);
   const content = getInkShapeContentRoot(root);
   const existing = new Map<InkFillSurfaceId, Mesh>();
   for (const child of content.children) if (child instanceof Mesh && child.name === 'InkFillSurface' && typeof child.userData.inkFillSurfaceId === 'string') {
@@ -147,10 +418,17 @@ export function updateInkShapeFillSurfaces(
   for (const fill of fills) {
     const mesh = existing.get(fill.id);
     if (mesh) updateInkFillSurfaceMesh(mesh, fill, source);
-    else content.add(createInkFillSurfaceMesh(fill, source, lighting, getInkHardShadowOwnerState(root)));
+    else content.add(createInkFillSurfaceMesh(
+      fill,
+      source,
+      lighting,
+      getInkHardShadowOwnerState(root),
+      appearance,
+      watercolorCapture,
+    ));
   }
 
-  updateInkShapeSurfaceOutline(root, source);
+  updateInkShapeSurfaceOutline(root, source, appearance);
 }
 
 /** Updates the enabled analytic smooth-surface Ribbons for the active camera. */
@@ -159,19 +437,36 @@ export function updateInkSurfaceOutlines(root: Object3D, camera: Camera): void {
 }
 
 /** Replaces only one Shape's compiled Ribbon while preserving its Fill resources. */
-export function updateInkShapeRibbon(root: Group, ribbon: CompiledInkRibbon): void {
+export function updateInkShapeRibbon(
+  root: Group,
+  ribbon: CompiledInkRibbon,
+  source: InkShape,
+  appearance = createInkRenderAppearanceState(),
+): void {
   const content = getInkShapeContentRoot(root);
-  const existing = content.children.find((child) => child instanceof Mesh && child.name === 'InkShapeRibbon') as Mesh | undefined;
-  if (existing) {
-    existing.removeFromParent();
-    existing.geometry.dispose();
-    const materials = Array.isArray(existing.material) ? existing.material : [existing.material];
+  for (const child of [...content.children]) {
+    if (!(child instanceof Mesh) || (child.name !== 'InkShapeRibbon' && child.name !== 'InkShapeWatercolorRibbon')) continue;
+    child.removeFromParent();
+    child.geometry.dispose();
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
     materials.forEach((material) => material.dispose());
   }
-  if (ribbon.indices.length === 0) return;
-  const replacement = createInkRibbonMesh(ribbon);
-  replacement.name = 'InkShapeRibbon';
-  content.add(replacement);
+  if (ribbon.indices.length > 0) {
+    const sourceOutline = createInkSourceRibbonMesh(ribbon, appearance);
+    sourceOutline.name = 'InkShapeRibbon';
+    sourceOutline.userData.inkShapeId = source.id;
+    content.add(sourceOutline);
+    const watercolorOutline = createInkWatercolorRibbonMesh(
+      ribbon,
+      source,
+      appearance,
+      createInkStableSeed(source.id),
+    );
+    watercolorOutline.name = 'InkShapeWatercolorRibbon';
+    watercolorOutline.userData.inkShapeId = source.id;
+    content.add(watercolorOutline);
+  }
+  updateInkShapeSurfaceOutline(root, source, appearance);
 }
 
 /**
@@ -194,7 +489,7 @@ export class InkRibbonPreview {
   private colors!: BufferAttribute;
   private indices!: BufferAttribute;
 
-  constructor(createMaterial: () => ShaderMaterial = createInkRibbonMaterial) {
+  constructor(createMaterial: () => ShaderMaterial = createInkPreviewRibbonMaterial) {
     this.material = createMaterial();
     this.ensureCapacity(2, 6);
     this.geometry.setDrawRange(0, 0);
@@ -277,16 +572,56 @@ export function applyInkShapeRenderTransform(target: Object3D, shape: InkShape):
   if (content) {
     target.scale.set(1, 1, 1);
     applyInkShapeContentDimensions(content, shape);
-    return;
+  } else {
+    applyInkShapeContentDimensions(target, shape);
   }
-  applyInkShapeContentDimensions(target, shape);
+  const shapeToGroup = createInkShapeToGroupMatrix(shape);
+  target.traverse((object) => {
+    const captureMaterial = object.userData[INK_WATERCOLOR_FILL_CAPTURE_MATERIAL_KEY] as ShaderMaterial | undefined;
+    (captureMaterial?.uniforms.inkShapeToGroupMatrix?.value as Matrix4 | undefined)?.copy(shapeToGroup);
+  });
+}
+
+/** Shape-local transform into the parent Ink Group, excluding group placement. */
+function createInkShapeToGroupMatrix(shape: InkShape): Matrix4 {
+  const transform = new Object3D();
+  transform.position.set(shape.position.x, shape.position.y, shape.position.z);
+  transform.rotation.set(shape.rotation.x, shape.rotation.y, shape.rotation.z, 'YXZ');
+  applyInkShapeContentDimensions(transform, shape);
+  transform.updateMatrix();
+  return transform.matrix.clone();
 }
 
 /** Creates one independently replaceable Ink Shape render mesh. */
-export function createInkShapeRenderMesh(shape: CompiledInkShape, source: InkShape, applyTransform = true): Mesh | null {
+export function createInkShapeRenderMesh(
+  shape: CompiledInkShape,
+  source: InkShape,
+  applyTransform = true,
+  appearance = createInkRenderAppearanceState(),
+): Mesh | null {
   if (shape.ribbon.indices.length === 0) return null;
-  const mesh = createInkRibbonMesh(shape.ribbon);
+  const mesh = createInkSourceRibbonMesh(shape.ribbon, appearance);
   mesh.name = 'InkShapeRibbon';
+  mesh.userData.inkShapeId = shape.shapeId;
+  if (applyTransform) applyInkShapeRenderTransform(mesh, source);
+  return mesh;
+}
+
+/** Watercolor reuses compiled continuous Ribbon topology with Group-local grain. */
+function createInkShapeWatercolorOutlineMesh(
+  shape: CompiledInkShape,
+  source: InkShape,
+  applyTransform = true,
+  appearance = createInkRenderAppearanceState(),
+): Mesh | null {
+  if (shape.ribbon.indices.length === 0) return null;
+  const mesh = createInkWatercolorRibbonMesh(
+    shape.ribbon,
+    source,
+    appearance,
+    createInkStableSeed(source.id),
+  );
+  mesh.name = 'InkShapeWatercolorRibbon';
   mesh.userData.inkShapeId = shape.shapeId;
   if (applyTransform) applyInkShapeRenderTransform(mesh, source);
   return mesh;
@@ -330,10 +665,16 @@ class InkSurfaceOutlineRenderer {
   constructor(
     private readonly content: Group,
     private readonly shape: InkSurfaceOutlineShape,
+    appearance: InkRenderAppearanceState,
   ) {
-    this.preview = new InkRibbonPreview(() => createInkSurfaceOutlineMaterial(shape, this.emptyFillAlphaTexture));
+    this.preview = new InkRibbonPreview(() => createInkSurfaceOutlineMaterial(
+      shape,
+      this.emptyFillAlphaTexture,
+      appearance,
+    ));
     this.mesh = this.preview.mesh;
     this.mesh.name = 'InkSurfaceOutline';
+    this.mesh.layers.set(INK_RIBBON_RENDER_LAYER);
     this.mesh.userData.inkSurfaceOutlineShapeId = shape.id;
     this.mesh.userData.inkSurfaceOutlineEmptyFillAlphaTexture = this.emptyFillAlphaTexture;
     this.material = this.mesh.material as ShaderMaterial;
@@ -444,15 +785,24 @@ type InkFillAlphaSource = Readonly<{
   textureUvScale: Vector2;
 }>;
 
-function createInkSurfaceOutlineRenderer(root: Group, content: Group, shape: InkShape): InkSurfaceOutlineRenderer | null {
+function createInkSurfaceOutlineRenderer(
+  root: Group,
+  content: Group,
+  shape: InkShape,
+  appearance: InkRenderAppearanceState,
+): InkSurfaceOutlineRenderer | null {
   if ((shape.kind !== 'sphere' && shape.kind !== 'cylinder') || !shape.surfaceOutline.enabled) return null;
-  const renderer = new InkSurfaceOutlineRenderer(content, shape);
+  const renderer = new InkSurfaceOutlineRenderer(content, shape, appearance);
   root.userData[INK_SURFACE_OUTLINE_RENDERER_KEY] = renderer;
   renderer.syncFillAlpha();
   return renderer;
 }
 
-function updateInkShapeSurfaceOutline(root: Group, shape: InkShape): void {
+function updateInkShapeSurfaceOutline(
+  root: Group,
+  shape: InkShape,
+  appearance: InkRenderAppearanceState,
+): void {
   const existing = getInkSurfaceOutlineRenderer(root);
   const shouldRender = (shape.kind === 'sphere' || shape.kind === 'cylinder') && shape.surfaceOutline.enabled;
   if (!shouldRender) {
@@ -464,7 +814,7 @@ function updateInkShapeSurfaceOutline(root: Group, shape: InkShape): void {
     return;
   }
   disposeInkSurfaceOutlineRenderer(root, existing);
-  const next = createInkSurfaceOutlineRenderer(root, getInkShapeContentRoot(root), shape);
+  const next = createInkSurfaceOutlineRenderer(root, getInkShapeContentRoot(root), shape, appearance);
   if (next) getInkShapeContentRoot(root).add(next.mesh);
 }
 
@@ -635,18 +985,35 @@ function createInkFillSurfaceMesh(
   shape: InkShape,
   lighting: InkFillLightingState,
   hardShadowOwner: InkHardShadowOwnerState,
+  appearance: InkRenderAppearanceState,
+  watercolorCapture: InkWatercolorCaptureState,
 ): Mesh {
   const textureLayout = createInkFillTextureLayout(fill, shape);
   const texture = createInkFillTexture(textureLayout);
-  const material = createInkFillSurfaceMaterial(texture, fill, shape, textureLayout, lighting, hardShadowOwner);
+  const material = createInkFillSurfaceMaterial(
+    texture,
+    fill,
+    shape,
+    textureLayout,
+    lighting,
+    hardShadowOwner,
+    appearance,
+  );
   const mesh = new Mesh(createInkFillSurfaceGeometry(fill, shape), material);
   mesh.name = 'InkFillSurface';
+  mesh.layers.set(INK_FILL_RENDER_LAYER);
   mesh.userData.inkFillSurfaceId = fill.id;
   mesh.userData.inkFillTexture = texture;
   mesh.userData.inkFillGeometryKey = getInkFillGeometryKey(fill, shape);
   // This material is used only by InkHardShadowMap. Keeping it separate from
   // castShadow prevents Ink from entering the shared PBR/Reference shadow map.
   mesh.userData.inkHardShadowDepthMaterial = createInkFillHardShadowDepthMaterial(material);
+  mesh.userData[INK_WATERCOLOR_FILL_CAPTURE_MATERIAL_KEY] = createInkWatercolorFillCaptureMaterial(
+    material,
+    shape,
+    watercolorCapture,
+    appearance,
+  );
   return mesh;
 }
 
@@ -692,6 +1059,9 @@ function updateInkFillSurfaceMesh(mesh: Mesh, fill: CompiledInkFillSurface, shap
   (material.uniforms.inkFillUvSize!.value as Vector2).set(crop.width, crop.height);
   (material.uniforms.inkFillTextureUvOffset!.value as Vector2).copy(textureLayout.uvOffset);
   (material.uniforms.inkFillTextureUvScale!.value as Vector2).copy(textureLayout.uvScale);
+  (material.uniforms.inkFillTexelSize!.value as Vector2).set(1 / textureLayout.width, 1 / textureLayout.height);
+  const captureMaterial = mesh.userData[INK_WATERCOLOR_FILL_CAPTURE_MATERIAL_KEY] as ShaderMaterial | undefined;
+  (captureMaterial?.uniforms.inkShapeToGroupMatrix?.value as Matrix4 | undefined)?.copy(createInkShapeToGroupMatrix(shape));
   const geometryKey = getInkFillGeometryKey(fill, shape);
   if (mesh.userData.inkFillGeometryKey !== geometryKey) {
     mesh.geometry.dispose();
@@ -703,6 +1073,7 @@ function updateInkFillSurfaceMesh(mesh: Mesh, fill: CompiledInkFillSurface, shap
 function disposeInkFillSurfaceMesh(mesh: Mesh): void {
   (mesh.userData.inkFillTexture as DataTexture | undefined)?.dispose();
   (mesh.userData.inkHardShadowDepthMaterial as ShaderMaterial | undefined)?.dispose();
+  (mesh.userData[INK_WATERCOLOR_FILL_CAPTURE_MATERIAL_KEY] as ShaderMaterial | undefined)?.dispose();
   mesh.geometry.dispose();
   (mesh.material as ShaderMaterial).dispose();
 }
@@ -767,6 +1138,49 @@ function configureInkFillTexture(texture: DataTexture): void {
   texture.needsUpdate = true;
 }
 
+function createInkDisplayDepthUniforms(displayDepth: InkDisplayDepthState, enabled: boolean): Record<string, IUniform> {
+  return enabled ? {
+    inkSceneDepth: displayDepth.sceneDepth,
+    inkSceneDepthSize: { value: displayDepth.sceneDepthSize },
+    inkSceneDepthEnabled: displayDepth.sceneDepthEnabled,
+  } : {};
+}
+
+function createInkHardShadowUniforms(
+  lighting: InkFillLightingState,
+  hardShadowOwner: InkHardShadowOwnerState,
+  enabled: boolean,
+): Record<string, IUniform> {
+  return enabled ? {
+    inkHardShadowMap: lighting.hardShadowMap,
+    inkHardShadowOwnerMap: lighting.hardShadowOwnerMap,
+    inkHardShadowTexelSize: { value: lighting.hardShadowTexelSize },
+    inkHardShadowMatrix: { value: lighting.hardShadowMatrix },
+    inkHardShadowEnabled: lighting.hardShadowEnabled,
+    inkHardShadowOwnerMapEnabled: lighting.hardShadowOwnerMapEnabled,
+    inkHardShadowOwnerId: hardShadowOwner.id,
+  } : {};
+}
+
+const INK_DISPLAY_DEPTH_FRAGMENT = `
+uniform sampler2D inkSceneDepth;
+uniform vec2 inkSceneDepthSize;
+uniform float inkSceneDepthEnabled;
+
+bool isInkOccludedByScene() {
+  if (inkSceneDepthEnabled < 0.5) return false;
+  vec2 sceneUv = gl_FragCoord.xy / inkSceneDepthSize;
+  float sceneDepth = texture2D(inkSceneDepth, sceneUv).x;
+  return gl_FragCoord.z > sceneDepth + 0.00002;
+}`;
+
+const INK_NO_DISPLAY_DEPTH_FRAGMENT = `
+bool isInkOccludedByScene() { return false; }`;
+
+function getInkDisplayDepthFragment(features: InkRenderFeatures): string {
+  return features.sceneDepth ? INK_DISPLAY_DEPTH_FRAGMENT : INK_NO_DISPLAY_DEPTH_FRAGMENT;
+}
+
 function createInkFillSurfaceMaterial(
   texture: DataTexture,
   fill: CompiledInkFillSurface,
@@ -774,7 +1188,10 @@ function createInkFillSurfaceMaterial(
   textureLayout: InkFillTextureLayout,
   lighting: InkFillLightingState,
   hardShadowOwner: InkHardShadowOwnerState,
+  appearance: InkRenderAppearanceState,
 ): ShaderMaterial {
+  const displayDepth = createInkDisplayDepthState();
+  const features = STUDIO_INK_RENDER_FEATURES;
   const crop = getInkFillCrop(fill, shape);
   return new ShaderMaterial({
     uniforms: {
@@ -783,23 +1200,19 @@ function createInkFillSurfaceMaterial(
       inkFillUvSize: { value: new Vector2(crop.width, crop.height) },
       inkFillTextureUvOffset: { value: textureLayout.uvOffset.clone() },
       inkFillTextureUvScale: { value: textureLayout.uvScale.clone() },
+      inkFillTexelSize: { value: new Vector2(1 / textureLayout.width, 1 / textureLayout.height) },
+      inkWatercolorEnabled: appearance.watercolorEnabled,
       inkLightDirection: { value: lighting.lightDirection },
       inkAmbientIrradiance: { value: lighting.ambientIrradiance },
-      inkHardShadowMap: lighting.hardShadowMap,
-      inkHardShadowOwnerMap: lighting.hardShadowOwnerMap,
-      inkHardShadowMatrix: { value: lighting.hardShadowMatrix },
-      inkHardShadowEnabled: lighting.hardShadowEnabled,
-      inkHardShadowOwnerMapEnabled: lighting.hardShadowOwnerMapEnabled,
-      inkHardShadowOwnerId: hardShadowOwner.id,
+      ...createInkHardShadowUniforms(lighting, hardShadowOwner, features.hardShadows),
+      ...createInkDisplayDepthUniforms(displayDepth, features.sceneDepth),
     },
     transparent: false,
     depthTest: true,
     depthWrite: true,
+    // Visible Fill can be authored from either side.
     side: DoubleSide,
     toneMapped: false,
-    polygonOffset: true,
-    polygonOffsetFactor: -0.5,
-    polygonOffsetUnits: -0.5,
     vertexShader: `
 varying vec2 vInkFillUv;
 varying vec3 vInkWorldPosition;
@@ -817,77 +1230,275 @@ uniform vec2 inkFillUvMin;
 uniform vec2 inkFillUvSize;
 uniform vec2 inkFillTextureUvOffset;
 uniform vec2 inkFillTextureUvScale;
+uniform vec2 inkFillTexelSize;
+uniform float inkWatercolorEnabled;
 uniform vec3 inkLightDirection;
 uniform vec3 inkAmbientIrradiance;
-uniform sampler2DShadow inkHardShadowMap;
+${features.hardShadows ? `
+uniform sampler2D inkHardShadowMap;
 uniform sampler2D inkHardShadowOwnerMap;
+uniform vec2 inkHardShadowTexelSize;
 uniform mat4 inkHardShadowMatrix;
 uniform float inkHardShadowEnabled;
 uniform float inkHardShadowOwnerMapEnabled;
 uniform float inkHardShadowOwnerId;
+` : ''}
 varying vec2 vInkFillUv;
 varying vec3 vInkWorldPosition;
 varying vec3 vInkWorldNormal;
+${getInkDisplayDepthFragment(features)}
 
-bool isInkHardShadowSelfOwner(vec2 shadowUv) {
-  if (inkHardShadowOwnerMapEnabled < 0.5 || inkHardShadowOwnerId < 0.5) return false;
-  float capturedOwnerId = floor(texture2D(inkHardShadowOwnerMap, shadowUv).r * 255.0 + 0.5);
-  return abs(capturedOwnerId - inkHardShadowOwnerId) < 0.5;
-}
+${INK_WATERCOLOR_MARCHING_SQUARES_GLSL}
+
+${features.hardShadows ? INK_WATERCOLOR_CONTOURED_HARD_SHADOW_GLSL : ''}
+
+${INK_WATERCOLOR_CONTOURED_FILL_GLSL}
 
 void main() {
   vec2 fillUv = (vInkFillUv - inkFillUvMin) / inkFillUvSize;
-  vec4 colour = texture2D(inkFillMap, inkFillTextureUvOffset + fillUv * inkFillTextureUvScale);
-  if (colour.a < 0.5) discard;
-  vec3 normal = normalize(vInkWorldNormal);
+  vec2 textureUv = inkFillTextureUvOffset + fillUv * inkFillTextureUvScale;
+  vec2 domainUv = getInkWatercolorContourDomainUv(textureUv);
+  float displayCoverage = inkWatercolorEnabled > 0.5
+    ? getInkWatercolorContourCoverage(domainUv)
+    : step(0.5, sampleInkWatercolorNearestSource(domainUv).a);
+  if (displayCoverage < 0.5) discard;
+  vec4 sourceColour = inkWatercolorEnabled > 0.5
+    ? sampleInkWatercolorContouredSource(domainUv)
+    : sampleInkWatercolorNearestSource(domainUv);
+  if (isInkOccludedByScene()) discard;
+  vec3 baseWash = sourceColour.rgb;
+  vec3 normal = vInkWorldNormal;
+  float normalLength = length(normal);
+  normal = normalLength > 0.00001 ? normal / normalLength : vec3(0.0, 1.0, 0.0);
   if (!gl_FrontFacing) normal = -normal;
-  vec3 lightDirection = normalize(inkLightDirection);
+  vec3 lightDirection = inkLightDirection;
+  float lightDirectionLength = length(lightDirection);
+  lightDirection = lightDirectionLength > 0.00001 ? lightDirection / lightDirectionLength : vec3(0.0, 1.0, 0.0);
   float normalLight = dot(normal, lightDirection);
   float halfLambert = clamp(normalLight * 0.5 + 0.5, 0.0, 1.0);
   float directBand = halfLambert >= 0.5 ? 1.0 : 0.5;
+  ${features.hardShadows ? `
   if (directBand > 0.5 && inkHardShadowEnabled > 0.5) {
     vec4 shadowPosition = inkHardShadowMatrix * vec4(vInkWorldPosition, 1.0);
     vec3 shadowUvDepth = shadowPosition.xyz / shadowPosition.w;
     bool inside = shadowUvDepth.x >= 0.0 && shadowUvDepth.x <= 1.0
       && shadowUvDepth.y >= 0.0 && shadowUvDepth.y <= 1.0
       && shadowUvDepth.z >= 0.0 && shadowUvDepth.z <= 1.0;
-    if (inside && !isInkHardShadowSelfOwner(shadowUvDepth.xy)
-      && texture(inkHardShadowMap, shadowUvDepth) <= 0.5) directBand = 0.5;
+    if (inside) {
+      float shadowVisibility = inkWatercolorEnabled > 0.5
+        ? sampleInkWatercolorContouredHardShadowVisibility(shadowUvDepth)
+        : sampleInkHardShadowCenterVisibility(shadowUvDepth);
+      directBand = mix(0.5, 1.0, shadowVisibility);
+    }
   }
-  gl_FragColor = vec4(colour.rgb * (vec3(directBand) + inkAmbientIrradiance), 1.0);
+` : ''}
+  gl_FragColor = vec4(baseWash * (vec3(directBand) + inkAmbientIrradiance), 1.0);
 }`,
   });
 }
 
-/** The dynamic Ribbon samples Fill alpha in the Shape's source chart space. */
-function createInkSurfaceOutlineMaterial(shape: InkSurfaceOutlineShape, emptyFillAlphaTexture: Texture): ShaderMaterial {
-  const isSphere = shape.kind === 'sphere';
-  return new ShaderMaterial({
-    vertexColors: true,
+/**
+ * Captures the visible, lit Watercolor Fill colour in a viewport-local target.
+ */
+function createInkWatercolorFillCaptureMaterial(
+  fillMaterial: ShaderMaterial,
+  shape: InkShape,
+  watercolorCapture: InkWatercolorCaptureState,
+  appearance: InkRenderAppearanceState,
+): ShaderMaterial {
+  const features = STUDIO_INK_RENDER_FEATURES;
+  const material = new ShaderMaterial({
+    name: 'InkWatercolorFillCaptureMaterial',
+    glslVersion: GLSL3,
     uniforms: {
-      ...(shape.kind === 'sphere'
-        ? createInkSphereFillAlphaUniforms(emptyFillAlphaTexture)
-        : createInkCylinderFillAlphaUniforms(shape.height, emptyFillAlphaTexture)),
+      inkFillMap: fillMaterial.uniforms.inkFillMap!,
+      inkFillUvMin: fillMaterial.uniforms.inkFillUvMin!,
+      inkFillUvSize: fillMaterial.uniforms.inkFillUvSize!,
+      inkFillTextureUvOffset: fillMaterial.uniforms.inkFillTextureUvOffset!,
+      inkFillTextureUvScale: fillMaterial.uniforms.inkFillTextureUvScale!,
+      inkFillTexelSize: fillMaterial.uniforms.inkFillTexelSize!,
+      inkLightDirection: fillMaterial.uniforms.inkLightDirection!,
+      inkAmbientIrradiance: fillMaterial.uniforms.inkAmbientIrradiance!,
+      inkShapeToGroupMatrix: { value: createInkShapeToGroupMatrix(shape) },
+      inkWatercolorNoiseSeed: watercolorCapture.stableSeed,
+      inkWatercolorNoiseScale: appearance.watercolorNoiseScale,
+      ...(features.hardShadows ? {
+        inkHardShadowMap: fillMaterial.uniforms.inkHardShadowMap!,
+        inkHardShadowOwnerMap: fillMaterial.uniforms.inkHardShadowOwnerMap!,
+        inkHardShadowTexelSize: fillMaterial.uniforms.inkHardShadowTexelSize!,
+        inkHardShadowMatrix: fillMaterial.uniforms.inkHardShadowMatrix!,
+        inkHardShadowEnabled: fillMaterial.uniforms.inkHardShadowEnabled!,
+        inkHardShadowOwnerMapEnabled: fillMaterial.uniforms.inkHardShadowOwnerMapEnabled!,
+        inkHardShadowOwnerId: fillMaterial.uniforms.inkHardShadowOwnerId!,
+      } : {}),
+      ...(features.sceneDepth ? {
+        inkSceneDepth: fillMaterial.uniforms.inkSceneDepth!,
+        inkSceneDepthSize: fillMaterial.uniforms.inkSceneDepthSize!,
+        inkSceneDepthEnabled: fillMaterial.uniforms.inkSceneDepthEnabled!,
+      } : {}),
     },
     transparent: false,
     depthTest: true,
     depthWrite: true,
     side: DoubleSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
     toneMapped: false,
-    vertexShader: createInkRibbonVertexShader(
+vertexShader: `
+uniform mat4 inkShapeToGroupMatrix;
+varying vec2 vInkFillUv;
+varying vec3 vInkWorldPosition;
+varying vec3 vInkWorldNormal;
+varying vec3 vInkGroupPosition;
+void main() {
+  vInkFillUv = uv;
+  vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+  vInkWorldPosition = worldPosition.xyz;
+  vInkWorldNormal = normalize(mat3(modelMatrix) * normal);
+  vInkGroupPosition = (inkShapeToGroupMatrix * vec4(position, 1.0)).xyz;
+  gl_Position = projectionMatrix * viewMatrix * worldPosition;
+}`,
+    fragmentShader: `
+layout(location = 0) out highp vec4 inkWatercolorShaded;
+layout(location = 1) out highp vec4 inkWatercolorNoise;
+uniform sampler2D inkFillMap;
+uniform vec2 inkFillUvMin;
+uniform vec2 inkFillUvSize;
+uniform vec2 inkFillTextureUvOffset;
+uniform vec2 inkFillTextureUvScale;
+uniform vec2 inkFillTexelSize;
+uniform vec3 inkLightDirection;
+uniform vec3 inkAmbientIrradiance;
+uniform float inkWatercolorNoiseSeed;
+uniform float inkWatercolorNoiseScale;
+${features.hardShadows ? `
+uniform sampler2D inkHardShadowMap;
+uniform sampler2D inkHardShadowOwnerMap;
+uniform vec2 inkHardShadowTexelSize;
+uniform mat4 inkHardShadowMatrix;
+uniform float inkHardShadowEnabled;
+uniform float inkHardShadowOwnerMapEnabled;
+uniform float inkHardShadowOwnerId;
+` : ''}
+varying vec2 vInkFillUv;
+varying vec3 vInkWorldPosition;
+varying vec3 vInkWorldNormal;
+varying vec3 vInkGroupPosition;
+${getInkDisplayDepthFragment(features)}
+
+${INK_WATERCOLOR_MARCHING_SQUARES_GLSL}
+
+${features.hardShadows ? INK_WATERCOLOR_CONTOURED_HARD_SHADOW_GLSL : ''}
+
+${INK_WATERCOLOR_CONTOURED_FILL_GLSL}
+
+float inkWatercolorNoiseHash(vec3 value) {
+  return fract(sin(dot(value, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+}
+
+float inkWatercolorSmoothNoise(vec3 value) {
+  vec3 cell = floor(value);
+  vec3 localPosition = fract(value);
+  vec3 blend = localPosition * localPosition * localPosition
+    * (localPosition * (localPosition * 6.0 - 15.0) + 10.0);
+  float x00 = mix(inkWatercolorNoiseHash(cell), inkWatercolorNoiseHash(cell + vec3(1.0, 0.0, 0.0)), blend.x);
+  float x10 = mix(inkWatercolorNoiseHash(cell + vec3(0.0, 1.0, 0.0)), inkWatercolorNoiseHash(cell + vec3(1.0, 1.0, 0.0)), blend.x);
+  float x01 = mix(inkWatercolorNoiseHash(cell + vec3(0.0, 0.0, 1.0)), inkWatercolorNoiseHash(cell + vec3(1.0, 0.0, 1.0)), blend.x);
+  float x11 = mix(inkWatercolorNoiseHash(cell + vec3(0.0, 1.0, 1.0)), inkWatercolorNoiseHash(cell + vec3(1.0, 1.0, 1.0)), blend.x);
+  return mix(mix(x00, x10, blend.y), mix(x01, x11, blend.y), blend.z);
+}
+
+vec2 getInkWatercolorNoise() {
+  float scale = max(inkWatercolorNoiseScale, 0.001);
+  vec3 position = vInkGroupPosition * scale;
+  vec3 seedOffset = vec3(
+    inkWatercolorNoiseSeed * 197.0,
+    inkWatercolorNoiseSeed * 389.0,
+    inkWatercolorNoiseSeed * 571.0
+  );
+  return vec2(
+    inkWatercolorSmoothNoise(position + seedOffset),
+    inkWatercolorSmoothNoise(position + seedOffset.yzx + vec3(17.0, 31.0, 47.0))
+  );
+}
+
+void main() {
+  vec2 fillUv = (vInkFillUv - inkFillUvMin) / inkFillUvSize;
+  vec2 textureUv = inkFillTextureUvOffset + fillUv * inkFillTextureUvScale;
+  vec2 domainUv = getInkWatercolorContourDomainUv(textureUv);
+  if (getInkWatercolorContourCoverage(domainUv) < 0.5) discard;
+  vec4 sourceColour = sampleInkWatercolorContouredSource(domainUv);
+  if (isInkOccludedByScene()) discard;
+
+  vec3 normal = vInkWorldNormal;
+  float normalLength = length(normal);
+  normal = normalLength > 0.00001 ? normal / normalLength : vec3(0.0, 1.0, 0.0);
+  if (!gl_FrontFacing) normal = -normal;
+  vec3 lightDirection = inkLightDirection;
+  float lightDirectionLength = length(lightDirection);
+  lightDirection = lightDirectionLength > 0.00001 ? lightDirection / lightDirectionLength : vec3(0.0, 1.0, 0.0);
+  float halfLambert = clamp(dot(normal, lightDirection) * 0.5 + 0.5, 0.0, 1.0);
+  float directBand = halfLambert >= 0.5 ? 1.0 : 0.5;
+  ${features.hardShadows ? `
+  if (directBand > 0.5 && inkHardShadowEnabled > 0.5) {
+    vec4 shadowPosition = inkHardShadowMatrix * vec4(vInkWorldPosition, 1.0);
+    vec3 shadowUvDepth = shadowPosition.xyz / shadowPosition.w;
+    bool inside = shadowUvDepth.x >= 0.0 && shadowUvDepth.x <= 1.0
+      && shadowUvDepth.y >= 0.0 && shadowUvDepth.y <= 1.0
+      && shadowUvDepth.z >= 0.0 && shadowUvDepth.z <= 1.0;
+    if (inside) directBand = mix(0.5, 1.0, sampleInkWatercolorContouredHardShadowVisibility(shadowUvDepth));
+  }
+` : ''}
+  vec3 baseWash = sourceColour.rgb;
+  vec3 shadedColor = baseWash * (vec3(directBand) + inkAmbientIrradiance);
+  inkWatercolorShaded = vec4(shadedColor, 1.0);
+  inkWatercolorNoise = vec4(getInkWatercolorNoise(), 0.0, 1.0);
+}`,
+  });
+  return material;
+}
+
+/** The dynamic Ribbon samples Fill alpha in the Shape's source chart space. */
+function createInkSurfaceOutlineMaterial(
+  shape: InkSurfaceOutlineShape,
+  emptyFillAlphaTexture: Texture,
+  appearance: InkRenderAppearanceState,
+): ShaderMaterial {
+  const displayDepth = createInkDisplayDepthState();
+  const features = STUDIO_INK_RENDER_FEATURES;
+  const isSphere = shape.kind === 'sphere';
+  return new ShaderMaterial({
+    vertexColors: true,
+    uniforms: {
+      ...createInkDisplayDepthUniforms(displayDepth, features.sceneDepth),
+      ...createInkCrayonOutlineUniforms(shape, appearance, createInkStableSeed(shape.id)),
+      ...(shape.kind === 'sphere'
+        ? createInkSphereFillAlphaUniforms(emptyFillAlphaTexture)
+        : createInkCylinderFillAlphaUniforms(shape.height, emptyFillAlphaTexture)),
+    },
+    // Layered Ribbon fragments intentionally accumulate like repeated crayon
+    // pressure. The material keeps scene-depth testing but cannot write depth,
+    // otherwise a translucent fragment would incorrectly hide later pigment.
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    side: DoubleSide,
+    toneMapped: false,
+    vertexShader: createInkCrayonRibbonVertexShader(
       'varying vec3 vInkSurfacePosition;',
       'vInkSurfacePosition = position;',
     ),
     fragmentShader: `
 varying vec3 vInkColor;
 varying vec3 vInkSurfacePosition;
+${INK_CRAYON_OUTLINE_FRAGMENT_UNIFORMS}
 ${isSphere ? INK_SPHERE_FILL_ALPHA_FRAGMENT : INK_CYLINDER_FILL_ALPHA_FRAGMENT}
+${INK_CRAYON_OUTLINE_FRAGMENT}
+${getInkDisplayDepthFragment(features)}
+
 void main() {
   if (getInkSurfaceFillAlpha() < 0.5) discard;
-  gl_FragColor = vec4(vInkColor, 1.0);
+  if (isInkOccludedByScene()) discard;
+  float opacity = inkWatercolorEnabled > 0.5 ? getInkCrayonOutlineOpacity() : 1.0;
+  gl_FragColor = vec4(vInkColor, opacity);
 }`,
   });
 }
@@ -1003,6 +1614,7 @@ function createInkFillHardShadowDepthMaterial(fillMaterial: ShaderMaterial): Sha
       inkFillUvSize: fillMaterial.uniforms.inkFillUvSize!,
       inkFillTextureUvOffset: fillMaterial.uniforms.inkFillTextureUvOffset!,
       inkFillTextureUvScale: fillMaterial.uniforms.inkFillTextureUvScale!,
+      inkFillTexelSize: fillMaterial.uniforms.inkFillTexelSize!,
       inkHardShadowOwnerId: fillMaterial.uniforms.inkHardShadowOwnerId!,
     },
     depthTest: true,
@@ -1021,11 +1633,18 @@ uniform vec2 inkFillUvMin;
 uniform vec2 inkFillUvSize;
 uniform vec2 inkFillTextureUvOffset;
 uniform vec2 inkFillTextureUvScale;
+uniform vec2 inkFillTexelSize;
 uniform float inkHardShadowOwnerId;
 varying vec2 vInkFillUv;
 void main() {
   vec2 fillUv = (vInkFillUv - inkFillUvMin) / inkFillUvSize;
-  if (texture2D(inkFillMap, inkFillTextureUvOffset + fillUv * inkFillTextureUvScale).a < 0.5) discard;
+  vec2 textureUv = inkFillTextureUvOffset + fillUv * inkFillTextureUvScale;
+  vec2 halfTexel = inkFillTexelSize * 0.5;
+  vec2 contentMin = inkFillTextureUvOffset + halfTexel;
+  vec2 contentMax = inkFillTextureUvOffset + inkFillTextureUvScale - halfTexel;
+  vec2 contentUv = clamp(textureUv, contentMin, contentMax);
+  vec2 sourceTexelUv = (floor(contentUv / inkFillTexelSize) + vec2(0.5)) * inkFillTexelSize;
+  if (texture2D(inkFillMap, sourceTexelUv).a < 0.5) discard;
   gl_FragColor = vec4(inkHardShadowOwnerId / 255.0, 0.0, 0.0, 1.0);
 }`,
   });
@@ -1245,7 +1864,29 @@ function getCuboidFacePosition(face: InkCuboidFace, u: number, v: number): Vecto
   return new Vector3(-u, v, -0.5);
 }
 
-function createInkRibbonMesh(ribbon: CompiledInkRibbon): Mesh {
+function createInkSourceRibbonMesh(
+  ribbon: CompiledInkRibbon,
+  appearance = createInkRenderAppearanceState(),
+): Mesh {
+  const mesh = new Mesh(createInkRibbonGeometry(ribbon), createInkSourceRibbonMaterial(appearance));
+  mesh.name = 'InkRibbon';
+  mesh.layers.set(INK_RIBBON_RENDER_LAYER);
+  return mesh;
+}
+
+function createInkWatercolorRibbonMesh(
+  ribbon: CompiledInkRibbon,
+  source: InkShape,
+  appearance: InkRenderAppearanceState,
+  stableSeed: number,
+): Mesh {
+  const mesh = new Mesh(createInkRibbonGeometry(ribbon), createInkWatercolorRibbonMaterial(source, appearance, stableSeed));
+  mesh.name = 'InkWatercolorRibbon';
+  mesh.layers.set(INK_RIBBON_RENDER_LAYER);
+  return mesh;
+}
+
+function createInkRibbonGeometry(ribbon: CompiledInkRibbon): BufferGeometry {
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new Float32BufferAttribute(ribbon.positions, 3));
   geometry.setAttribute('inkPrevious', new Float32BufferAttribute(ribbon.previous, 3));
@@ -1258,35 +1899,106 @@ function createInkRibbonMesh(ribbon: CompiledInkRibbon): Mesh {
   geometry.setIndex(ribbon.indices);
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
-
-  const mesh = new Mesh(geometry, createInkRibbonMaterial());
-  mesh.name = 'InkRibbon';
-  return mesh;
+  return geometry;
 }
 
-function createInkRibbonMaterial(): ShaderMaterial {
+function createInkSourceRibbonMaterial(
+  appearance = createInkRenderAppearanceState(),
+): ShaderMaterial {
+  const displayDepth = createInkDisplayDepthState();
+  const features = STUDIO_INK_RENDER_FEATURES;
   return new ShaderMaterial({
     vertexColors: true,
+    uniforms: {
+      ...createInkDisplayDepthUniforms(displayDepth, features.sceneDepth),
+      inkWatercolorEnabled: appearance.watercolorEnabled,
+    },
     transparent: false,
     depthTest: true,
     depthWrite: true,
     // The ribbon's lateral direction is derived from the current camera, so a
     // visible stroke cannot rely on a fixed geometric front face.
     side: DoubleSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
     toneMapped: false,
     vertexShader: createInkRibbonVertexShader(),
     fragmentShader: `
 varying vec3 vInkColor;
+uniform float inkWatercolorEnabled;
+${getInkDisplayDepthFragment(features)}
+
 void main() {
+  if (inkWatercolorEnabled > 0.5) discard;
+  if (isInkOccludedByScene()) discard;
   gl_FragColor = vec4(vInkColor, 1.0);
 }`,
   });
 }
 
-function createInkRibbonVertexShader(varyings = '', mainExtension = ''): string {
+function createInkPreviewRibbonMaterial(): ShaderMaterial {
+  const displayDepth = createInkDisplayDepthState();
+  const features = STUDIO_INK_RENDER_FEATURES;
+  return new ShaderMaterial({
+    vertexColors: true,
+    uniforms: createInkDisplayDepthUniforms(displayDepth, features.sceneDepth),
+    transparent: false,
+    depthTest: true,
+    depthWrite: true,
+    side: DoubleSide,
+    toneMapped: false,
+    vertexShader: createInkRibbonVertexShader(),
+    fragmentShader: `
+varying vec3 vInkColor;
+${getInkDisplayDepthFragment(features)}
+void main() {
+  if (isInkOccludedByScene()) discard;
+  gl_FragColor = vec4(vInkColor, 1.0);
+}`,
+  });
+}
+
+function createInkWatercolorRibbonMaterial(
+  shape: InkShape,
+  appearance: InkRenderAppearanceState,
+  stableSeed: number,
+): ShaderMaterial {
+  const displayDepth = createInkDisplayDepthState();
+  const features = STUDIO_INK_RENDER_FEATURES;
+  return new ShaderMaterial({
+    vertexColors: true,
+    uniforms: {
+      ...createInkDisplayDepthUniforms(displayDepth, features.sceneDepth),
+      ...createInkCrayonOutlineUniforms(shape, appearance, stableSeed),
+    },
+    // Layered Ribbon fragments intentionally accumulate like repeated crayon
+    // pressure. The material keeps scene-depth testing but cannot write depth,
+    // otherwise a translucent fragment would incorrectly hide later pigment.
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    side: DoubleSide,
+    toneMapped: false,
+    vertexShader: createInkCrayonRibbonVertexShader(),
+    fragmentShader: `
+varying vec3 vInkColor;
+${INK_CRAYON_OUTLINE_FRAGMENT_UNIFORMS}
+${getInkDisplayDepthFragment(features)}
+${INK_CRAYON_OUTLINE_FRAGMENT}
+
+void main() {
+  if (inkWatercolorEnabled < 0.5) discard;
+  if (isInkOccludedByScene()) discard;
+  float opacity = getInkCrayonOutlineOpacity();
+  gl_FragColor = vec4(vInkColor, opacity);
+}`,
+  });
+}
+
+function createInkRibbonVertexShader(
+  extraVaryings = '',
+  extraAssignments = '',
+  ribbonWidthExpression = 'inkWidth',
+  extraFunctions = '',
+): string {
   return `
 attribute vec3 inkPrevious;
 attribute vec3 inkNext;
@@ -1295,7 +2007,8 @@ attribute float inkSide;
 attribute float inkTangentOffset;
 attribute float inkWidth;
 varying vec3 vInkColor;
-${varyings}
+${extraVaryings}
+${extraFunctions}
 
 void main() {
   vec3 currentWorld = (modelMatrix * vec4(position, 1.0)).xyz;
@@ -1316,22 +2029,136 @@ void main() {
   // Blend before the camera direction becomes parallel to a stroke. This keeps
   // neighbouring vertices in one continuous frame instead of threshold-flipping.
   sideways = normalize(mix(fallbackSideways, viewSideways, smoothstep(0.0005, 0.02, sidewaysLength)));
-  float halfWidth = inkWidth * 0.5;
+  float ribbonWidth = ${ribbonWidthExpression};
+  float halfWidth = ribbonWidth * 0.5;
   float surfaceDepthClearance = (
     abs(dot(sideways, normalWorld) * inkSide)
     + abs(dot(tangent, normalWorld) * inkTangentOffset)
-  ) * halfWidth + max(0.0005, inkWidth * 0.01);
+  ) * halfWidth + max(0.0005, ribbonWidth * 0.01);
   float viewNormalAlignment = max(dot(viewDirection, normalWorld), 0.2);
-  float viewDepthOffset = min(surfaceDepthClearance / viewNormalAlignment, inkWidth * 2.0);
+  // A world-space clearance becomes a smaller clip-depth delta as the camera
+  // moves away. This keeps a Ribbon over its own Fill without allowing the
+  // fixed raster-space polygon offset to grow into a foreground crossing.
+  float viewDepthOffset = min(surfaceDepthClearance / viewNormalAlignment, ribbonWidth * 2.0);
   vec3 widenedWorld = currentWorld + (sideways * inkSide + tangent * inkTangentOffset) * halfWidth;
   vec4 viewPosition = viewMatrix * vec4(widenedWorld, 1.0);
   vec4 clipPosition = projectionMatrix * viewPosition;
   vec4 depthOffsetClipPosition = projectionMatrix * vec4(viewPosition.xyz + vec3(0.0, 0.0, viewDepthOffset), 1.0);
   vInkColor = color;
-  ${mainExtension}
+  ${extraAssignments}
   gl_Position = clipPosition;
   gl_Position.z = clipPosition.w * depthOffsetClipPosition.z / depthOffsetClipPosition.w;
 }`;
+}
+
+function createInkCrayonOutlineUniforms(
+  shape: InkShape,
+  appearance: InkRenderAppearanceState,
+  stableSeed: number,
+): Record<string, { value: number | Matrix3 | Matrix4 }> {
+  const shapeToGroup = createInkShapeToGroupMatrix(shape);
+  return {
+    inkWatercolorEnabled: appearance.watercolorEnabled,
+    inkCrayonSeed: { value: stableSeed },
+    inkCrayonGrainDensity: appearance.crayonGrainDensity,
+    inkCrayonMinimumOpacity: appearance.crayonMinimumOpacity,
+    inkShapeToGroupMatrix: { value: shapeToGroup },
+    inkShapeNormalToGroupMatrix: { value: new Matrix3().getNormalMatrix(shapeToGroup) },
+  };
+}
+
+function createInkCrayonRibbonVertexShader(extraVaryings = '', extraAssignments = ''): string {
+  return createInkRibbonVertexShader(
+    `${extraVaryings}
+varying vec2 vInkCrayonRibbonCoordinate;
+varying vec3 vInkCrayonSamplePosition;
+uniform mat4 inkShapeToGroupMatrix;
+uniform mat3 inkShapeNormalToGroupMatrix;`,
+    `${extraAssignments}
+  vInkCrayonRibbonCoordinate = vec2(inkSide, inkTangentOffset);
+  // Reconstruct the stable, physically expanded Ribbon point in the parent
+  // Ink Group's local space. This deliberately uses neither the camera-facing
+  // billboard direction nor any path-length parameter for the grain field.
+  vec3 groupCenter = (inkShapeToGroupMatrix * vec4(position, 1.0)).xyz;
+  vec3 groupPrevious = (inkShapeToGroupMatrix * vec4(inkPrevious, 1.0)).xyz;
+  vec3 groupNext = (inkShapeToGroupMatrix * vec4(inkNext, 1.0)).xyz;
+  vec3 groupTangent = groupNext - groupPrevious;
+  float groupTangentLength = length(groupTangent);
+  groupTangent = groupTangentLength > 0.00001 ? groupTangent / groupTangentLength : vec3(1.0, 0.0, 0.0);
+  vec3 groupNormal = inkShapeNormalToGroupMatrix * inkFallbackNormal;
+  float groupNormalLength = length(groupNormal);
+  groupNormal = groupNormalLength > 0.00001 ? groupNormal / groupNormalLength : vec3(0.0, 0.0, 1.0);
+  vec3 groupSideways = cross(groupNormal, groupTangent);
+  float groupSidewaysLength = length(groupSideways);
+  groupSideways = groupSidewaysLength > 0.00001 ? groupSideways / groupSidewaysLength : vec3(1.0, 0.0, 0.0);
+  vInkCrayonSamplePosition = groupCenter
+    + (groupSideways * inkSide + groupTangent * inkTangentOffset) * inkWidth * 0.5;`,
+  );
+}
+
+const INK_CRAYON_OUTLINE_FRAGMENT_UNIFORMS = `
+varying vec2 vInkCrayonRibbonCoordinate;
+varying vec3 vInkCrayonSamplePosition;
+uniform float inkWatercolorEnabled;
+uniform float inkCrayonSeed;
+uniform float inkCrayonGrainDensity;
+uniform float inkCrayonMinimumOpacity;`;
+
+const INK_CRAYON_OUTLINE_FRAGMENT = `
+float inkCrayonOutlineHash(vec3 value) {
+  return fract(sin(dot(value, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+}
+
+float inkCrayonOutlineNoise(vec3 value) {
+  vec3 cell = floor(value);
+  vec3 localPosition = fract(value);
+  // Quintic interpolation makes both the pigment value and its first
+  // derivative continuous at cell boundaries, unlike a cell-constant hash.
+  vec3 blend = localPosition * localPosition * localPosition
+    * (localPosition * (localPosition * 6.0 - 15.0) + 10.0);
+  float x00 = mix(inkCrayonOutlineHash(cell), inkCrayonOutlineHash(cell + vec3(1.0, 0.0, 0.0)), blend.x);
+  float x10 = mix(inkCrayonOutlineHash(cell + vec3(0.0, 1.0, 0.0)), inkCrayonOutlineHash(cell + vec3(1.0, 1.0, 0.0)), blend.x);
+  float x01 = mix(inkCrayonOutlineHash(cell + vec3(0.0, 0.0, 1.0)), inkCrayonOutlineHash(cell + vec3(1.0, 0.0, 1.0)), blend.x);
+  float x11 = mix(inkCrayonOutlineHash(cell + vec3(0.0, 1.0, 1.0)), inkCrayonOutlineHash(cell + vec3(1.0, 1.0, 1.0)), blend.x);
+  return mix(mix(x00, x10, blend.y), mix(x01, x11, blend.y), blend.z);
+}
+
+float getInkCrayonOutlineOpacity() {
+  // Grain is sampled from the reconstructed Group-local point, so original
+  // segment length never determines the size or phase of a grain cell.
+  float edgeDistance = length(vInkCrayonRibbonCoordinate);
+  float protectedCore = 1.0 - smoothstep(0.12, 0.32, edgeDistance);
+  vec3 toothPosition = vInkCrayonSamplePosition * inkCrayonGrainDensity + vec3(
+    inkCrayonSeed * 197.0,
+    inkCrayonSeed * 389.0,
+    inkCrayonSeed * 571.0
+  );
+  float tooth = inkCrayonOutlineNoise(toothPosition);
+  float edgeWear = smoothstep(0.16, 0.98, edgeDistance);
+  float cutoff = mix(0.22, 0.56, edgeWear);
+  float pigmentMask = sqrt(smoothstep(cutoff, cutoff + 0.12, tooth));
+  float wearCoverage = mix(inkCrayonMinimumOpacity, 1.0, pigmentMask);
+
+  // The core retains high continuous coverage to preserve stroke readability;
+  // a user-set floor of 1.0 deliberately restores full opacity.
+  float protectedCoreCoverage = max(0.92, inkCrayonMinimumOpacity);
+  float targetCoverage = mix(wearCoverage, protectedCoreCoverage, protectedCore);
+
+  // Keep the Group-local wax wear as true continuous alpha. The material uses
+  // normal transparent blending, so overlapping Ribbon fragments retain their
+  // pressure-like accumulation without turning sub-pixel coverage into 0/1
+  // holes that can visibly shimmer during motion.
+  return targetCoverage;
+}`;
+
+/** Stable [0, 1) shader seed derived from a persisted Ink identifier. */
+function createInkStableSeed(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967296;
 }
 
 function createDynamicAttribute(length: number, itemSize: number): BufferAttribute {

@@ -67,11 +67,15 @@ Studio 只提供下列渲染路径：
 | Map PBR | 关闭 | 不在移动端运行生产级地形材质、GTAO 或环境反射。 |
 | Map Reference | 默认开启 | 使用当前 Half-Lambert 风格显示地形颜色、体积和坡面。Editor Session 可单独隐藏参考地形；关闭时停止其捕获与合成，但不删除地形数据、不影响地形拾取或放置预览。 |
 | 编辑期格子与坡向辅助 | 开启 | 地块真实边缘、近似无限网格与 X/Y/Z 坐标轴可分别开关，清楚显示单元边界、坡向、选择状态和绘制落点；永不作为最终资产内容。 |
-| Ink Ribbon / Fill / Surface Outline | 开启 | 显示最终 Ink 描边、填色、可选曲面描边和真实深度遮挡。 |
+| Ink Source / Watercolor | 默认 Watercolor，可切换 | Source 保留原有 Ink Ribbon / Fill / Surface Outline 直绘；Watercolor 使用项目自有的非时域 Fill 捕获、边缘/扩散合成与蜡笔 Ribbon。两者都保留真实深度遮挡。 |
 | Ink 专属硬阴影 | 开启 | 保留 Ink 视觉表现必须的硬阴影。 |
 | 常规 PCF 阴影、GTAO、PMREM | 关闭 | 不运行与移动端 Ink 创作无关的重型路径。 |
 
-Ink 硬阴影复用 Painting 已确认的语义：单张原生 `DepthTexture` target 的密度固定为 `64 px / 世界单位`，深度与同一 target 的颜色附件都使用 nearest 过滤、无 mipmap，深度比较为 `LessEqual`；不改变 Three.js 的常规 PBR 阴影配置。可见 Fill 与专属 alpha-clip depth/owner pass 都使用 `DoubleSide`，后者只捕获 Ink Fill，不包含 Studio 的 Reference、描边或编辑辅助。capture 的颜色附件 R 通道保存通过深度测试的最近 Shape owner ID：`1..255` 分配给当前预览中的有 Fill Shape，`0` 表示背景或超出上限；ID 只属于运行时预览，不进入工作场景、导出或 Undo/Redo。亮面接收端不使用 depth 或 normal bias，以原始世界位置和深度只经 nearest-filtered `sampler2DShadow` 比较中心 texel；若同一中心 owner ID 属于自己则跳过比较，否则失败时进入 `0.5` 暗档、成功时保持 `1.0`，不保留中间灰度或相邻 depth 采样。Studio 的 Reference 地形不投射、不接收此 Ink 专属阴影；该深度图只在 Ink 投射/接收对象的 Transform 或几何、以及灯光方向等真实输入改变时重新分配 owner ID 并失效。地形 Reference、灯光颜色和强度的变化不得无故重建阴影深度图。若设备最大纹理尺寸不足，Studio 必须显示清晰的可恢复提示，而不是悄悄改变作品数据。
+Ink 硬阴影复用 Painting 已确认的双外观语义：单张原生 `DepthTexture` target 的密度固定为 `64 px / 世界单位`，深度与同一 target 的颜色附件都使用 nearest 过滤、无 mipmap；深度保留为可由 `sampler2D` 读取的原始值，不启用硬件 compare。不改变 Three.js 的常规 PBR 阴影配置。可见 Fill 与专属 alpha-clip depth/owner pass 都使用 `DoubleSide`，后者只捕获 Ink Fill，不包含 Studio 的 Reference、描边或编辑辅助。capture 的颜色附件 R 通道保存通过深度测试的最近 Shape owner ID：`1..255` 分配给当前预览中的有 Fill Shape，`0` 表示背景或超出上限；ID 只属于运行时预览，不进入工作场景、导出或 Undo/Redo。Source 仍以原始世界位置和深度执行 owner-aware 单中心比较；Watercolor 从同一原始深度的四个相邻 texel 重建 Marching Squares 连续硬阴影边界。两条路径都不使用 depth/normal bias 或 PCF。Studio 的 Reference 地形不投射、不接收此 Ink 专属阴影；该深度图只在 Ink 投射/接收对象的 Transform 或几何、以及灯光方向等真实输入改变时重新分配 owner ID 并失效。地形 Reference、灯光颜色和强度的变化不得无故重建阴影深度图。若设备最大纹理尺寸不足，Studio 必须显示清晰的可恢复提示，而不是悄悄改变作品数据。
+
+Watercolor 属于 Studio 项目自己的预览实现，不导入 Painting 运行时代码，也不新增 GameFramework 依赖。Fill 先以双颜色附件捕获分档光照颜色与 Group-local 稳定噪声，同时保留精确深度；边界 seed、三层 depth-aware soft-tail/color-mix 扩散和最终 composite 都是当前帧即时完成。描边复用已编译 Ribbon 拓扑，通过连续透明度的蜡笔颗粒材质显示。该路径明确不包含 TAA、history accumulation、camera jitter、reprojection、disocclusion 或 temporal debug 状态。
+
+外观选择和参数属于 Editor Session，不进入工作场景、Ink 作者源、导出、Undo/Redo 或内容 dirty。新 Session、旧 Session 迁移与 Reset 的默认值必须来自 Painting 当前保存的 `public/data/scenes/ink-global-setting-default-instance.json`，而不是历史代码默认值：`appearance = watercolor`、`crayonGrainDensity = 96`、`crayonMinimumOpacity = 0.3`、`noiseScale = 3`；Water Edge 为 `enabled / width 4 / contrast 0.24 / darkening 0.47 / offset 0.03`；Diffusion 为 `enabled / softTail 15 / colorMixRadius 5 / colorMixStrength 1 / interiorPigment 0.8 / fade #f9f5f1`。Painting 存档中的 TAA 字段不得移植。
 
 ### 3.5 灯光预览
 
@@ -92,7 +96,7 @@ Studio 提供与 Painting 当前 Global Lighting 相同语义的灯光调节，�
 本项目不实现以下能力，除非日后经明确确认：
 
 - 从 PNG、PSD、Procreate 或其他外部绘画软件自动生成 Ink 描边、Fill 或 Shape；
-- 完整 PBR 地图表现、实时软阴影、GTAO、环境 PMREM，或除 Map Reference 最终颜色管理 `OutputPass` 外的效果型后处理或性能降级替代视觉；
+- 完整 PBR 地图表现、实时软阴影、GTAO、环境 PMREM，或除 Map Reference 最终颜色管理 `OutputPass` 与已确认的 Studio 非 TAA Watercolor 外的效果型后处理或性能降级替代视觉；
 - 玩家控制、碰撞验证、出口、NPC、剧情、Game Window、Play Mode；
 - 云同步、账号、多人协作、局域网配对、远程写入 Painting 目录；
 - 直接在 iPad 上打开或修改 Painting 工程目录；
@@ -171,7 +175,7 @@ Studio 的作者文件称为 **Ink Studio Work Scene**。它保存可以直接�
 
 它不保存浏览器实例、GPU 资源、临时笔画预览、当前 Pointer、未提交手势或 Service Worker 缓存。
 
-相机位置、侧栏开合、当前工具、当前颜色、色板、笔刷宽度、压感开关、Transform World/Local 空间、临时排除绘制的 Shape ID，以及参考地形/地块边缘/无限网格/坐标轴四个显示开关属于 Editor Session。它们可低频地保存到本机，但不应污染可交换的作品内容；色板等确有创作价值的工具预设可作为单独的用户设置导出能力，不能隐式绑定到每个资产。
+相机位置、侧栏开合、当前工具、当前颜色、色板、笔刷宽度、压感开关、Transform World/Local 空间、临时排除绘制的 Shape ID、Source/Watercolor 选择及其非 TAA 参数，以及参考地形/地块边缘/无限网格/坐标轴四个显示开关属于 Editor Session。它们可低频地保存到本机，但不应污染可交换的作品内容；色板等确有创作价值的工具预设可作为单独的用户设置导出能力，不能隐式绑定到每个资产。
 
 ### 7.2 建议顶层格式
 
@@ -252,6 +256,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - Shape Position/Rotation 使用已有 Mesh Transform 更新；Cuboid size、Sphere radius、Cylinder radius/height 与 Frustum top size/bottom size/height 都是固有尺寸，保存在作者 Shape 数据中，不作为通用 Transform Scale。尺寸变化只更新当前 Shape 的内容、重采样必要的有限 Fill 图表并刷新辅助面和硬阴影，不重建整个场景。Sphere/Cylinder 的 `surfaceOutline` 只维护已有的视角相关 Ribbon，配置或相机变化不重编译作者描边。
 - 只要输入不变，普通相机导航、UI 变化和灯光颜色/强度变化不得触发全场景重编译或硬阴影深度重建。
 - Ink 硬阴影捕获必须隔离 Line、Points、Sprite 和全部编辑辅助对象；纯 Outline 与曲面描边编辑不得使硬阴影深度图失效。
+- Watercolor 的 Fill MRT、seed 与三层扩散 RenderTarget 由单个视口层持有，只随视口物理尺寸调整；外观或参数变化只更新共享 uniform，不重建 Ink 作者数据、Ribbon/Fill 几何或整棵场景。所有目标和每个 Fill 的独立 capture material 都必须在替换或卸载时释放。
 - Terrain 修改只重建必要的 Reference 几何与阴影深度；不得以整份文档克隆、全场景序列化或 GPU 资源重建作为普通交互的便利回退。
 - 每个 Three.js Geometry、Material、Texture、RenderTarget、Worker、事件监听、计时器和 PWA 页面 mount 都必须有单一所有者和明确 dispose 路径。
 - IndexedDB 写入必须节流并避免在 Pencil `pointermove` 中阻塞渲染；它与导出均使用一致的作者源快照，不读取半提交的交互状态或复制派生 GPU 上传数组。
@@ -272,6 +277,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - Reference 路径能清楚显示格子、坡向和基础颜色。
 - Ink 与地形遵循真实深度遮挡。
 - Ink 硬阴影存在，且在不相关的灯光颜色/强度调整时不重建阴影深度图。
+- Source 与 Watercolor 可即时切换；默认值和 Reset 与 Painting 当前保存的 Ink Global Setting 非 TAA 字段一致。Watercolor 保留三层深度感知扩散、边缘合成、蜡笔 Ribbon 和真实深度，但不创建 TAA/history/jitter/reprojection 状态。
 - 不启用 Map PBR、PCF 阴影、GTAO 或 PMREM。
 
 ### 10.3 Ink 与输入
@@ -332,7 +338,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 | 应用形式 | 离线优先的静态 PWA。 |
 | 多 Group | 必须支持，使用实际世界格子坐标摆放。 |
 | 地形 | 仅 Block、Slope、Corner Slope 与基础格子编辑。 |
-| 渲染 | Map Reference + 编辑网格 + Ink + Ink 硬阴影。 |
+| 渲染 | Map Reference + 编辑网格 + 可切换 Ink Source/非 TAA Watercolor + Ink 硬阴影。 |
 | 常规阴影 / PBR | 不在移动端启用。 |
 | 灯光 | 完整参数可调；初值和 Reset 使用 Painting 当前保存值，不自动影响 Painting 全局灯光。 |
 | 压感 | 默认开启，可随时关闭；只影响新描边采样。 |

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { reactive } from 'vue';
+import { SAVED_PAINTING_INK_APPEARANCE } from '../src/domain/workspace/inkAppearance';
 import { cloneStudioEditorSession, createStudioEditorSession, normalizeStudioEditorSession } from '../src/domain/workspace/session';
 
 describe('Editor viewport session', () => {
@@ -56,6 +57,70 @@ describe('Editor viewport session', () => {
     expect(session.snapEnabled).toBe(false);
   });
 
+  it('uses Painting saved non-TAA Ink appearance values as the Editor Session defaults', () => {
+    const session = createStudioEditorSession();
+    expect(session.inkAppearance).toEqual(SAVED_PAINTING_INK_APPEARANCE);
+    expect(session.inkAppearance).not.toBe(SAVED_PAINTING_INK_APPEARANCE);
+    expect(session.inkAppearance.watercolorFill).not.toBe(SAVED_PAINTING_INK_APPEARANCE.watercolorFill);
+    expect(session.inkAppearance.watercolorFill.waterEdge).not.toBe(SAVED_PAINTING_INK_APPEARANCE.watercolorFill.waterEdge);
+    expect(session.inkAppearance.watercolorFill.diffusion).not.toBe(SAVED_PAINTING_INK_APPEARANCE.watercolorFill.diffusion);
+  });
+
+  it('migrates an older session to the saved Watercolor defaults', () => {
+    expect(normalizeStudioEditorSession({ mode: 'draw' }).inkAppearance).toEqual(SAVED_PAINTING_INK_APPEARANCE);
+  });
+
+  it('normalizes the Source choice and clamps every bounded Watercolor setting', () => {
+    const appearance = normalizeStudioEditorSession({
+      inkAppearance: {
+        appearance: 'source',
+        crayonGrainDensity: 999,
+        crayonMinimumOpacity: -2,
+        watercolorFill: {
+          noiseScale: 0,
+          waterEdge: {
+            enabled: false,
+            width: 99,
+            contrastThreshold: -1,
+            edgeDarkening: 4,
+            offsetStrength: -3,
+          },
+          diffusion: {
+            enabled: false,
+            softTailRadius: 99,
+            colorMixRadius: -2,
+            colorMixStrength: 9,
+            interiorPigmentStrength: -1,
+            interiorFadeColor: '#ABCDEF',
+          },
+        },
+      },
+    }).inkAppearance;
+    expect(appearance).toEqual({
+      appearance: 'source',
+      crayonGrainDensity: 512,
+      crayonMinimumOpacity: 0,
+      watercolorFill: {
+        noiseScale: 0.001,
+        waterEdge: {
+          enabled: false,
+          width: 32,
+          contrastThreshold: 0,
+          edgeDarkening: 1,
+          offsetStrength: 0,
+        },
+        diffusion: {
+          enabled: false,
+          softTailRadius: 16,
+          colorMixRadius: 0,
+          colorMixStrength: 1,
+          interiorPigmentStrength: 0,
+          interiorFadeColor: '#abcdef',
+        },
+      },
+    });
+  });
+
   it('persists the Shape-only intrinsic size handle mode', () => {
     expect(normalizeStudioEditorSession({ transformMode: 'resize' }).transformMode).toBe('resize');
   });
@@ -74,6 +139,8 @@ describe('Editor viewport session', () => {
     const snapshot = cloneStudioEditorSession(session);
     expect(snapshot.excludedShapeIds).toEqual(['shape-a']);
     expect(snapshot.excludedShapeIds).not.toBe(session.excludedShapeIds);
+    snapshot.inkAppearance.watercolorFill.waterEdge.width = 12;
+    expect(session.inkAppearance.watercolorFill.waterEdge.width).toBe(4);
     expect(structuredClone(snapshot)).toEqual(snapshot);
   });
 });

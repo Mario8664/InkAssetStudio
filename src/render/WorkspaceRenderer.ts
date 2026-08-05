@@ -51,15 +51,23 @@ import {
   applyInkShapeRenderTransform,
   createInkFillLightingState,
   createInkGroupRenderRoot,
+  createInkRenderAppearanceState,
   createInkShapeRenderRoot,
+  getInkWatercolorCaptureState,
   INK_HARD_SHADOW_OWNER_ID_LIMIT,
+  INK_FILL_RENDER_LAYER,
+  INK_RIBBON_RENDER_LAYER,
+  INK_WATERCOLOR_FILL_CAPTURE_MATERIAL_KEY,
+  setInkDisplayRenderLayer,
   setInkHardShadowOwnerId,
   type InkFillLightingState,
+  type InkRenderAppearanceState,
   updateInkSurfaceOutlines,
   updateInkShapeFillSurfaces,
   updateInkShapeRibbon,
 } from './InkGroupRenderer';
 import { InkHardShadowMap } from './InkHardShadowMap';
+import { InkWatercolorFillLayer } from './InkWatercolorFillLayer';
 import { EditorViewportGuides } from './EditorViewportGuides';
 import { createInkShapePreview, disposeInkShapePreviewTree, getInkPlanePreviewBounds, type InkShapePreview } from './InkShapePreview';
 import { MapReferenceLayer } from './MapReferenceLayer';
@@ -134,6 +142,7 @@ export class WorkspaceRenderer {
   readonly camera = new PerspectiveCamera(42, 1, 0.05, 300);
   readonly controls: OrbitControls;
   readonly inkLighting: InkFillLightingState = createInkFillLightingState();
+  readonly inkAppearance: InkRenderAppearanceState = createInkRenderAppearanceState();
   private readonly composer: EffectComposer;
   private readonly renderPass: RenderPass;
   private readonly outputPass: OutputPass;
@@ -151,6 +160,7 @@ export class WorkspaceRenderer {
   private readonly mainLight = new DirectionalLight(0xffffff, 3.2);
   private readonly ambientLight = new AmbientLight(0xffffff, 0.22);
   private readonly hardShadow: InkHardShadowMap;
+  private readonly watercolorFill: InkWatercolorFillLayer;
   private readonly raycaster = new Raycaster();
   private readonly pointer = new Vector2();
   private readonly inkEntries = new Map<string, InkRenderEntry>();
@@ -276,6 +286,7 @@ export class WorkspaceRenderer {
       this.inkLighting,
       onWarning,
     );
+    this.watercolorFill = new InkWatercolorFillLayer(this.renderer);
     this.resizeObserver = new ResizeObserver(this.handleResize);
     this.resizeObserver.observe(canvas);
     this.handleResize();
@@ -286,6 +297,11 @@ export class WorkspaceRenderer {
     if (this.document && this.document.documentId !== document.documentId) this.clearStrokePreviewHandoffs();
     this.document = document;
     this.session = session;
+    this.inkAppearance.watercolorEnabled.value = session.inkAppearance.appearance === 'watercolor' ? 1 : 0;
+    this.inkAppearance.crayonGrainDensity.value = session.inkAppearance.crayonGrainDensity;
+    this.inkAppearance.crayonMinimumOpacity.value = session.inkAppearance.crayonMinimumOpacity;
+    this.inkAppearance.watercolorNoiseScale.value = session.inkAppearance.watercolorFill.noiseScale;
+    this.watercolorFill.setSettings(session.inkAppearance.watercolorFill);
     this.terrain.update(document.terrain.tiles);
     this.referenceLayer.setEnabled(session.showReferenceTerrain);
     this.referenceLayer.setTerrainEdgesVisible(session.showTerrainEdges);
@@ -558,6 +574,7 @@ export class WorkspaceRenderer {
       compileInkFill(shape),
       shape,
       this.inkLighting,
+      this.inkAppearance,
     );
     applyInkShapeRenderTransform(root, shape);
     this.syncSingleInkHelper(referenceId, shape);
@@ -568,7 +585,7 @@ export class WorkspaceRenderer {
   previewInkRibbon(referenceId: string, shape: InkShape): void {
     const root = this.inkEntries.get(referenceId)?.shapes.get(shape.id);
     if (!root) return;
-    updateInkShapeRibbon(root, compileInkShapeRibbon(shape));
+    updateInkShapeRibbon(root, compileInkShapeRibbon(shape), shape, this.inkAppearance);
     this.requestRender();
   }
 
@@ -603,7 +620,7 @@ export class WorkspaceRenderer {
     const root = this.inkEntries.get(referenceId)?.shapes.get(shape.id);
     const fills = compileInkFill(shape);
     if (root) {
-      updateInkShapeFillSurfaces(root, fills, shape, this.inkLighting);
+      updateInkShapeFillSurfaces(root, fills, shape, this.inkLighting, this.inkAppearance);
       applyInkShapeRenderTransform(root, shape);
     }
     this.syncSingleInkHelper(referenceId, shape);
@@ -646,6 +663,7 @@ export class WorkspaceRenderer {
     if (this.terrainPreviewFrame) cancelAnimationFrame(this.terrainPreviewFrame);
     if (this.terrainToolPreviewTimer !== null) window.clearTimeout(this.terrainToolPreviewTimer);
     this.hardShadow.dispose();
+    this.watercolorFill.dispose();
     this.referenceLayer.dispose();
     this.editorGuides.dispose();
     this.terrain.dispose();
@@ -676,16 +694,23 @@ export class WorkspaceRenderer {
 
   private assignInkHardShadowOwnerIds(): void {
     let nextOwnerId = 1;
+    const fillMeshes: Mesh[] = [];
     for (const entry of this.inkEntries.values()) {
       for (const shapeRoot of entry.shapes.values()) {
         let hasFill = false;
         shapeRoot.traverse((object) => {
-          if (object instanceof Mesh && object.name === 'InkFillSurface') hasFill = true;
+          if (!(object instanceof Mesh) || object.name !== 'InkFillSurface') return;
+          if (!object.userData[INK_WATERCOLOR_FILL_CAPTURE_MATERIAL_KEY]) {
+            throw new Error(`Ink Fill ${object.uuid} has no Watercolor capture material.`);
+          }
+          hasFill = true;
+          fillMeshes.push(object);
         });
         const ownerId = hasFill && nextOwnerId <= INK_HARD_SHADOW_OWNER_ID_LIMIT ? nextOwnerId++ : 0;
         setInkHardShadowOwnerId(shapeRoot, ownerId);
       }
     }
+    this.watercolorFill.setFillMeshes(fillMeshes);
   }
 
   private updateInkGroups(document: InkStudioWorkFile): InkRenderUpdate {
@@ -712,7 +737,8 @@ export class WorkspaceRenderer {
       const existing = this.inkEntries.get(group.id);
       if (existing?.source === source && existing.anchorKey === anchorKey) continue;
       if (!existing) {
-        const root = createInkGroupRenderRoot(group, this.inkLighting);
+        const root = createInkGroupRenderRoot(group, this.inkLighting, this.inkAppearance);
+        setInkDisplayRenderLayer(root);
         root.userData.referenceId = group.id;
         this.inkRoot.add(root);
         this.inkEntries.set(group.id, {
@@ -767,7 +793,14 @@ export class WorkspaceRenderer {
       const priorShape = previousShapes.get(shapeId);
       const priorCompiled = previousCompiled.get(shapeId);
       if (!existing) {
-        const root = createInkShapeRenderRoot(compiled, shape, this.inkLighting);
+        const root = createInkShapeRenderRoot(
+          compiled,
+          shape,
+          this.inkLighting,
+          this.inkAppearance,
+          getInkWatercolorCaptureState(entry.root) ?? undefined,
+        );
+        setInkDisplayRenderLayer(root);
         entry.root.add(root);
         entry.shapes.set(shapeId, root);
         hardShadowChanged ||= hasInkHardShadowCasterInShape(compiled);
@@ -792,7 +825,9 @@ export class WorkspaceRenderer {
           compiled.fill,
           shape,
           this.inkLighting,
+          this.inkAppearance,
         );
+        setInkDisplayRenderLayer(existing);
         continue;
       }
       // An Outline-only Worker result changes its Ribbon hash but leaves both
@@ -800,13 +835,21 @@ export class WorkspaceRenderer {
       // transient hard-shadow owner state remains paired with the capture.
       if (priorShape && priorCompiled && !shapeTransformChanged && !fillChanged) {
         applyInkShapeRenderTransform(existing, shape);
-        updateInkShapeRibbon(existing, compiled.ribbon);
+        updateInkShapeRibbon(existing, compiled.ribbon, shape, this.inkAppearance);
+        setInkDisplayRenderLayer(existing);
         continue;
       }
 
       disposeObjectTree(existing);
       existing.removeFromParent();
-      const replacement = createInkShapeRenderRoot(compiled, shape, this.inkLighting);
+      const replacement = createInkShapeRenderRoot(
+        compiled,
+        shape,
+        this.inkLighting,
+        this.inkAppearance,
+        getInkWatercolorCaptureState(entry.root) ?? undefined,
+      );
+      setInkDisplayRenderLayer(replacement);
       entry.root.add(replacement);
       entry.shapes.set(shapeId, replacement);
     }
@@ -1043,6 +1086,7 @@ export class WorkspaceRenderer {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.referenceLayer.setSize(width, height, this.renderer.getPixelRatio());
+    this.watercolorFill.setSize(width, height, this.renderer.getPixelRatio());
     this.requestRender();
   };
 
@@ -1076,6 +1120,7 @@ export class WorkspaceRenderer {
     const previousClearColor = this.renderer.getClearColor(new Color());
     const previousClearAlpha = this.renderer.getClearAlpha();
     const previousBackground = this.scene.background;
+    const previousCameraLayers = this.camera.layers.mask;
     try {
       this.renderer.setRenderTarget(null);
       this.renderer.outputColorSpace = LinearSRGBColorSpace;
@@ -1089,11 +1134,22 @@ export class WorkspaceRenderer {
         this.renderer.setClearColor(rawBackground ?? previousClearColor, rawBackground ? 1 : previousClearAlpha);
         this.renderer.clear(true, true, false);
       }
-      this.renderScenePhase(
-        [this.inkRoot, this.strokePreviewRoot, this.strokePreviewHandoffRoot],
-        () => this.renderer.render(this.scene, this.camera),
-      );
+      this.renderScenePhase([this.inkRoot, this.strokePreviewRoot, this.strokePreviewHandoffRoot], () => {
+        if (this.inkAppearance.watercolorEnabled.value > 0.5) {
+          this.watercolorFill.render(this.scene, this.camera, null);
+          this.renderer.setRenderTarget(null);
+          this.camera.layers.set(0);
+          this.camera.layers.enable(INK_RIBBON_RENDER_LAYER);
+          this.renderer.render(this.scene, this.camera);
+          return;
+        }
+        this.camera.layers.set(0);
+        this.camera.layers.enable(INK_FILL_RENDER_LAYER);
+        this.camera.layers.enable(INK_RIBBON_RENDER_LAYER);
+        this.renderer.render(this.scene, this.camera);
+      });
     } finally {
+      this.camera.layers.mask = previousCameraLayers;
       this.scene.background = previousBackground;
       this.renderer.autoClear = previousAutoClear;
       this.renderer.setClearColor(previousClearColor, previousClearAlpha);

@@ -1,12 +1,12 @@
 # Ink Asset Studio 实现与验收记录
 
-更新日期：2026-07-26
+更新日期：2026-08-05
 
 ## 1. 当前结论
 
-`InkAssetStudio_Plan.md` 中阶段 A 至 D 的可在 Windows 开发环境内实现部分已经完成。Studio 是独立的 Vue 3 + Three.js + TypeScript 静态 PWA，全部源码、构建配置、测试、PWA 文件和工作数据格式均位于 `E:\MyDemo\InkAssetStudio`。
+`InkAssetStudio_Plan.md` 中阶段 A 至 D 的可在 Windows 开发环境内实现部分，以及经确认追加的 Source/非 TAA Watercolor 预览已经完成。Studio 是独立的 Vue 3 + Three.js + TypeScript 静态 PWA，全部源码、构建配置、测试、PWA 文件和工作数据格式均位于 `E:\MyDemo\InkAssetStudio`。
 
-本次实现没有修改 `E:\MyDemo\Painting`。Studio 不从 Painting 源目录做运行时导入，也不会写入 Painting 的场景、资产、文档或构建配置。
+Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting 保留该分支原有的完整实现（包括 TAA）。Studio 只移植非 TAA 水彩表现，不从 Painting 源目录做运行时导入、不新增 GameFramework 依赖，也不会在运行时写入 Painting 的场景、资产、文档或构建配置。
 
 ## 2. 已完成功能
 
@@ -26,6 +26,7 @@
 - Terrain schema：1。
 - 一个工作场景可内嵌多个独立 Ink 源和多个摆放引用。
 - IndexedDB 保存当前场景的作者源快照和独立 Editor Session；作者内容修改使用 600 ms 节流自动保存，工具状态使用独立低频保存。Ribbon/Fill 派生缓存不进入该保存事务，恢复时在 Worker 中重建。
+- Source/Watercolor 选择和全部非 TAA 水彩参数只进入 Editor Session；它们不进入工作文件、导出、Undo/Redo 或内容 dirty。新建、旧 Session 迁移和 Reset 均使用 Painting 当前 Ink Global Setting 存档的非 TAA 值。
 - 顶栏显示保存中、本地已保存、最近保存时间和未导出提醒，并明确提示本地草稿不等于备份。
 - `.inkstudio-work.json` 支持随时导出和重新导入；导出只包含可编辑作者源、摆放、地形、灯光和兼容版本，不携带可重建的 Ribbon/Fill/footprint 缓存。
 - 导入前校验 `512 MiB` 文件上限、格式版本、ID 唯一性、引用完整性、数值、颜色、地形、Shape、笔画点和稀疏 Fill 资源上限；`File` 直接交给 Worker 读取、解析和编译，不在 PWA 主线程先复制完整文本。
@@ -70,20 +71,22 @@
 
 - Map Reference 在 Three.js 展开灯光 ShaderChunk 前注入有效 Half-Lambert，显示地形体积和基础颜色，背光坡面不再退化为接近纯黑。
 - Ink Ribbon 和 Fill 使用自身真实深度遮挡；Reference 合成不写入该深度，不能遮挡 Ink。
-- Ink Fill 保留当前硬分档光照和专属原生深度硬阴影：`DepthTexture` 以 `LessEqual`、nearest 单中心比较运行；同一 target 的 nearest 颜色附件保存最近 Shape owner ID，中心 owner 属于 receiver 时跳过比较，否则比较失败进入暗档。该路径不使用 PCF、连续可见度或相邻 depth texel；Reference 地形不进入 Ink 硬阴影投射或接收。
+- Ink Fill 保留当前硬分档光照和专属原生深度硬阴影：`DepthTexture` 保存 nearest-filtered 原始深度，同一 target 的 nearest 颜色附件保存最近 Shape owner ID。Source 执行 owner-aware 单中心比较；Watercolor 从同一原始深度的四个相邻 texel 重建 Marching Squares 连续边界。两条路径均不使用 PCF 或 bias；Reference 地形不进入 Ink 硬阴影投射或接收。
 - Ink Fill 可见材质与专属硬阴影 depth/owner material 均固定使用 `DoubleSide`，片元在背面翻转光照法线；每个有 Fill Shape 取得 transient `1..255` owner ID，超过上限安全使用 `0` 回退而不做自身排除。Cuboid、Sphere、Cylinder 与 Frustum 的表面三角形绕序均保持法线朝外。
 - Ink 阴影目标密度固定为 64 px/世界单位；普通 Three.js PCF 阴影保持关闭。
 - 阴影深度只在 Ink 几何/Transform、摆放或光照方向变化时失效；Reference 地形、灯光颜色和强度不会触发阴影深度重建。
 - 纯 Outline 与 Surface Outline 编辑不再重绘硬阴影；原生 depth capture 会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
 - Ink Group 渲染按 Shape 复用已上传资源：Transform 只更新对象变换，Fill-only 更新复用 Ribbon，描边变化只替换对应 Shape，而不是重建整组 Ink。
+- Appearance 面板可即时选择 Source 或 Watercolor。Watercolor 使用双颜色附件捕获分档光照颜色和 Group-local 稳定噪声，执行 Water Edge seed、三层 depth-aware soft-tail/color-mix 扩散与当前帧 composite，并以连续透明度蜡笔材质显示 Ribbon/Surface Outline。
+- 默认值严格来自 Painting 当前保存的 `ink-global-setting-default-instance.json`：Watercolor、Grain `96`、Minimum Alpha `0.3`、Noise `3`、Water Edge `true / 4 / 0.24 / 0.47 / 0.03`、Diffusion `true / 15 / 5 / 1 / 0.8 / #f9f5f1`。Studio 未移植 TAA、history、jitter、reprojection、disocclusion 或 temporal debug 字段。
 - 阴影相机范围变化后显式更新投影矩阵。
 - GPU 最大纹理不足时不修改作品数据，界面会显示所需尺寸、设备上限和恢复办法。
 - 预览灯光的初值已与 Painting 当前实际保存的 Global Lighting 对齐：相位 `0`、太阳路径 `-12° / 15°`、全局地形反弹 `0.5`，以及完整 Day/Night Profile。所有参数均可编辑，并提供 Reset 恢复该基线；昼夜相位使用重点 `-1～1` 触控滑杆。
 - 太阳/月亮 Profile 选择、地平线强度衰减、环境光/背景线性色彩插值均与 Painting 当前算法一致。Reference 先捕获到 Half Float 目标，再单独经 `OutputPass` 执行 sRGB、ACES Filmic 和 `1.05` 曝光；Ink 在该输出之后以原始作者 sRGB 值直接显示，不做 ACES 或 sRGB 解码/编码，并保留自身 Half-Lambert、环境光和 Ink-only 硬阴影。编辑器辅助最后作为 overlay 绘制；默认 Reference 背景输出像素与所给 Painting 参考图同为 `(227, 222, 215)`。
 - 首版默认灯光未被自定义的旧草稿会迁移到 Painting 当前基线并保留原昼夜相位；存在任意其它自定义灯光值的草稿保持原样。
 - Sky、Ground、Reflection、地形反弹强度和 Profile 反弹亮度均可编辑、保存和交换；当前 Map Reference 范围不启用 PMREM 或地形色反弹，因此这些字段不会虚构移动端预览效果。
-- Map PBR、PCF 软阴影、GTAO、PMREM、环境反射和效果型后处理未启用；只保留 Map Reference 最终颜色管理必需的 `OutputPass`，Ink 不经过该 pass。
-- Three.js 几何、材质、纹理、RenderTarget、监听器、ResizeObserver、Worker 和 UI 计时器均有明确 dispose/terminate/clear 路径。
+- Map PBR、PCF 软阴影、GTAO、PMREM、环境反射及其它效果型后处理未启用；只保留 Map Reference 最终颜色管理必需的 `OutputPass` 和已确认的 Studio 非 TAA Watercolor，Ink 不经过 Reference 的 `OutputPass`。
+- Three.js 几何、材质、纹理、Watercolor Fill capture material、MRT/seed/三层扩散 RenderTarget、监听器、ResizeObserver、Worker 和 UI 计时器均有明确 dispose/terminate/clear 路径。
 
 ## 3. 自动验收结果
 
@@ -96,8 +99,8 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 8 个 Vitest 文件、72 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
-- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、参考地形/地块边缘/无限网格/坐标轴四个显示开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、格式往返和限制、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、Fill 双面可见与 owner-aware 单中心硬阴影、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
+- 8 个 Vitest 文件、78 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、参考地形/地块边缘/无限网格/坐标轴四个显示开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、Painting Ink Appearance 精确默认值/迁移/深拷贝/范围归一化、Source/Watercolor 双材质与 Fill/Ribbon 分层、MRT capture、三层非时域扩散、原始硬阴影深度及 Source 单中心/Watercolor 连续边界、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
 真实 Chrome 自动验收命令：
@@ -115,23 +118,25 @@ npm.cmd run visual-check
 5. 切换到 Shape 模式，新建 Cuboid、Cylinder 与 Frustum，验证对应尺寸手柄和 World/Local Transform 切换；确认 Cuboid/Frustum 不显示 Surface Outline，Cylinder 可启用并调整世界单位宽度，确认可见 Fill 与 hard-shadow capture 均为 `DoubleSide`，再切回 Draw 模式继续编辑；
 6. 打开调色板编辑器并排序颜色；
 7. 核对 Painting 当前完整灯光初值、全部参数输入和重点昼夜滑杆，修改预览灯光并执行 Undo/Redo/Reset；
-8. 核对独立 Navigate 模式已删除，鼠标拖动不会绘制 Ink；
-9. 核对参考地形、地块边缘、无限网格和坐标轴四个开关默认开启，并逐个关闭、重新开启；
-10. 进入 Terrain 模式，核对三个 Tile 按钮、四向按钮、X/Y/Z 工作面按钮并用 Pencil 拖动擦除地形；
-11. 导出 JSON，检查 Group、描边点、压力、五类 Shape、Fill 块、Sphere/Cylinder 的 `surfaceOutline` v1 配置和地形结果；
-12. 新建场景后重新导入刚导出的文件；
-13. 等待 IndexedDB 保存完成；
-14. 断网刷新并确认完整工作场景与 Editor Session 恢复；
-15. 在 1366×900、1024×768 和 768×1024 三种视口检查布局、画布、Group、工具、四个视口显示开关和页面溢出；
-16. 收集控制台和页面错误。
+8. 打开 Appearance，核对 Painting 存档的全部非 TAA 默认值，往返切换 Source/Watercolor、修改参数并 Reset，确认导出不包含 Editor Session 外观；
+9. 核对独立 Navigate 模式已删除，鼠标拖动不会绘制 Ink；
+10. 核对参考地形、地块边缘、无限网格和坐标轴四个开关默认开启，并逐个关闭、重新开启；
+11. 进入 Terrain 模式，核对三个 Tile 按钮、四向按钮、X/Y/Z 工作面按钮并用 Pencil 拖动擦除地形；
+12. 导出 JSON，检查 Group、描边点、压力、五类 Shape、Fill 块、Sphere/Cylinder 的 `surfaceOutline` v1 配置和地形结果；
+13. 新建场景后重新导入刚导出的文件；
+14. 等待 IndexedDB 保存完成；
+15. 断网刷新并确认完整工作场景与 Editor Session 恢复；
+16. 在 1366×900、1024×768 和 768×1024 三种视口检查布局、画布、Group、工具、四个视口显示开关和页面溢出；
+17. 收集控制台和页面错误。
 
-最近一次结果：2 个 Group、15 个可编辑 Outline 点、4 个稀疏 Fill 块、1 个已启用 Surface Outline、21 个剩余地形格；导出声明 Painting Ink compiled format v1，包含 `plane`、`cuboid`、`cylinder`、`frustum`。自动验收确认 Cuboid/Frustum 不显示曲面描边控件，Cylinder 的 Radius/Height 和 Surface Outline 宽度可用并可导出；World/Local Transform 切换和删除键左侧的临时绘制排除眼睛按钮均可切换、还原并保持为 Session 状态。桌面、离线刷新、1024×768 与 768×1024 视口均无页面溢出；Undo/Redo、重点昼夜控件和四个视口显示开关在 iPad 横竖屏可见，按钮式 Terrain 工具、Pencil 绘制、鼠标输入隔离、模式切换、开关交互、断网恢复均成功，控制台和页面错误为 0。
+最近一次结果：2 个 Group、15 个可编辑 Outline 点、4 个稀疏 Fill 块、1 个已启用 Surface Outline、21 个剩余地形格；导出声明 Painting Ink compiled format v1，包含 `plane`、`cuboid`、`cylinder`、`frustum`。自动验收确认 Cuboid/Frustum 不显示曲面描边控件，Cylinder 的 Radius/Height 和 Surface Outline 宽度可用并可导出；Source/Watercolor 均可切换，Appearance 的 Painting 存档默认值、参数修改与 Reset 正确，且外观 Session 不进入导出。World/Local Transform 切换和删除键左侧的临时绘制排除眼睛按钮均可切换、还原并保持为 Session 状态。桌面、离线刷新、1024×768 与 768×1024 视口均无页面溢出；Undo/Redo、重点昼夜控件和四个视口显示开关在 iPad 横竖屏可见，按钮式 Terrain 工具、Pencil 绘制、鼠标输入隔离、模式切换、开关交互、断网恢复均成功，控制台和页面错误为 0。
 
 视觉验收图位于：
 
 - `studio-preview.png`
 - `studio-shape-preview.png`
 - `studio-lighting.png`
+- `studio-appearance.png`
 - `studio-ipad-landscape.png`
 - `studio-ipad-portrait.png`
 

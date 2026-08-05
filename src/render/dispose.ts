@@ -8,6 +8,8 @@ export function disposeObjectTree(root: Object3D): void {
     materials.forEach(disposeMaterial);
     const depth = object.userData.inkHardShadowDepthMaterial;
     if (depth instanceof Material) depth.dispose();
+    const watercolorCapture = object.userData.inkWatercolorFillCaptureMaterial;
+    if (watercolorCapture instanceof Material) watercolorCapture.dispose();
     const texture = object.userData.inkFillTexture;
     if (texture instanceof Texture) texture.dispose();
     const surfaceOutlineFallback = object.userData.inkSurfaceOutlineEmptyFillAlphaTexture;

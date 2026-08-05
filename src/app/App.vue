@@ -15,6 +15,7 @@ import {
 import { DEFAULT_PREVIEW_LIGHTING, clonePreviewLighting } from '../domain/lighting/lighting';
 import { PICO_8_COLORS } from '../domain/terrain/pico8';
 import { createTerrainTile, type TileKind, type TileRotation } from '../domain/terrain/terrain';
+import { cloneStudioInkAppearance, SAVED_PAINTING_INK_APPEARANCE } from '../domain/workspace/inkAppearance';
 import type { StudioEditorSession, WorkspaceMode } from '../domain/workspace/session';
 import { cloneStudioEditorSession, createStudioEditorSession, normalizeStudioEditorSession } from '../domain/workspace/session';
 import {
@@ -50,6 +51,7 @@ const message = ref<{ text: string; tone: 'info' | 'error' } | null>(null);
 const lastSavedAt = ref<number | null>(null);
 const paletteEditing = ref(false);
 const lightingPanelOpen = ref(false);
+const appearancePanelOpen = ref(false);
 let store: WorkspaceStore | null = null;
 let renderer: WorkspaceRenderer | null = null;
 let controller: InkEditorController | null = null;
@@ -165,6 +167,11 @@ watch(() => [
   terrainController?.syncSession();
 });
 
+watch(() => session.inkAppearance, () => {
+  const current = store?.getDocument() ?? document.value;
+  if (current) renderer?.update(current, session);
+}, { deep: true });
+
 watch(activeShape, (shape) => {
   // Planes have no intrinsic dimensions. Do not leave their inspector in a
   // hidden Size/Radius mode after selecting one from a non-planar Shape.
@@ -207,6 +214,7 @@ function setMode(mode: WorkspaceMode): void {
   session.mode = mode;
   if (mode !== 'shape' && session.transformMode === 'resize') session.transformMode = 'translate';
   lightingPanelOpen.value = false;
+  appearancePanelOpen.value = false;
   if (mode === 'draw' && !session.activeReferenceId && document.value?.ink.assetReferences[0]) {
     session.activeReferenceId = document.value.ink.assetReferences[0].id;
   }
@@ -512,6 +520,55 @@ function resetLightingToPainting(): void {
   });
 }
 
+type InkAppearanceNumberField =
+  | 'crayonGrainDensity'
+  | 'crayonMinimumOpacity'
+  | 'noiseScale'
+  | 'waterEdgeWidth'
+  | 'waterEdgeContrastThreshold'
+  | 'waterEdgeDarkening'
+  | 'waterEdgeOffsetStrength'
+  | 'softTailRadius'
+  | 'colorMixRadius'
+  | 'colorMixStrength'
+  | 'interiorPigmentStrength';
+
+function setInkAppearanceNumber(field: InkAppearanceNumberField, event: Event): void {
+  const fill = session.inkAppearance.watercolorFill;
+  const settings: Record<InkAppearanceNumberField, readonly [number, number, number, boolean?]> = {
+    crayonGrainDensity: [session.inkAppearance.crayonGrainDensity, 32, 512, true],
+    crayonMinimumOpacity: [session.inkAppearance.crayonMinimumOpacity, 0, 1],
+    noiseScale: [fill.noiseScale, 0.001, 64],
+    waterEdgeWidth: [fill.waterEdge.width, 0, 32],
+    waterEdgeContrastThreshold: [fill.waterEdge.contrastThreshold, 0, 1],
+    waterEdgeDarkening: [fill.waterEdge.edgeDarkening, 0, 1],
+    waterEdgeOffsetStrength: [fill.waterEdge.offsetStrength, 0, Number.MAX_SAFE_INTEGER],
+    softTailRadius: [fill.diffusion.softTailRadius, 0, 16],
+    colorMixRadius: [fill.diffusion.colorMixRadius, 0, 16],
+    colorMixStrength: [fill.diffusion.colorMixStrength, 0, 1],
+    interiorPigmentStrength: [fill.diffusion.interiorPigmentStrength, 0, 1],
+  };
+  const [fallback, minimum, maximum, integer] = settings[field];
+  const bounded = boundedInput(event, fallback, minimum, maximum);
+  const value = integer ? Math.round(bounded) : bounded;
+  if (integer) (event.target as HTMLInputElement).value = String(value);
+  if (field === 'crayonGrainDensity') session.inkAppearance.crayonGrainDensity = value;
+  else if (field === 'crayonMinimumOpacity') session.inkAppearance.crayonMinimumOpacity = value;
+  else if (field === 'noiseScale') fill.noiseScale = value;
+  else if (field === 'waterEdgeWidth') fill.waterEdge.width = value;
+  else if (field === 'waterEdgeContrastThreshold') fill.waterEdge.contrastThreshold = value;
+  else if (field === 'waterEdgeDarkening') fill.waterEdge.edgeDarkening = value;
+  else if (field === 'waterEdgeOffsetStrength') fill.waterEdge.offsetStrength = value;
+  else if (field === 'softTailRadius') fill.diffusion.softTailRadius = value;
+  else if (field === 'colorMixRadius') fill.diffusion.colorMixRadius = value;
+  else if (field === 'colorMixStrength') fill.diffusion.colorMixStrength = value;
+  else fill.diffusion.interiorPigmentStrength = value;
+}
+
+function resetInkAppearanceToPainting(): void {
+  session.inkAppearance = cloneStudioInkAppearance(SAVED_PAINTING_INK_APPEARANCE);
+}
+
 function addPaletteColor(): void {
   const color = session.drawTool === 'outline' ? session.outlineColor : session.fillColor;
   if (session.palette.length >= 32) { showMessage('The palette is limited to 32 colors.', 'error'); return; }
@@ -585,7 +642,8 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
       <button :class="{ active: session.mode === 'select' }" @click="setMode('select')">Group</button>
       <button :class="{ active: session.mode === 'shape' }" @click="setMode('shape')">Shape</button>
       <button :class="{ active: session.mode === 'draw' }" @click="setMode('draw')">Draw</button>
-      <button :class="{ active: lightingPanelOpen }" @click="lightingPanelOpen = !lightingPanelOpen">Lighting</button>
+      <button :class="{ active: lightingPanelOpen }" @click="lightingPanelOpen = !lightingPanelOpen; appearancePanelOpen = false">Lighting</button>
+      <button :class="{ active: appearancePanelOpen }" @click="appearancePanelOpen = !appearancePanelOpen; lightingPanelOpen = false">Appearance</button>
       <button class="focus-button" :disabled="!session.activeReferenceId" @click="focusSelection">Focus</button>
     </nav>
 
@@ -657,7 +715,7 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
     </main>
 
     <aside v-if="session.rightPanelOpen" class="panel right-panel">
-      <template v-if="session.mode === 'terrain' && !lightingPanelOpen">
+      <template v-if="session.mode === 'terrain' && !lightingPanelOpen && !appearancePanelOpen">
         <div class="panel-heading"><div><strong>Terrain</strong><small>Painting-compatible cells</small></div></div>
         <section>
           <label>Action</label>
@@ -702,6 +760,49 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
             <label class="check-row"><input v-model="session.showInfiniteGrid" type="checkbox" /> Show infinite grid</label>
             <label class="check-row"><input v-model="session.showAxes" type="checkbox" /> Show coordinate axes</label>
           </div>
+        </section>
+      </template>
+
+      <template v-else-if="appearancePanelOpen">
+        <div class="panel-heading">
+          <div><strong>Ink Appearance</strong><small>Source / Watercolor preview</small></div>
+          <button class="lighting-reset-button" title="Restore Painting's saved Ink Global Setting values" @click="resetInkAppearanceToPainting">Reset</button>
+        </div>
+        <section class="appearance-section">
+          <label>Presentation</label>
+          <div class="segmented appearance-mode" aria-label="Ink appearance">
+            <button :class="{ active: session.inkAppearance.appearance === 'source' }" @click="session.inkAppearance.appearance = 'source'">Source</button>
+            <button :class="{ active: session.inkAppearance.appearance === 'watercolor' }" @click="session.inkAppearance.appearance = 'watercolor'">Watercolor</button>
+          </div>
+          <p class="note">These preview values live in the Editor Session. They do not change the work scene, export, Undo/Redo, or content dirty state.</p>
+        </section>
+        <section class="appearance-section">
+          <strong>Crayon Ribbon</strong>
+          <label class="appearance-number-row">Grain Density <input aria-label="Crayon grain density" type="number" min="32" max="512" step="1" :value="session.inkAppearance.crayonGrainDensity" @change="setInkAppearanceNumber('crayonGrainDensity', $event)" /></label>
+          <label class="appearance-number-row">Minimum Alpha <input aria-label="Crayon minimum alpha" type="number" min="0" max="1" step="0.01" :value="session.inkAppearance.crayonMinimumOpacity" @change="setInkAppearanceNumber('crayonMinimumOpacity', $event)" /></label>
+          <label class="appearance-number-row">Noise Scale <input aria-label="Watercolor noise scale" type="number" min="0.001" max="64" step="0.1" :value="session.inkAppearance.watercolorFill.noiseScale" @change="setInkAppearanceNumber('noiseScale', $event)" /></label>
+        </section>
+        <section class="appearance-section">
+          <div class="appearance-section-heading">
+            <strong>Water Edge</strong>
+            <label class="check-row"><input v-model="session.inkAppearance.watercolorFill.waterEdge.enabled" type="checkbox" /> Enabled</label>
+          </div>
+          <label class="appearance-number-row">Width <input aria-label="Water edge width" type="number" min="0" max="32" step="0.1" :value="session.inkAppearance.watercolorFill.waterEdge.width" @change="setInkAppearanceNumber('waterEdgeWidth', $event)" /></label>
+          <label class="appearance-number-row">Contrast <input aria-label="Water edge contrast threshold" type="number" min="0" max="1" step="0.01" :value="session.inkAppearance.watercolorFill.waterEdge.contrastThreshold" @change="setInkAppearanceNumber('waterEdgeContrastThreshold', $event)" /></label>
+          <label class="appearance-number-row">Darkening <input aria-label="Water edge darkening" type="number" min="0" max="1" step="0.01" :value="session.inkAppearance.watercolorFill.waterEdge.edgeDarkening" @change="setInkAppearanceNumber('waterEdgeDarkening', $event)" /></label>
+          <label class="appearance-number-row">Offset Strength <input aria-label="Water edge offset strength" type="number" min="0" step="0.001" :value="session.inkAppearance.watercolorFill.waterEdge.offsetStrength" @change="setInkAppearanceNumber('waterEdgeOffsetStrength', $event)" /></label>
+        </section>
+        <section class="appearance-section">
+          <div class="appearance-section-heading">
+            <strong>Diffusion</strong>
+            <label class="check-row"><input v-model="session.inkAppearance.watercolorFill.diffusion.enabled" type="checkbox" /> Enabled</label>
+          </div>
+          <label class="appearance-number-row">Soft Tail Radius <input aria-label="Soft tail radius" type="number" min="0" max="16" step="0.1" :value="session.inkAppearance.watercolorFill.diffusion.softTailRadius" @change="setInkAppearanceNumber('softTailRadius', $event)" /></label>
+          <label class="appearance-number-row">Color Mix Radius <input aria-label="Color mix radius" type="number" min="0" max="16" step="0.1" :value="session.inkAppearance.watercolorFill.diffusion.colorMixRadius" @change="setInkAppearanceNumber('colorMixRadius', $event)" /></label>
+          <label class="appearance-number-row">Mix Strength <input aria-label="Color mix strength" type="number" min="0" max="1" step="0.01" :value="session.inkAppearance.watercolorFill.diffusion.colorMixStrength" @change="setInkAppearanceNumber('colorMixStrength', $event)" /></label>
+          <label class="appearance-number-row">Interior Pigment <input aria-label="Interior pigment strength" type="number" min="0" max="1" step="0.01" :value="session.inkAppearance.watercolorFill.diffusion.interiorPigmentStrength" @change="setInkAppearanceNumber('interiorPigmentStrength', $event)" /></label>
+          <label class="appearance-color-row">Fade Color <input v-model="session.inkAppearance.watercolorFill.diffusion.interiorFadeColor" type="color" /></label>
+          <p class="note">Watercolor is an immediate viewport composite. TAA, history accumulation, jitter, and reprojection are intentionally excluded.</p>
         </section>
       </template>
 

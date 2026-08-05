@@ -240,6 +240,52 @@ try {
   await page.waitForFunction(() => document.querySelector('.lighting-profile-card input[type="number"]')?.value === '3.2');
   await page.screenshot({ path: 'studio-lighting.png', fullPage: true });
 
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+  const sourceAppearance = page.getByRole('button', { name: 'Source', exact: true });
+  const watercolorAppearance = page.getByRole('button', { name: 'Watercolor', exact: true });
+  if (!await sourceAppearance.isVisible() || !await watercolorAppearance.isVisible()) throw new Error('Source and Watercolor choices are not both visible.');
+  if (!await watercolorAppearance.evaluate((button) => button.classList.contains('active'))) throw new Error('Painting saved Watercolor default is not active.');
+  const appearanceDefaults = await page.evaluate(() => Object.fromEntries([
+    'Crayon grain density',
+    'Crayon minimum alpha',
+    'Watercolor noise scale',
+    'Water edge width',
+    'Water edge contrast threshold',
+    'Water edge darkening',
+    'Water edge offset strength',
+    'Soft tail radius',
+    'Color mix radius',
+    'Color mix strength',
+    'Interior pigment strength',
+  ].map((label) => [label, document.querySelector(`[aria-label="${label}"]`)?.value])));
+  const expectedAppearanceDefaults = {
+    'Crayon grain density': '96',
+    'Crayon minimum alpha': '0.3',
+    'Watercolor noise scale': '3',
+    'Water edge width': '4',
+    'Water edge contrast threshold': '0.24',
+    'Water edge darkening': '0.47',
+    'Water edge offset strength': '0.03',
+    'Soft tail radius': '15',
+    'Color mix radius': '5',
+    'Color mix strength': '1',
+    'Interior pigment strength': '0.8',
+  };
+  if (JSON.stringify(appearanceDefaults) !== JSON.stringify(expectedAppearanceDefaults)) {
+    throw new Error(`Ink appearance did not use Painting saved defaults: ${JSON.stringify(appearanceDefaults)}`);
+  }
+  await sourceAppearance.click();
+  if (!await sourceAppearance.evaluate((button) => button.classList.contains('active'))) throw new Error('Source appearance did not activate.');
+  await watercolorAppearance.click();
+  if (!await watercolorAppearance.evaluate((button) => button.classList.contains('active'))) throw new Error('Watercolor appearance did not restore.');
+  const noiseScale = page.getByLabel('Watercolor noise scale');
+  await noiseScale.fill('4');
+  await noiseScale.dispatchEvent('change');
+  await page.waitForFunction(() => document.querySelector('[aria-label="Watercolor noise scale"]')?.value === '4');
+  await page.getByRole('button', { name: 'Reset', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="Watercolor noise scale"]')?.value === '3');
+  await page.screenshot({ path: 'studio-appearance.png', fullPage: true });
+
   await page.getByRole('button', { name: 'Terrain' }).click();
   if (await page.locator('.terrain-tools .terrain-tool').count() !== 3) throw new Error('Terrain Tile tools are not three direct preview buttons.');
   if (await page.locator('.terrain-direction-pad button').count() !== 4) throw new Error('Terrain direction is not exposed as four direct arrow buttons.');
@@ -268,6 +314,7 @@ try {
   }
   if (!cylinder || cylinder.radius !== 0.7 || !frustum || frustum.topSize !== 0.7) throw new Error('Cylinder or Frustum dimensions were not exported exactly.');
   if (exported.sourceCompatibility?.paintingInkCompiledFormatVersion !== 1) throw new Error('The exported work file is not marked Ink compiled format v1.');
+  if ('inkAppearance' in exported) throw new Error('Editor Session Ink appearance leaked into the exported work file.');
   if ((exported.terrain?.tiles?.length ?? 25) >= 25) throw new Error('The terrain erase gesture did not remove any reference cells.');
 
   await page.getByRole('button', { name: 'New' }).click();
