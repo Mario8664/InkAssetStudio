@@ -70,6 +70,24 @@ describe('Editor viewport session', () => {
     expect(normalizeStudioEditorSession({ mode: 'draw' }).inkAppearance).toEqual(SAVED_PAINTING_INK_APPEARANCE);
   });
 
+  it('preserves an existing palette while adding Fill water defaults to an older session', () => {
+    const session = normalizeStudioEditorSession({ palette: ['#123456', '#abcdef'] });
+    expect(session.palette).toEqual(['#123456', '#abcdef']);
+    expect(session.fillSoftRadius).toBe(0.05);
+    expect(session.fillWaterOpacity).toBe(0.5);
+  });
+
+  it('normalizes the added Fill water tools and bounded session settings', () => {
+    const session = normalizeStudioEditorSession({
+      drawTool: 'fill-water-eraser',
+      fillSoftRadius: 9,
+      fillWaterOpacity: -1,
+    });
+    expect(session.drawTool).toBe('fill-water-eraser');
+    expect(session.fillSoftRadius).toBe(1);
+    expect(session.fillWaterOpacity).toBe(0);
+  });
+
   it('normalizes the Source choice and clamps every bounded Watercolor setting', () => {
     const appearance = normalizeStudioEditorSession({
       inkAppearance: {

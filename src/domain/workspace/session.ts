@@ -10,7 +10,7 @@ import {
 } from './inkAppearance';
 
 export type WorkspaceMode = 'terrain' | 'select' | 'shape' | 'draw';
-export type InkDrawTool = 'outline' | 'outline-eraser' | 'fill-brush' | 'fill-eraser' | 'fill-bucket' | 'picker';
+export type InkDrawTool = 'outline' | 'outline-eraser' | 'fill-brush' | 'fill-eraser' | 'fill-blur' | 'fill-water' | 'fill-water-eraser' | 'fill-bucket' | 'picker';
 /**
  * `resize` is Shape-only and controls Cuboid intrinsic size / Sphere radius.
  * It deliberately does not map to Three.js TransformControls scale.
@@ -36,6 +36,8 @@ export type StudioEditorSession = {
   outlineEraserWidth: number;
   fillBrushSize: number;
   fillBrushShape: InkFillBrushShape;
+  fillSoftRadius: number;
+  fillWaterOpacity: number;
   fillBucketContiguous: boolean;
   terrainKind: TileKind;
   terrainAction: TerrainAction;
@@ -77,6 +79,8 @@ export function createStudioEditorSession(): StudioEditorSession {
     outlineEraserWidth: 0.1,
     fillBrushSize: DEFAULT_INK_FILL_BRUSH_SIZE,
     fillBrushShape: 'circle',
+    fillSoftRadius: 0.05,
+    fillWaterOpacity: 0.5,
     fillBucketContiguous: true,
     terrainKind: 'block',
     terrainAction: 'place',
@@ -120,7 +124,7 @@ export function normalizeStudioEditorSession(value: unknown): StudioEditorSessio
     : defaultValue;
   return {
     mode: isOneOf(source.mode, ['terrain', 'select', 'shape', 'draw']) ? source.mode : fallback.mode,
-    drawTool: isOneOf(source.drawTool, ['outline', 'outline-eraser', 'fill-brush', 'fill-eraser', 'fill-bucket', 'picker']) ? source.drawTool : fallback.drawTool,
+    drawTool: isOneOf(source.drawTool, ['outline', 'outline-eraser', 'fill-brush', 'fill-eraser', 'fill-blur', 'fill-water', 'fill-water-eraser', 'fill-bucket', 'picker']) ? source.drawTool : fallback.drawTool,
     activeReferenceId: typeof source.activeReferenceId === 'string' || source.activeReferenceId === null ? source.activeReferenceId : fallback.activeReferenceId,
     activeShapeId: typeof source.activeShapeId === 'string' || source.activeShapeId === null ? source.activeShapeId : fallback.activeShapeId,
     pressureEnabled: typeof source.pressureEnabled === 'boolean' ? source.pressureEnabled : fallback.pressureEnabled,
@@ -134,6 +138,8 @@ export function normalizeStudioEditorSession(value: unknown): StudioEditorSessio
     outlineEraserWidth: number(source.outlineEraserWidth, fallback.outlineEraserWidth, 0.01, 1),
     fillBrushSize: number(source.fillBrushSize, fallback.fillBrushSize, 0.02, 1),
     fillBrushShape: isOneOf(source.fillBrushShape, ['circle', 'square']) ? source.fillBrushShape : fallback.fillBrushShape,
+    fillSoftRadius: number(source.fillSoftRadius, fallback.fillSoftRadius, 0, 1),
+    fillWaterOpacity: number(source.fillWaterOpacity, fallback.fillWaterOpacity, 0, 1),
     fillBucketContiguous: typeof source.fillBucketContiguous === 'boolean' ? source.fillBucketContiguous : fallback.fillBucketContiguous,
     terrainKind: isOneOf(source.terrainKind, ['block', 'slope', 'corner-slope']) ? source.terrainKind : fallback.terrainKind,
     terrainAction: isOneOf(source.terrainAction, ['place', 'erase']) ? source.terrainAction : fallback.terrainAction,

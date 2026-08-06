@@ -32,8 +32,8 @@ Studio 不是图片画板、Procreate 导入器、远程桌面，也不是完整
 - Shape 保留与 Painting 一致的 `plane`、`cuboid`、`sphere`、`cylinder`、`frustum` 五类，以及位置、YXZ 旋转和固有尺寸；Cuboid 使用 XYZ size，Sphere 使用 radius，Cylinder 使用 radius/height，Frustum 使用 top size/bottom size/height；不提供通用 Transform Scale。
 - Sphere 与 Cylinder 提供 Painting 当前的 `surfaceOutline` Shape 配置：可切换启用并设置 `0.001～1` 世界单位宽度，默认值与普通 Outline 宽度同为 `0.035`。它们以视角相关的解析 Ribbon 表达 Sphere 外轮廓或 Cylinder 两条侧面母线，并按 Fill alpha 裁切；没有不透明 Fill 时不显示。Cuboid、Frustum 与 Plane 不提供该配置。曲面描边不进入作者描边编译缓存，关闭时不保留 Mesh 或 GPU 资源。
 - Move 与 Rotate 手柄支持 Unity 风格的 World/Local 坐标空间切换；该选择只属于 Editor Session。Shape 列表在删除按钮左侧提供眼睛按钮，可将指定 Shape 临时排除出绘制、吸色与 Shape 拾取，但不隐藏其已提交 Ink 渲染结果，也不写入作者源、导出、Undo/Redo 或内容 dirty。
-- 提供完整 Ink 工具：描边绘制、描边擦除、填色绘制、填色擦除、Bucket Fill、吸色、颜色调整、可编辑色板、笔刷尺寸、直线辅助、Group/Shape 选择、Undo/Redo。
-- Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。有限 Shape 的紧凑运行时 Fill 纹理在内部裁剪边使用透明 guard texel，在物理图表边使用 `ClampToEdge` 的真实边缘 texel；可见 Fill、Ink 专属硬阴影和曲面描边只按采样 alpha 裁弃，不得以图表 UV 范围数值裁弃。
+- 提供完整 Ink 工具：描边绘制、描边擦除、填色绘制、填色擦除、局部混色模糊、Water 标记、Water 擦除、Bucket Fill、吸色、颜色调整、可编辑色板、笔刷尺寸、直线辅助、Group/Shape 选择、Undo/Redo。Water 与 Water 擦除没有颜色控制；其 Pencil 光标显示实线核心与准确对应羽化外沿的虚线边界。
+- Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。有限 Shape 的紧凑运行时 Fill 纹理在内部裁剪边使用透明 guard texel，在物理图表边使用 `ClampToEdge` 的真实边缘 texel；可见 Fill、Ink 专属硬阴影和曲面描边只按采样 alpha 裁弃，不得以图表 UV 范围数值裁弃。`alpha < 128` 为透明；`255` 为干燥不透明 Fill；`128..254` 保持不透明并保存 Watercolor 湿度。Water 只调整已有不透明像素的 alpha，不修改 RGB 或创建覆盖；同一连续手势每个 texel 只保留最大贡献，独立后续笔画可继续叠加。
 - 描边仍是带压力点的可编辑表面坐标序列，并编译为世界宽度 Ribbon。
 
 ### 3.2 压感开关
@@ -73,7 +73,7 @@ Studio 只提供下列渲染路径：
 
 Ink 硬阴影复用 Painting 已确认的双外观语义：单张原生 `DepthTexture` target 的密度固定为 `64 px / 世界单位`，深度与同一 target 的颜色附件都使用 nearest 过滤、无 mipmap；深度保留为可由 `sampler2D` 读取的原始值，不启用硬件 compare。不改变 Three.js 的常规 PBR 阴影配置。可见 Fill 与专属 alpha-clip depth/owner pass 都使用 `DoubleSide`，后者只捕获 Ink Fill，不包含 Studio 的 Reference、描边或编辑辅助。capture 的颜色附件 R 通道保存通过深度测试的最近 Shape owner ID：`1..255` 分配给当前预览中的有 Fill Shape，`0` 表示背景或超出上限；ID 只属于运行时预览，不进入工作场景、导出或 Undo/Redo。Source 仍以原始世界位置和深度执行 owner-aware 单中心比较；Watercolor 从同一原始深度的四个相邻 texel 重建 Marching Squares 连续硬阴影边界。两条路径都不使用 depth/normal bias 或 PCF。Studio 的 Reference 地形不投射、不接收此 Ink 专属阴影；该深度图只在 Ink 投射/接收对象的 Transform 或几何、以及灯光方向等真实输入改变时重新分配 owner ID 并失效。地形 Reference、灯光颜色和强度的变化不得无故重建阴影深度图。若设备最大纹理尺寸不足，Studio 必须显示清晰的可恢复提示，而不是悄悄改变作品数据。
 
-Watercolor 属于 Studio 项目自己的预览实现，不导入 Painting 运行时代码，也不新增 GameFramework 依赖。Fill 先以双颜色附件捕获分档光照颜色与 Group-local 稳定噪声，同时保留精确深度；边界 seed、三层 depth-aware soft-tail/color-mix 扩散和最终 composite 都是当前帧即时完成。描边复用已编译 Ribbon 拓扑，通过连续透明度的蜡笔颗粒材质显示。该路径明确不包含 TAA、history accumulation、camera jitter、reprojection、disocclusion 或 temporal debug 状态。
+Watercolor 属于 Studio 项目自己的预览实现，不导入 Painting 运行时代码，也不新增 GameFramework 依赖。Fill 先以双颜色附件捕获分档光照颜色、局部 Water 湿度与 Group-local 稳定噪声，同时保留精确深度；湿度在 capture 阶段将局部颜料向纸白稀释，完整湿度可达到接近纸白，随后边界 seed、三层 depth-aware soft-tail/color-mix 扩散和最终 composite 只在局部湿区影响颜料。描边复用已编译 Ribbon 拓扑，通过连续透明度的蜡笔颗粒材质显示。该路径明确不包含 TAA、history accumulation、camera jitter、reprojection、disocclusion 或 temporal debug 状态。
 
 外观选择和参数属于 Editor Session，不进入工作场景、Ink 作者源、导出、Undo/Redo 或内容 dirty。新 Session、旧 Session 迁移与 Reset 的默认值必须来自 Painting 当前保存的 `public/data/scenes/ink-global-setting-default-instance.json`，而不是历史代码默认值：`appearance = watercolor`、`crayonGrainDensity = 96`、`crayonMinimumOpacity = 0.3`、`noiseScale = 3`；Water Edge 为 `enabled / width 4 / contrast 0.24 / darkening 0.47 / offset 0.03`；Diffusion 为 `enabled / softTail 15 / colorMixRadius 5 / colorMixStrength 1 / interiorPigment 0.8 / fade #f9f5f1`。Painting 存档中的 TAA 字段不得移植。
 
@@ -175,7 +175,7 @@ Studio 的作者文件称为 **Ink Studio Work Scene**。它保存可以直接�
 
 它不保存浏览器实例、GPU 资源、临时笔画预览、当前 Pointer、未提交手势或 Service Worker 缓存。
 
-相机位置、侧栏开合、当前工具、当前颜色、色板、笔刷宽度、压感开关、Transform World/Local 空间、临时排除绘制的 Shape ID、Source/Watercolor 选择及其非 TAA 参数，以及参考地形/地块边缘/无限网格/坐标轴四个显示开关属于 Editor Session。它们可低频地保存到本机，但不应污染可交换的作品内容；色板等确有创作价值的工具预设可作为单独的用户设置导出能力，不能隐式绑定到每个资产。
+相机位置、侧栏开合、当前工具、当前颜色、色板、笔刷宽度、Water 的 Soft Radius 与 Opacity、压感开关、Transform World/Local 空间、临时排除绘制的 Shape ID、Source/Watercolor 选择及其非 TAA 参数，以及参考地形/地块边缘/无限网格/坐标轴四个显示开关属于 Editor Session。它们可低频地保存到本机，但不应污染可交换的作品内容；色板等确有创作价值的工具预设可作为单独的用户设置导出能力，不能隐式绑定到每个资产。
 
 ### 7.2 建议顶层格式
 
@@ -286,7 +286,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - Plane、Cuboid、Sphere、Cylinder、Frustum 都支持现有的 Ink 描边与 Fill 规则；Cylinder 的侧面图表在环绕方向连续，Frustum 使用六个表面图表。
 - Sphere/Cylinder 的 `surfaceOutline` 开关和宽度可实时预览、Undo/Redo、保存、导出和重新导入；Sphere 显示无接缝的外轮廓，Cylinder 仅显示两条侧面母线，二者均按 Fill alpha 裁切。
 - 可见 Fill 使用 `DoubleSide` 并在背面翻转光照法线；专属 alpha-clip hard-shadow depth/owner pass 同样使用 `DoubleSide`。内部紧凑图表裁剪由透明 guard texel 表达，物理图表边缘使用 `ClampToEdge`，三条 alpha 查询路径共享同一纹理 UV 映射。
-- 描边/擦除/填色/Fill 擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成。
+- 描边/擦除/填色/Fill 擦除/局部混色模糊/Water 标记与擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成；非颜色工具不显示颜色或色板控件。
 - Apple Pencil 压感开启时记录有效压力；关闭时新描边全部记录为 `1`；切换不会改写历史笔画。
 - 失焦、取消和 Pointer Capture 丢失不会产生半条已保存笔画或卡住的工具状态。
 
@@ -360,7 +360,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - Group 与 Shape 的删除按钮位于左侧列表各自对应项右侧，并只删除该项。删除仍需确认，并作为一条 Undo 事务提交。
 - 新建 Plane 的方向可直接选择 X、Y、Z 或 Camera，与 Painting 当前 Ink Plane 语义一致。
 - Plane 在同一 Pencil 笔画中允许越出当前有限辅助面：离开有限面后继续与该 Shape 的无限作者平面求交，直到命中其它 Shape 或手势结束。
-- 一笔经过同一 Group 的多个 Shape 时，每个 Shape 的段和实时预览都保留；Fill/擦除也分别维护每个 Shape 的临时作者状态。
+- 一笔经过同一 Group 的多个 Shape 时，每个 Shape 的段和实时预览都保留；Fill/擦除也分别维护每个 Shape 的临时作者状态。Water 手势额外保存每个 texel 的初始湿度与最大贡献，避免 raw/coalesced/interpolated 重复采样使单笔过度变湿或变干。
 - Fill 拖动只处理新增采样、只编译和上传变化 Shape 的 Fill；Terrain 只重建受影响分块；Transform 拖动只更新已有对象节点。普通 Pointer Move 不得构造完整临时文档或调用全局场景更新。
 - Group 模式提供位置和兼容数据格式的 Y 旋转手柄；Shape 模式将 Move、Rotate 与内在尺寸分为互斥的手柄模式。Cuboid 的 Size 模式只显示三轴 Size Handle，Sphere 显示 Radius Handle，Cylinder 显示 Radius/Height Handle，Frustum 显示 Top/Height/Bottom Handle；它们绝不作为通用 Transform Scale，也不与移动或旋转手柄混显。Move/Rotate 手柄均可在 World 与 Local 空间切换。全部手柄只接收 Apple Pencil。
 - Editor Session 持久化 Snap 开关、Translation Unit、Transform World/Local 空间和临时排除绘制的 Shape ID；默认单位为 `0.5`、默认空间为 World。启用后位置手柄持续吸附，不依赖 iPad 不便使用的 Ctrl 修饰键。临时排除只阻止新的绘制、吸色与 Shape 拾取，已提交的 Ink 仍可见且不影响作品内容。

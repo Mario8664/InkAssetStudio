@@ -8,6 +8,17 @@ export const INK_SPHERE_FACE_SEGMENTS = 4;
 export const INK_CYLINDER_SEGMENTS = 16;
 export const INK_FILL_PIXELS_PER_WORLD_UNIT = 64;
 export const INK_FILL_BLOCK_SIZE = 16;
+/** Alpha values below this threshold are transparent; higher values remain opaque. */
+export const INK_FILL_COVERAGE_ALPHA_MIN = 128;
+/** Legacy opaque Fill pixels are dry; lower opaque alpha values encode Watercolor wetness. */
+export const INK_FILL_DRY_ALPHA = 255;
+export const INK_FILL_WET_ALPHA_MIN = 128;
+
+/** Converts the authored diameter and feather extension to the raster brush radii. */
+export function getInkFillBrushRadii(size: number, softRadius = 0): { core: number; outer: number } {
+  const core = Math.max(0.5, size * INK_FILL_PIXELS_PER_WORLD_UNIT * 0.5);
+  return { core, outer: core + Math.max(0, softRadius * INK_FILL_PIXELS_PER_WORLD_UNIT) };
+}
 
 export type InkGridCell = { x: number; y: number; z: number };
 /** Inclusive local grid-cell range occupied visually by an Ink source. */
@@ -19,6 +30,18 @@ export type InkCuboidFace = 'positive-x' | 'negative-x' | 'positive-y' | 'negati
 export type InkCylinderSurface = 'side' | 'top' | 'bottom';
 export type InkFillSurfaceId = 'plane' | InkCuboidFace | InkCylinderSurface;
 export type InkFillBrushShape = 'square' | 'circle';
+/**
+ * Transient per-gesture water state. It records each texel's pre-stroke
+ * wetness and the strongest coverage reached by this one continuous water
+ * adjustment stroke. It is not authoring or compiled Ink data.
+ */
+export type InkFillWaterStrokeState = {
+  readonly texels: Map<string, { initialWetness: number; maximumContribution: number }>;
+};
+
+export function createInkFillWaterStrokeState(): InkFillWaterStrokeState {
+  return { texels: new Map() };
+}
 /** Grid-aligned Group placement rotation, expressed in quarter turns around Y. */
 export type InkGroupRotation = 0 | 90 | 180 | 270;
 
@@ -668,6 +691,127 @@ export function paintInkFill(
   return { ...shape, fill };
 }
 
+/** Applies a local authoring blur to Fill RGB while preserving coverage and Watercolor wetness. */
+export function blurInkFill(
+  shape: InkShape,
+  points: readonly InkSurfacePoint[],
+  size: number,
+  brush: InkFillBrushShape,
+): InkShape {
+  if (points.length === 0 || !Number.isFinite(size) || size <= 0) return shape;
+  const fill = blurInkFillLayer(shape, shape.fill, points, size, brush);
+  return { ...shape, fill };
+}
+
+/** Paints Watercolor wetness into existing opaque Fill pixels with an outer feather. */
+export function paintInkFillWater(
+  shape: InkShape,
+  points: readonly InkSurfacePoint[],
+  size: number,
+  softRadius: number,
+  brush: InkFillBrushShape,
+  waterAmount = 1,
+  normalize = true,
+  strokeState = createInkFillWaterStrokeState(),
+): InkShape {
+  if (points.length === 0 || !Number.isFinite(size) || size <= 0 || !Number.isFinite(softRadius) || softRadius < 0) return shape;
+  const result = adjustInkFillWaterLayer(shape, points, size, softRadius, brush, waterAmount, 'wet', normalize, strokeState);
+  return result.changed ? { ...shape, fill: result.fill } : shape;
+}
+
+/** Removes Watercolor wetness from existing opaque Fill pixels with the same outer feather. */
+export function eraseInkFillWater(
+  shape: InkShape,
+  points: readonly InkSurfacePoint[],
+  size: number,
+  softRadius: number,
+  brush: InkFillBrushShape,
+  waterAmount = 1,
+  normalize = true,
+  strokeState = createInkFillWaterStrokeState(),
+): InkShape {
+  if (points.length === 0 || !Number.isFinite(size) || size <= 0 || !Number.isFinite(softRadius) || softRadius < 0) return shape;
+  const result = adjustInkFillWaterLayer(shape, points, size, softRadius, brush, waterAmount, 'dry', normalize, strokeState);
+  return result.changed ? { ...shape, fill: result.fill } : shape;
+}
+
+/** Normalizes transient Fill edits once at the end of a brush gesture. */
+export function normalizeInkFillShape(shape: InkShape): InkShape {
+  const fill = cloneInkFillLayer(shape.fill);
+  normalizeInkFillLayer(fill);
+  return { ...shape, fill };
+}
+
+function blurInkFillLayer(
+  shape: InkShape,
+  source: InkFillLayer,
+  points: readonly InkSurfacePoint[],
+  size: number,
+  brush: InkFillBrushShape,
+): InkFillLayer {
+  const fill = cloneInkFillLayer(source);
+  const copiedBlocks = new Set<InkFillBlock>();
+  const radius = Math.max(0.5, size * INK_FILL_PIXELS_PER_WORLD_UNIT * 0.5);
+  const blurRadius = Math.min(6, Math.max(1, Math.round(size * INK_FILL_PIXELS_PER_WORLD_UNIT * 0.25)));
+  let prior: InkFillPixelCoordinate | null = null;
+  for (const point of points) {
+    const coordinate = getInkFillPixelCoordinate(shape, point);
+    if (!coordinate) continue;
+    const steps = prior && prior.id === coordinate.id
+      ? Math.max(1, Math.ceil(Math.hypot(coordinate.x - prior.x, coordinate.y - prior.y) / Math.max(1, radius * 0.5)))
+      : 1;
+    for (let step = 1; step <= steps; step += 1) {
+      const fraction = prior && prior.id === coordinate.id ? step / steps : 1;
+      const x = prior && prior.id === coordinate.id ? prior.x + (coordinate.x - prior.x) * fraction : coordinate.x;
+      const y = prior && prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * fraction : coordinate.y;
+      stampInkFillBlur(shape, source, fill, { ...coordinate, x, y }, radius, brush, blurRadius, copiedBlocks);
+    }
+    prior = coordinate;
+  }
+  normalizeInkFillLayer(fill);
+  return fill;
+}
+
+function adjustInkFillWaterLayer(
+  shape: InkShape,
+  points: readonly InkSurfacePoint[],
+  size: number,
+  softRadius: number,
+  brush: InkFillBrushShape,
+  waterAmount: number,
+  mode: 'wet' | 'dry',
+  normalize: boolean,
+  strokeState: InkFillWaterStrokeState,
+): { fill: InkFillLayer; changed: boolean } {
+  const fill = cloneInkFillLayer(shape.fill);
+  const copiedBlocks = new Set<InkFillBlock>();
+  const surfaces = new Map(fill.surfaces.map((surface) => [surface.id, surface] as const));
+  const { core: coreRadius, outer: totalRadius } = getInkFillBrushRadii(size, softRadius);
+  const featherRadius = totalRadius - coreRadius;
+  const amount = Math.min(1, Math.max(0, waterAmount));
+  let prior: InkFillPixelCoordinate | null = null;
+  let changed = false;
+  for (const point of points) {
+    const coordinate = getInkFillPixelCoordinate(shape, point);
+    if (!coordinate) continue;
+    const steps = prior && prior.id === coordinate.id
+      ? Math.max(1, Math.ceil(Math.hypot(coordinate.x - prior.x, coordinate.y - prior.y) / Math.max(1, coreRadius * 0.5)))
+      : 1;
+    for (let step = 1; step <= steps; step += 1) {
+      const fraction = prior && prior.id === coordinate.id ? step / steps : 1;
+      const x = prior && prior.id === coordinate.id ? prior.x + (coordinate.x - prior.x) * fraction : coordinate.x;
+      const y = prior && prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * fraction : coordinate.y;
+      changed = stampInkFillWater(
+        shape, coordinate.id, x, y, coordinate.width, coordinate.height,
+        coreRadius, featherRadius, brush, amount, mode, copiedBlocks, surfaces, strokeState,
+      ) || changed;
+    }
+    prior = coordinate;
+  }
+  if (changed && normalize) normalizeInkFillLayer(fill);
+  return { fill, changed };
+}
+
 /** Returns the unlit authored Fill colour at one Shape-local surface point. */
 export function sampleInkFillColor(shape: InkShape, point: InkSurfacePoint): string | null {
   const coordinate = getInkFillPixelCoordinate(shape, point);
@@ -1088,6 +1232,159 @@ function stampInkFill(
       writeInkFillPixel(surface, x, y, rgba, copiedBlocks);
     }
   }
+}
+
+function offsetInkFillPixelCoordinate(shape: InkShape, origin: InkFillPixelCoordinate, offsetX: number, offsetY: number): InkFillPixelCoordinate | null {
+  let coordinate: InkFillPixelCoordinate | null = {
+    ...origin,
+    x: Math.floor(origin.x),
+    y: Math.floor(origin.y),
+  };
+  const stepX = Math.sign(offsetX);
+  const stepY = Math.sign(offsetY);
+  for (let step = 0; step < Math.abs(offsetX); step += 1) coordinate = coordinate && getInkFillNeighbour(shape, coordinate, stepX, 0);
+  for (let step = 0; step < Math.abs(offsetY); step += 1) coordinate = coordinate && getInkFillNeighbour(shape, coordinate, 0, stepY);
+  return coordinate;
+}
+
+/** Blurs only authored opaque pixels and follows the existing chart-neighbour mapping. */
+function stampInkFillBlur(
+  shape: InkShape,
+  source: InkFillLayer,
+  target: InkFillLayer,
+  center: InkFillPixelCoordinate,
+  radius: number,
+  brush: InkFillBrushShape,
+  blurRadius: number,
+  copiedBlocks: Set<InkFillBlock>,
+): void {
+  const range = Math.ceil(radius);
+  for (let offsetY = -range; offsetY <= range; offsetY += 1) for (let offsetX = -range; offsetX <= range; offsetX += 1) {
+    const deltaX = offsetX + Math.floor(center.x) + 0.5 - center.x;
+    const deltaY = offsetY + Math.floor(center.y) + 0.5 - center.y;
+    if (brush === 'circle' && deltaX * deltaX + deltaY * deltaY > radius * radius) continue;
+    const targetCoordinate = offsetInkFillPixelCoordinate(shape, center, offsetX, offsetY);
+    if (!targetCoordinate) continue;
+    const targetSurface = target.surfaces.find((surface) => surface.id === targetCoordinate.id);
+    if (!targetSurface) continue;
+    const targetX = Math.floor(targetCoordinate.x);
+    const targetY = Math.floor(targetCoordinate.y);
+    const current = readInkFillPixel(targetSurface, targetX, targetY);
+    if ((current[3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) continue;
+    let red = 0;
+    let green = 0;
+    let blue = 0;
+    let weightTotal = 0;
+    for (let sampleOffsetY = -blurRadius; sampleOffsetY <= blurRadius; sampleOffsetY += 1) {
+      for (let sampleOffsetX = -blurRadius; sampleOffsetX <= blurRadius; sampleOffsetX += 1) {
+        const distance = Math.hypot(sampleOffsetX, sampleOffsetY);
+        if (distance > blurRadius + 0.001) continue;
+        const coordinate = offsetInkFillPixelCoordinate(shape, targetCoordinate, sampleOffsetX, sampleOffsetY);
+        if (!coordinate) continue;
+        const sampleSurface = source.surfaces.find((surface) => surface.id === coordinate.id);
+        if (!sampleSurface) continue;
+        const sample = readInkFillPixel(sampleSurface, Math.floor(coordinate.x), Math.floor(coordinate.y));
+        if ((sample[3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) continue;
+        const weight = Math.exp(-(distance * distance) / Math.max(1, blurRadius * blurRadius * 0.5));
+        red += (sample[0] ?? 0) * weight;
+        green += (sample[1] ?? 0) * weight;
+        blue += (sample[2] ?? 0) * weight;
+        weightTotal += weight;
+      }
+    }
+    if (weightTotal <= 0) continue;
+    writeInkFillPixel(targetSurface, targetX, targetY, [
+      Math.round(red / weightTotal),
+      Math.round(green / weightTotal),
+      Math.round(blue / weightTotal),
+      current[3] ?? INK_FILL_DRY_ALPHA,
+    ], copiedBlocks);
+  }
+}
+
+/** Adjusts wetness without creating coverage in transparent texels. */
+function stampInkFillWater(
+  shape: InkShape,
+  id: InkFillSurfaceId,
+  centerX: number,
+  centerY: number,
+  width: number | undefined,
+  height: number | undefined,
+  coreRadius: number,
+  featherRadius: number,
+  brush: InkFillBrushShape,
+  amount: number,
+  mode: 'wet' | 'dry',
+  copiedBlocks: Set<InkFillBlock>,
+  surfaces: ReadonlyMap<InkFillSurfaceId, InkFillSurface>,
+  strokeState: InkFillWaterStrokeState,
+): boolean {
+  const totalRadius = coreRadius + featherRadius;
+  const center: InkFillPixelCoordinate = { id, x: centerX, y: centerY, width, height };
+  const range = Math.ceil(totalRadius);
+  let changed = false;
+  for (let offsetY = -range; offsetY <= range; offsetY += 1) for (let offsetX = -range; offsetX <= range; offsetX += 1) {
+    const deltaX = offsetX + Math.floor(centerX) + 0.5 - centerX;
+    const deltaY = offsetY + Math.floor(centerY) + 0.5 - centerY;
+    const distance = brush === 'circle' ? Math.hypot(deltaX, deltaY) : Math.max(Math.abs(deltaX), Math.abs(deltaY));
+    if (distance > totalRadius) continue;
+    const coordinate = getStampedInkFillPixelCoordinate(shape, center, offsetX, offsetY);
+    if (!coordinate) continue;
+    const surface = surfaces.get(coordinate.id);
+    if (!surface) continue;
+    const x = Math.floor(coordinate.x);
+    const y = Math.floor(coordinate.y);
+    const current = readInkFillPixel(surface, x, y);
+    if ((current[3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) continue;
+    const feather = distance <= coreRadius || featherRadius <= 0
+      ? 1
+      : 1 - smoothstep(coreRadius, totalRadius, distance);
+    const strokeWetness = Math.min(1, Math.max(0, amount * feather));
+    const stateKey = `${shape.id}:${coordinate.id}:${x}:${y}`;
+    let texelState = strokeState.texels.get(stateKey);
+    if (!texelState) {
+      texelState = {
+        initialWetness: Math.min(1, Math.max(0,
+          (INK_FILL_DRY_ALPHA - (current[3] ?? INK_FILL_DRY_ALPHA)) / (INK_FILL_DRY_ALPHA - INK_FILL_WET_ALPHA_MIN),
+        )),
+        maximumContribution: 0,
+      };
+      strokeState.texels.set(stateKey, texelState);
+    }
+    // Dense raw/pointer samples and path interpolation overlap within one drag.
+    // A later stroke starts from the newly adjusted wetness and can accumulate.
+    if (strokeWetness <= texelState.maximumContribution) continue;
+    texelState.maximumContribution = strokeWetness;
+    const wetness = mode === 'wet'
+      ? 1 - (1 - texelState.initialWetness) * (1 - texelState.maximumContribution)
+      : texelState.initialWetness * (1 - texelState.maximumContribution);
+    const targetAlpha = Math.round(INK_FILL_DRY_ALPHA - wetness * (INK_FILL_DRY_ALPHA - INK_FILL_WET_ALPHA_MIN));
+    const currentAlpha = current[3] ?? INK_FILL_DRY_ALPHA;
+    if (mode === 'wet' ? targetAlpha >= currentAlpha : targetAlpha <= currentAlpha) continue;
+    writeInkFillPixel(surface, x, y, [current[0] ?? 0, current[1] ?? 0, current[2] ?? 0, targetAlpha], copiedBlocks);
+    changed = true;
+  }
+  return changed;
+}
+
+function getStampedInkFillPixelCoordinate(
+  shape: InkShape,
+  origin: InkFillPixelCoordinate,
+  offsetX: number,
+  offsetY: number,
+): InkFillPixelCoordinate | null {
+  const x = Math.floor(origin.x) + offsetX;
+  const y = Math.floor(origin.y) + offsetY;
+  if (origin.width === undefined || origin.height === undefined || (x >= 0 && x < origin.width && y >= 0 && y < origin.height)) {
+    return { ...origin, x, y };
+  }
+  return offsetInkFillPixelCoordinate(shape, origin, offsetX, offsetY);
+}
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  if (edge0 === edge1) return value < edge0 ? 0 : 1;
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
 }
 
 function getInkFillBounds(shape: InkShape, surface: InkFillSurface, start: InkFillPixelCoordinate): { minX: number; minY: number; maxX: number; maxY: number } {

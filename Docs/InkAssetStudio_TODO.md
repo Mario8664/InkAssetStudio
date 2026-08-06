@@ -1,6 +1,6 @@
 # Ink Asset Studio 实现与验收记录
 
-更新日期：2026-08-05
+更新日期：2026-08-06
 
 ## 1. 当前结论
 
@@ -45,11 +45,11 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - Shape 视口拖动支持 XZ 移动和 Y 轴旋转，手势结束后才提交一次作者事务。
 - Shape 编辑辅助已与 Painting 当前视觉一致：选中 Surface 使用 `#63c7fa / 0.34`，未选中及 Draw 模式 Surface 使用 `#548097 / 0.16`；相应参考网格使用 `#b9ebff / 0.84` 与 `#7aa0ae / 0.42`。辅助面读取深度但不写入深度，不再使用黄色 wireframe。
 - Plane 辅助面按 Outline 与稀疏 Fill 内容动态扩展并保留最小 `1×1` 范围；Cuboid/Frustum 显示六面世界单位网格，Sphere 显示每面 `4×4` 的球化六面体网格，Cylinder 依据三角化圆柱表面显示网格。辅助面及其网格仅属于编辑器视口，不进入作者源或导出文件。
-- Outline、Outline Eraser、Fill Paint、Fill Eraser、Bucket Fill、Fill Picker 全部可通过触控 UI 选择。
+- Outline、Outline Eraser、Fill Paint、Fill Eraser、Blur、Water、Water Eraser、Bucket Fill、Fill Picker 全部可通过触控 UI 选择。Water Eraser 使用 `💨`，Blur/Water/Water Eraser 不显示颜色或色板控件。
 - Outline 保留带压力的可编辑表面点，并编译为世界宽度 Ribbon。
-- Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。
+- Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。`alpha < 128` 为透明；`255` 为干燥不透明；`128..254` 保存 Watercolor 湿度并仍按不透明 Fill 处理。Water/Water Eraser 只对已有覆盖调整 alpha，保持 RGB 不变；同一手势去重、不同手势叠加。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 均使用 Painting 当前的表面坐标和编译规则；Cylinder side chart 在环绕方向连续，Cylinder cap 与 Frustum 的六个面都保有独立 Fill 图表。
-- 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。
+- 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。Water 与 Water Eraser 额外提供 Session 持久化的 Soft Radius 与 Water Opacity；光标以实线核心加精确对应 Feather 外半径的虚线外框显示。
 - 支持直线辅助；其端点状态保存在作者数据中，不进入编译几何哈希。
 - 调色板可新增、删除、直接改色和触控排序，最多 32 色，并作为 Editor Session 独立保存。
 - Apple Pencil 使用 Pointer Events、合并事件和可用时的 `pointerrawupdate`；压感开启时只有非零 raw 压力才取代合并事件，避免 iPad Safari 的零压力 raw 更新使压感失效。手势取消、失焦和 Pointer Capture 丢失都会丢弃未提交临时数据并清理状态。
@@ -77,7 +77,7 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - 阴影深度只在 Ink 几何/Transform、摆放或光照方向变化时失效；Reference 地形、灯光颜色和强度不会触发阴影深度重建。
 - 纯 Outline 与 Surface Outline 编辑不再重绘硬阴影；原生 depth capture 会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
 - Ink Group 渲染按 Shape 复用已上传资源：Transform 只更新对象变换，Fill-only 更新复用 Ribbon，描边变化只替换对应 Shape，而不是重建整组 Ink。
-- Appearance 面板可即时选择 Source 或 Watercolor。Watercolor 使用双颜色附件捕获分档光照颜色和 Group-local 稳定噪声，执行 Water Edge seed、三层 depth-aware soft-tail/color-mix 扩散与当前帧 composite，并以连续透明度蜡笔材质显示 Ribbon/Surface Outline。
+- Appearance 面板可即时选择 Source 或 Watercolor。Watercolor 使用双颜色附件捕获分档光照颜色、局部 Water 湿度和 Group-local 稳定噪声：湿度先在 capture 阶段把颜料稀释向纸白，再令 Water Edge/Soft Tail 只在局部湿区影响颜料。它执行三层 depth-aware soft-tail/color-mix 扩散与当前帧 composite，并以连续透明度蜡笔材质显示 Ribbon/Surface Outline。
 - 默认值严格来自 Painting 当前保存的 `ink-global-setting-default-instance.json`：Watercolor、Grain `96`、Minimum Alpha `0.3`、Noise `3`、Water Edge `true / 4 / 0.24 / 0.47 / 0.03`、Diffusion `true / 15 / 5 / 1 / 0.8 / #f9f5f1`。Studio 未移植 TAA、history、jitter、reprojection、disocclusion 或 temporal debug 字段。
 - 阴影相机范围变化后显式更新投影矩阵。
 - GPU 最大纹理不足时不修改作品数据，界面会显示所需尺寸、设备上限和恢复办法。

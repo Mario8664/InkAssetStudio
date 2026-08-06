@@ -285,6 +285,15 @@ vec4 sampleInkWatercolorContouredSource(vec2 textureUv) {
   return nearestOpaque;
 }`;
 
+/** Dilutes local wet pigment at capture time, allowing full water to reach paper white. */
+const INK_WATERCOLOR_WET_WASH_GLSL = `
+vec3 getInkWatercolorWetWash(vec3 pigment, float wetness) {
+  float wetCurve = pow(clamp(wetness, 0.0, 1.0), 0.75);
+  float pigmentLightness = dot(pigment, vec3(0.299, 0.587, 0.114));
+  vec3 softenedPigment = mix(pigment, vec3(pigmentLightness), wetCurve * 0.12);
+  return mix(softenedPigment, vec3(1.0), wetCurve);
+}`;
+
 /** Watercolor-only nearest visibility with continuous Marching Squares edges. */
 const INK_WATERCOLOR_CONTOURED_HARD_SHADOW_GLSL = `
 bool isInkHardShadowSelfOwner(vec2 shadowUv) {
@@ -1390,6 +1399,8 @@ ${features.hardShadows ? INK_WATERCOLOR_CONTOURED_HARD_SHADOW_GLSL : ''}
 
 ${INK_WATERCOLOR_CONTOURED_FILL_GLSL}
 
+${INK_WATERCOLOR_WET_WASH_GLSL}
+
 float inkWatercolorNoiseHash(vec3 value) {
   return fract(sin(dot(value, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
 }
@@ -1447,10 +1458,12 @@ void main() {
     if (inside) directBand = mix(0.5, 1.0, sampleInkWatercolorContouredHardShadowVisibility(shadowUvDepth));
   }
 ` : ''}
-  vec3 baseWash = sourceColour.rgb;
+  float waterAmount = clamp((1.0 - sourceColour.a) * 2.0, 0.0, 1.0);
+  float wetVariation = (getInkWatercolorNoise().x - 0.5) * 0.04 * waterAmount;
+  vec3 baseWash = getInkWatercolorWetWash(sourceColour.rgb, clamp(waterAmount + wetVariation, 0.0, 1.0));
   vec3 shadedColor = baseWash * (vec3(directBand) + inkAmbientIrradiance);
   inkWatercolorShaded = vec4(shadedColor, 1.0);
-  inkWatercolorNoise = vec4(getInkWatercolorNoise(), 0.0, 1.0);
+  inkWatercolorNoise = vec4(getInkWatercolorNoise(), waterAmount, 1.0);
 }`,
   });
   return material;

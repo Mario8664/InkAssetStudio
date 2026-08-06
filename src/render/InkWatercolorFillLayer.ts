@@ -1231,8 +1231,11 @@ void main() {
   float waterEdgeEnabled = step(0.5, inkWatercolorWaterEdgeEnabled);
   float diffusionEnabled = step(0.5, inkWatercolorDiffusionEnabled);
   float diffusionSource = waterEdgeEnabled * diffusionEnabled;
-  float concentration = max(waterEdgeSeed, softTail) * diffusionSource;
-  float pigmentStrength = mix(1.0, mix(inkWatercolorInteriorPigmentStrength, 1.0, concentration), diffusionSource);
+  // B stores local brush wetness from the capture attachment. Dry Fill must
+  // retain its original pigment instead of receiving a global paper-white wash.
+  float localWetness = clamp(centerNoise.b, 0.0, 1.0);
+  float localDiffusion = max(waterEdgeSeed, softTail) * diffusionSource * localWetness;
+  float pigmentStrength = mix(1.0, inkWatercolorInteriorPigmentStrength, localDiffusion);
   vec3 diffusedShadedColor = getInkWatercolorDiffusedColor(
     inkWatercolorColorMixRadius,
     centerViewZ,
@@ -1247,7 +1250,8 @@ void main() {
   vec3 mixedShadedColor = mix(centerShadedColor, diffusedShadedColor, colorMixWeight);
   float pigmentLoad = 1.0 + 2.0 * waterEdgeSeed * inkWatercolorWaterEdgeDarkening * waterEdgeEnabled;
   vec3 depositedPigment = pow(max(mixedShadedColor, vec3(0.0001)), vec3(pigmentLoad));
-  vec3 diffusedPigment = mix(inkWatercolorInteriorFadeColor, depositedPigment, pigmentStrength);
+  vec3 tintedPigment = depositedPigment * inkWatercolorInteriorFadeColor;
+  vec3 diffusedPigment = mix(centerShadedColor, tintedPigment, pigmentStrength);
   inkWatercolorOutput = vec4(diffusedPigment, 1.0);
 }`,
   {

@@ -74,6 +74,14 @@ const activeSurfaceOutline = computed(() => {
     ? shape.surfaceOutline ?? createDefaultInkSurfaceOutlineSettings()
     : null;
 });
+const isWaterTool = computed(() => session.drawTool === 'fill-water' || session.drawTool === 'fill-water-eraser');
+const isFillBrushTool = computed(() => session.drawTool === 'fill-brush'
+  || session.drawTool === 'fill-eraser'
+  || session.drawTool === 'fill-blur'
+  || isWaterTool.value);
+const isColorTool = computed(() => session.drawTool !== 'outline-eraser'
+  && session.drawTool !== 'fill-blur'
+  && !isWaterTool.value);
 const isDirty = computed(() => !!snapshot.value && snapshot.value.revision > snapshot.value.savedRevision);
 const isUnexported = computed(() => !!snapshot.value && snapshot.value.revision > snapshot.value.exportedRevision);
 const saveLabel = computed(() => isDirty.value ? 'Saving…' : isUnexported.value ? 'Saved locally · not exported' : 'Saved locally');
@@ -503,7 +511,7 @@ function setLightingRange(path: string, event: Event, fallback: number, minimum:
 }
 
 function setSessionRange(
-  field: 'outlineWidth' | 'outlineEraserWidth' | 'fillBrushSize',
+  field: 'outlineWidth' | 'outlineEraserWidth' | 'fillBrushSize' | 'fillSoftRadius' | 'fillWaterOpacity',
   event: Event,
   minimum: number,
   maximum: number,
@@ -913,25 +921,30 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
         <button :class="{ active: session.drawTool === 'outline-eraser' }" @click="session.drawTool = 'outline-eraser'">Line Erase</button>
         <button :class="{ active: session.drawTool === 'fill-brush' }" @click="session.drawTool = 'fill-brush'">Fill Paint</button>
         <button :class="{ active: session.drawTool === 'fill-eraser' }" @click="session.drawTool = 'fill-eraser'">Fill Erase</button>
+        <button :class="{ active: session.drawTool === 'fill-blur' }" @click="session.drawTool = 'fill-blur'">Blur</button>
+        <button :class="{ active: session.drawTool === 'fill-water' }" @click="session.drawTool = 'fill-water'">Water</button>
+        <button :class="{ active: session.drawTool === 'fill-water-eraser' }" title="Erase water / re-dry Fill" @click="session.drawTool = 'fill-water-eraser'">💨</button>
         <button :class="{ active: session.drawTool === 'fill-bucket' }" @click="session.drawTool = 'fill-bucket'">Bucket</button>
         <button :class="{ active: session.drawTool === 'picker' }" @click="session.drawTool = 'picker'">Picker</button>
       </div>
-      <div class="tool-group palette-row">
+      <div v-if="isColorTool" class="tool-group palette-row">
         <button v-for="(color, index) in session.palette" :key="`${color}-${index}`" class="ink-swatch" :style="{ background: color }" :title="`Use ${color}`" :aria-label="`Use palette color ${color}`" @click="usePaletteColor(color)" />
         <button class="small-button" title="Add current color" @click="addPaletteColor">＋</button>
         <button class="small-button" title="Edit and reorder palette" :class="{ active: paletteEditing }" @click="paletteEditing = !paletteEditing">✎</button>
       </div>
       <div class="tool-group tool-options">
-        <label class="color-field"><span>Color</span><input v-if="session.drawTool === 'outline' || session.drawTool === 'outline-eraser'" v-model="session.outlineColor" type="color" /><input v-else v-model="session.fillColor" type="color" /></label>
+        <label v-if="isColorTool" class="color-field"><span>Color</span><input v-if="session.drawTool === 'outline'" v-model="session.outlineColor" type="color" /><input v-else v-model="session.fillColor" type="color" /></label>
         <button v-if="session.drawTool === 'fill-bucket'" class="toggle" :class="{ active: session.fillBucketContiguous }" title="Replace only the connected Fill region. Turn off to replace every matching colour, including transparent pixels, in this Shape." @click="session.fillBucketContiguous = !session.fillBucketContiguous">Contiguous {{ session.fillBucketContiguous ? 'On' : 'Off' }}</button>
         <label v-if="session.drawTool === 'outline'">Width <span class="range-input-row"><input v-model.number="session.outlineWidth" type="range" min="0.005" max="0.5" step="0.005" /><input aria-label="Outline width" class="precision-number" :value="session.outlineWidth" type="number" min="0.005" max="0.5" step="0.005" @change="setSessionRange('outlineWidth', $event, 0.005, 0.5)" /></span></label>
         <label v-else-if="session.drawTool === 'outline-eraser'">Width <span class="range-input-row"><input v-model.number="session.outlineEraserWidth" type="range" min="0.01" max="1" step="0.01" /><input aria-label="Outline eraser width" class="precision-number" :value="session.outlineEraserWidth" type="number" min="0.01" max="1" step="0.01" @change="setSessionRange('outlineEraserWidth', $event, 0.01, 1)" /></span></label>
-        <label v-else>Size <span class="range-input-row"><input v-model.number="session.fillBrushSize" type="range" min="0.02" max="1" step="0.01" /><input aria-label="Fill brush size" class="precision-number" :value="session.fillBrushSize" type="number" min="0.02" max="1" step="0.01" @change="setSessionRange('fillBrushSize', $event, 0.02, 1)" /></span></label>
-        <div v-if="session.drawTool === 'fill-brush' || session.drawTool === 'fill-eraser'" class="segmented compact"><button :class="{ active: session.fillBrushShape === 'circle' }" @click="session.fillBrushShape = 'circle'">●</button><button :class="{ active: session.fillBrushShape === 'square' }" @click="session.fillBrushShape = 'square'">■</button></div>
+        <label v-else-if="isFillBrushTool">Size <span class="range-input-row"><input v-model.number="session.fillBrushSize" type="range" min="0.02" max="1" step="0.01" /><input aria-label="Fill brush size" class="precision-number" :value="session.fillBrushSize" type="number" min="0.02" max="1" step="0.01" @change="setSessionRange('fillBrushSize', $event, 0.02, 1)" /></span></label>
+        <div v-if="isFillBrushTool" class="segmented compact"><button :class="{ active: session.fillBrushShape === 'circle' }" @click="session.fillBrushShape = 'circle'">●</button><button :class="{ active: session.fillBrushShape === 'square' }" @click="session.fillBrushShape = 'square'">■</button></div>
+        <label v-if="isWaterTool">Soft Radius <span class="range-input-row"><input v-model.number="session.fillSoftRadius" type="range" min="0" max="1" step="0.01" /><input aria-label="Water soft radius" class="precision-number" :value="session.fillSoftRadius" type="number" min="0" max="1" step="0.01" @change="setSessionRange('fillSoftRadius', $event, 0, 1)" /></span></label>
+        <label v-if="isWaterTool">Water Opacity <span class="range-input-row"><input v-model.number="session.fillWaterOpacity" type="range" min="0" max="1" step="0.01" /><input aria-label="Water opacity" class="precision-number" :value="session.fillWaterOpacity" type="number" min="0" max="1" step="0.01" @change="setSessionRange('fillWaterOpacity', $event, 0, 1)" /></span></label>
         <button class="toggle" :class="{ active: session.pressureEnabled }" title="Use Apple Pencil pressure for new outline points" @click="session.pressureEnabled = !session.pressureEnabled">Pressure {{ session.pressureEnabled ? 'On' : 'Off' }}</button>
         <button v-if="session.drawTool === 'outline'" class="toggle" :class="{ active: session.straightLineEnabled }" @click="session.straightLineEnabled = !session.straightLineEnabled">Straight {{ session.straightLineEnabled ? 'On' : 'Off' }}</button>
       </div>
-      <section v-if="paletteEditing" class="palette-editor" aria-label="Palette editor">
+      <section v-if="paletteEditing && isColorTool" class="palette-editor" aria-label="Palette editor">
         <header><strong>Edit Palette</strong><button @click="paletteEditing = false">Done</button></header>
         <div class="palette-editor-list">
           <div v-for="(color, index) in session.palette" :key="`edit-${index}`" class="palette-editor-row">

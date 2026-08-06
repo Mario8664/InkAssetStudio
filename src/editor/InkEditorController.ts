@@ -1,13 +1,21 @@
 import { Vector3 } from 'three';
 import {
+  blurInkFill,
   bucketFillInkShape,
+  createInkFillWaterStrokeState,
   createInkOutlineStroke,
+  eraseInkFillWater,
+  getInkFillBrushRadii,
   getInkCylinderSurfacePosition,
   getInkFrustumFacePosition,
+  INK_FILL_PIXELS_PER_WORLD_UNIT,
+  normalizeInkFillShape,
   paintInkFill,
+  paintInkFillWater,
   sampleInkFillColor,
   type InkCuboidStrokePoint,
   type InkCylinderStrokePoint,
+  type InkFillWaterStrokeState,
   type InkOutlineStroke,
   type InkShape,
   type InkSurfacePoint,
@@ -57,6 +65,8 @@ export class InkEditorController {
   private pointerId: number | null = null;
   private pendingInk: PendingInkSegment[] = [];
   private readonly workingShapes = new Map<string, WorkingShape>();
+  /** One drag keeps only the strongest wet/dry contribution per Fill texel. */
+  private waterStrokeState: InkFillWaterStrokeState | null = null;
   private usesRawPointerUpdates = false;
   private receivedRawPointerUpdate = false;
   private previewFrame: number | null = null;
@@ -193,6 +203,9 @@ export class InkEditorController {
     this.pointerId = event.pointerId;
     this.pendingInk = [];
     this.workingShapes.clear();
+    this.waterStrokeState = isWaterAdjustmentTool(this.options.getSession().drawTool)
+      ? createInkFillWaterStrokeState()
+      : null;
     this.usesRawPointerUpdates = event.pointerType === 'pen';
     this.receivedRawPointerUpdate = false;
     this.options.renderer.canvas.setPointerCapture(event.pointerId);
@@ -254,7 +267,12 @@ export class InkEditorController {
     segment.lastScreenY = screenY;
     segment.lastTimestamp = timestamp;
     const session = this.options.getSession();
-    this.options.renderer.showCursor(hit, getToolRadius(session), session.fillBrushShape === 'square' && isFillTool(session.drawTool));
+    this.options.renderer.showCursor(
+      hit,
+      getToolRadius(session),
+      session.fillBrushShape === 'square' && isFillTool(session.drawTool),
+      getToolOuterRadius(session),
+    );
   }
 
   private updateStrokePreview(): void {
@@ -272,7 +290,7 @@ export class InkEditorController {
 
   private scheduleLivePreview(): void {
     const tool = this.options.getSession().drawTool;
-    if (tool !== 'fill-brush' && tool !== 'fill-eraser' && tool !== 'outline-eraser') return;
+    if (tool !== 'fill-brush' && tool !== 'fill-eraser' && tool !== 'fill-blur' && !isWaterAdjustmentTool(tool) && tool !== 'outline-eraser') return;
     if (this.previewFrame !== null) return;
     this.previewFrame = window.requestAnimationFrame(() => {
       this.previewFrame = null;
@@ -284,14 +302,14 @@ export class InkEditorController {
     if (this.previewFrame !== null) window.cancelAnimationFrame(this.previewFrame);
     this.previewFrame = null;
     const session = this.options.getSession();
-    if (session.drawTool !== 'fill-brush' && session.drawTool !== 'fill-eraser' && session.drawTool !== 'outline-eraser') return;
+    if (session.drawTool !== 'fill-brush' && session.drawTool !== 'fill-eraser' && session.drawTool !== 'fill-blur' && !isWaterAdjustmentTool(session.drawTool) && session.drawTool !== 'outline-eraser') return;
     for (const segment of this.pendingInk) {
       if (segment.processedPointCount >= segment.points.length) continue;
       const key = workingShapeKey(segment.referenceId, segment.shapeId);
       const working = this.workingShapes.get(key) ?? { referenceId: segment.referenceId, shape: segment.shape };
       const firstNew = segment.processedPointCount;
       const points = segment.points.slice(Math.max(0, firstNew - 1));
-      const shape = applyInkTool(working.shape, points, session);
+      const shape = applyInkTool(working.shape, points, session, this.waterStrokeState ?? undefined);
       segment.processedPointCount = segment.points.length;
       if (shape === working.shape) continue;
       this.workingShapes.set(key, { referenceId: segment.referenceId, shape });
@@ -308,7 +326,12 @@ export class InkEditorController {
       resolvePointerPressure(event, session.pressureEnabled),
       this.getFallbackPlane(),
     );
-    if (hit) this.options.renderer.showCursor(hit, getToolRadius(session), session.fillBrushShape === 'square' && isFillTool(session.drawTool));
+    if (hit) this.options.renderer.showCursor(
+      hit,
+      getToolRadius(session),
+      session.fillBrushShape === 'square' && isFillTool(session.drawTool),
+      getToolOuterRadius(session),
+    );
     else this.options.renderer.hideCursor();
   }
 
@@ -319,7 +342,8 @@ export class InkEditorController {
       let next = document;
       if (this.workingShapes.size > 0) {
         for (const working of this.workingShapes.values()) {
-          next = updateInkShapeAuthor(next, working.referenceId, working.shape.id, () => working.shape);
+          const shape = isWaterAdjustmentTool(session.drawTool) ? normalizeInkFillShape(working.shape) : working.shape;
+          next = updateInkShapeAuthor(next, working.referenceId, working.shape.id, () => shape);
         }
         return next;
       }
@@ -361,6 +385,7 @@ export class InkEditorController {
     }
     this.pendingInk = [];
     this.workingShapes.clear();
+    this.waterStrokeState = null;
     this.usesRawPointerUpdates = false;
     this.receivedRawPointerUpdate = false;
     if (pointerId !== null && this.options.renderer.canvas.hasPointerCapture(pointerId)) {
@@ -441,7 +466,12 @@ export function eraseInkOutline(shape: InkShape, eraserPoints: readonly InkSurfa
   return changed ? { ...shape, strokes } : shape;
 }
 
-function applyInkTool(shape: InkShape, points: readonly InkSurfacePoint[], session: StudioEditorSession): InkShape {
+function applyInkTool(
+  shape: InkShape,
+  points: readonly InkSurfacePoint[],
+  session: StudioEditorSession,
+  waterStrokeState?: InkFillWaterStrokeState,
+): InkShape {
   if (session.drawTool === 'outline') {
     const commitPoints = getOutlineCommitPoints(shape, points, session.straightLineEnabled);
     const last = points.at(-1);
@@ -455,6 +485,15 @@ function applyInkTool(shape: InkShape, points: readonly InkSurfacePoint[], sessi
   if (session.drawTool === 'outline-eraser') return eraseInkOutline(shape, points, session.outlineEraserWidth);
   if (session.drawTool === 'fill-brush') return paintInkFill(shape, points, session.fillColor, session.fillBrushSize, session.fillBrushShape, false);
   if (session.drawTool === 'fill-eraser') return paintInkFill(shape, points, session.fillColor, session.fillBrushSize, session.fillBrushShape, true);
+  if (session.drawTool === 'fill-blur') return blurInkFill(shape, points, session.fillBrushSize, session.fillBrushShape);
+  if (session.drawTool === 'fill-water') return paintInkFillWater(
+    shape, points, session.fillBrushSize, session.fillSoftRadius, session.fillBrushShape,
+    session.fillWaterOpacity, false, waterStrokeState,
+  );
+  if (session.drawTool === 'fill-water-eraser') return eraseInkFillWater(
+    shape, points, session.fillBrushSize, session.fillSoftRadius, session.fillBrushShape,
+    session.fillWaterOpacity, false, waterStrokeState,
+  );
   return shape;
 }
 
@@ -577,13 +616,22 @@ function isCylinderPoint(point: InkSurfacePoint): point is InkCylinderStrokePoin
 }
 
 function isFillTool(tool: StudioEditorSession['drawTool']): boolean {
-  return tool === 'fill-brush' || tool === 'fill-eraser' || tool === 'fill-bucket';
+  return tool === 'fill-brush' || tool === 'fill-eraser' || tool === 'fill-blur' || isWaterAdjustmentTool(tool) || tool === 'fill-bucket';
+}
+
+function isWaterAdjustmentTool(tool: StudioEditorSession['drawTool']): boolean {
+  return tool === 'fill-water' || tool === 'fill-water-eraser';
 }
 
 function getToolRadius(session: StudioEditorSession): number {
   if (session.drawTool === 'outline') return session.outlineWidth * 0.5;
   if (session.drawTool === 'outline-eraser') return session.outlineEraserWidth * 0.5;
-  return session.fillBrushSize * 0.5;
+  return getInkFillBrushRadii(session.fillBrushSize).core / INK_FILL_PIXELS_PER_WORLD_UNIT;
+}
+
+function getToolOuterRadius(session: StudioEditorSession): number | undefined {
+  if (!isWaterAdjustmentTool(session.drawTool)) return undefined;
+  return getInkFillBrushRadii(session.fillBrushSize, session.fillSoftRadius).outer / INK_FILL_PIXELS_PER_WORLD_UNIT;
 }
 
 function getInkHistoryLabel(tool: StudioEditorSession['drawTool']): string {
@@ -591,5 +639,8 @@ function getInkHistoryLabel(tool: StudioEditorSession['drawTool']): string {
   if (tool === 'outline-eraser') return 'Erase outline';
   if (tool === 'fill-brush') return 'Paint fill';
   if (tool === 'fill-eraser') return 'Erase fill';
+  if (tool === 'fill-blur') return 'Blur fill';
+  if (tool === 'fill-water') return 'Mark water';
+  if (tool === 'fill-water-eraser') return 'Erase water';
   return 'Edit Ink';
 }

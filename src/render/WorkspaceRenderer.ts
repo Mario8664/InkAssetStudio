@@ -2,12 +2,15 @@ import {
   ACESFilmicToneMapping,
   AmbientLight,
   BoxGeometry,
+  BufferGeometry,
   Color,
   DirectionalLight,
   DoubleSide,
   Group,
   HalfFloatType,
   LinearSRGBColorSpace,
+  LineDashedMaterial,
+  LineLoop,
   Mesh,
   MeshBasicMaterial,
   NoToneMapping,
@@ -168,8 +171,11 @@ export class WorkspaceRenderer {
   private readonly pivotPickers: Mesh[] = [];
   private readonly cursorCircleGeometry = new RingGeometry(0.9, 1.1, 40);
   private readonly cursorSquareGeometry = new PlaneGeometry(2, 2);
+  private readonly cursorOuterCircleGeometry = createCursorOuterGeometry(false);
+  private readonly cursorOuterSquareGeometry = createCursorOuterGeometry(true);
   private readonly pencilPresence = new PencilPresenceTracker();
   private readonly cursor: Mesh;
+  private readonly cursorOuter: LineLoop;
   private readonly strokePreviews: StrokePreviewEntry[] = [];
   private readonly strokePreviewHandoffs: HandoffStrokePreviewEntry[] = [];
   private readonly helperEntries = new Map<string, InkHelperEntry>();
@@ -278,7 +284,15 @@ export class WorkspaceRenderer {
     );
     this.cursor.visible = false;
     this.cursor.renderOrder = 2000;
+    this.cursorOuter = new LineLoop(
+      this.cursorOuterCircleGeometry,
+      new LineDashedMaterial({ color: 0x111111, dashSize: 0.06, gapSize: 0.04, depthTest: false, depthWrite: false }),
+    );
+    this.cursorOuter.computeLineDistances();
+    this.cursorOuter.visible = false;
+    this.cursorOuter.renderOrder = 2001;
     this.cursorRoot.add(this.cursor);
+    this.cursorRoot.add(this.cursorOuter);
     this.hardShadow = new InkHardShadowMap(
       this.renderer,
       this.scene,
@@ -476,19 +490,31 @@ export class WorkspaceRenderer {
     return this.raycaster.ray.intersectPlane(new Plane(new Vector3(0, 1, 0), -worldY), new Vector3());
   }
 
-  showCursor(hit: InkSurfaceHit, radius: number, square = false): void {
+  showCursor(hit: InkSurfaceHit, radius: number, square = false, outerRadius?: number): void {
     if (this.cursorIsSquare !== square) {
       this.cursorIsSquare = square;
       this.cursor.geometry = square ? this.cursorSquareGeometry : this.cursorCircleGeometry;
+      this.cursorOuter.geometry = square ? this.cursorOuterSquareGeometry : this.cursorOuterCircleGeometry;
+      this.cursorOuter.computeLineDistances();
     }
     this.cursor.scale.setScalar(Math.max(0.002, radius));
     this.cursor.position.copy(hit.world).addScaledVector(hit.normal, 0.006);
     this.cursor.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), hit.normal);
     this.cursor.visible = true;
+    const showOuter = outerRadius !== undefined && outerRadius > radius + 0.0001;
+    this.cursorOuter.scale.setScalar(Math.max(0.002, outerRadius ?? radius));
+    this.cursorOuter.position.copy(this.cursor.position).addScaledVector(hit.normal, 0.001);
+    this.cursorOuter.quaternion.copy(this.cursor.quaternion);
+    this.cursorOuter.visible = showOuter;
     this.requestRender();
   }
 
-  hideCursor(): void { if (this.cursor.visible) { this.cursor.visible = false; this.requestRender(); } }
+  hideCursor(): void {
+    if (!this.cursor.visible && !this.cursorOuter.visible) return;
+    this.cursor.visible = false;
+    this.cursorOuter.visible = false;
+    this.requestRender();
+  }
 
   showStrokePreviews(segments: readonly InkStrokePreviewSegment[], color: string, width: number): void {
     if (!this.document) return;
@@ -675,7 +701,10 @@ export class WorkspaceRenderer {
     disposeObjectTree(this.terrainToolPreviewRoot);
     this.cursorCircleGeometry.dispose();
     this.cursorSquareGeometry.dispose();
+    this.cursorOuterCircleGeometry.dispose();
+    this.cursorOuterSquareGeometry.dispose();
     (this.cursor.material as MeshBasicMaterial).dispose();
+    (this.cursorOuter.material as LineDashedMaterial).dispose();
     for (const entry of this.strokePreviews) entry.preview.dispose();
     for (const entry of this.strokePreviewHandoffs) entry.preview.dispose();
     this.strokePreviews.length = 0;
@@ -1212,6 +1241,27 @@ export class WorkspaceRenderer {
       this.terrainToolPreviewRoot,
     ];
   }
+}
+
+/** A unit-radius loop so the dashed water-feather cursor uses the exact Fill brush radius. */
+function createCursorOuterGeometry(square: boolean): BufferGeometry {
+  const points: Vector3[] = [];
+  if (square) {
+    points.push(
+      new Vector3(-1, -1, 0),
+      new Vector3(1, -1, 0),
+      new Vector3(1, 1, 0),
+      new Vector3(-1, 1, 0),
+    );
+  } else {
+    const segments = 48;
+    for (let index = 0; index < segments; index += 1) {
+      const angle = index / segments * Math.PI * 2;
+      points.push(new Vector3(Math.cos(angle), Math.sin(angle), 0));
+    }
+  }
+  const geometry = new BufferGeometry().setFromPoints(points);
+  return geometry;
 }
 
 export function createTerrainPreviewMaterial(overlay: boolean): MeshBasicMaterial {

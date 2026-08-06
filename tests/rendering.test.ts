@@ -292,6 +292,9 @@ describe('Reference rendering', () => {
     expect(captureMaterial.glslVersion).toBe(GLSL3);
     expect(captureMaterial.fragmentShader).toContain('layout(location = 0) out highp vec4 inkWatercolorShaded;');
     expect(captureMaterial.fragmentShader).toContain('layout(location = 1) out highp vec4 inkWatercolorNoise;');
+    expect(captureMaterial.fragmentShader).toContain('getInkWatercolorWetWash');
+    expect(captureMaterial.fragmentShader).toContain('float waterAmount = clamp((1.0 - sourceColour.a) * 2.0, 0.0, 1.0);');
+    expect(captureMaterial.fragmentShader).toContain('inkWatercolorNoise = vec4(getInkWatercolorNoise(), waterAmount, 1.0);');
     expect(captureMaterial.uniforms.inkWatercolorNoiseScale).toBe(appearance.watercolorNoiseScale);
 
     const disposeCapture = vi.spyOn(captureMaterial, 'dispose');
@@ -323,6 +326,8 @@ describe('Reference rendering', () => {
     expect(internals.seedMaterial.uniforms.inkWatercolorWaterEdgeWidth!.value).toBe(4);
     expect(internals.compositeMaterial.uniforms.inkWatercolorSoftTailRadius!.value).toBe(15);
     expect(internals.compositeMaterial.uniforms.inkWatercolorColorMixRadius!.value).toBe(5);
+    expect(internals.compositeMaterial.fragmentShader).toContain('float localWetness = clamp(centerNoise.b, 0.0, 1.0);');
+    expect(internals.compositeMaterial.fragmentShader).toContain('vec3 tintedPigment = depositedPigment * inkWatercolorInteriorFadeColor;');
     const shaderSource = [
       internals.seedMaterial.fragmentShader,
       internals.downsampleMaterial.fragmentShader,
