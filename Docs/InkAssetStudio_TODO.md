@@ -79,7 +79,7 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - Worker 回写的 Fill 以 `alpha >= 128` 的二值覆盖精确判断硬阴影失效；仅 RGB 或 Water 湿度变化会更新显示纹理，但不会重建覆盖未变的硬阴影深度。
 - 纯 Outline 与 Surface Outline 编辑不再重绘硬阴影；原生 depth capture 会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
 - Ink Group 渲染按 Shape 复用已上传资源：Transform 只更新对象变换，Fill-only 更新复用 Ribbon，描边变化只替换对应 Shape，而不是重建整组 Ink。
-- Appearance 面板可即时选择 Source 或 Watercolor。Watercolor 使用双颜色附件捕获分档光照颜色、局部 Water 湿度和 Group-local 稳定噪声：湿度先在 capture 阶段把颜料稀释向纸白，再令 Water Edge/Soft Tail 只在局部湿区影响颜料。它执行三层 depth-aware soft-tail/color-mix 扩散与当前帧 composite，并以连续透明度蜡笔材质显示 Ribbon/Surface Outline。
+- Appearance 面板可即时选择 Source 或 Watercolor。Watercolor 使用双颜色附件捕获分档光照颜色、局部 Water 湿度和 Group-local 稳定噪声：湿度只在 capture 阶段把 `shadedColor` 稀释向纸白，再交给同一套三层 depth-aware soft-tail/color-mix 扩散与当前帧 composite。全干 Fill 完整遵照旧版 Diffusion 的浓度、颜料强度与 `Interior Fade Color` 插值；有水时只叠加已经稀释的颜色，不以湿度门控或改写 Water Edge/Soft Tail 权重。Ribbon/Surface Outline 继续使用连续透明度蜡笔材质。
 - 默认值严格来自 Painting 当前保存的 `ink-global-setting-default-instance.json`：Watercolor、Grain `96`、Minimum Alpha `0.3`、Noise `3`、Water Edge `true / 4 / 0.24 / 0.47 / 0.03`、Diffusion `true / 15 / 5 / 1 / 0.8 / #f9f5f1`。Studio 未移植 TAA、history、jitter、reprojection、disocclusion 或 temporal debug 字段。
 - 阴影相机范围变化后显式更新投影矩阵。
 - GPU 最大纹理不足时不修改作品数据，界面会显示所需尺寸、设备上限和恢复办法。

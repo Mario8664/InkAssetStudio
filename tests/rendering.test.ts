@@ -331,8 +331,11 @@ describe('Reference rendering', () => {
     expect(internals.seedMaterial.uniforms.inkWatercolorWaterEdgeWidth!.value).toBe(4);
     expect(internals.compositeMaterial.uniforms.inkWatercolorSoftTailRadius!.value).toBe(15);
     expect(internals.compositeMaterial.uniforms.inkWatercolorColorMixRadius!.value).toBe(5);
-    expect(internals.compositeMaterial.fragmentShader).toContain('float localWetness = clamp(centerNoise.b, 0.0, 1.0);');
-    expect(internals.compositeMaterial.fragmentShader).toContain('vec3 tintedPigment = depositedPigment * inkWatercolorInteriorFadeColor;');
+    expect(internals.compositeMaterial.fragmentShader).toContain('float concentration = max(waterEdgeSeed, softTail) * diffusionSource;');
+    expect(internals.compositeMaterial.fragmentShader).toContain('float pigmentStrength = mix(1.0, mix(inkWatercolorInteriorPigmentStrength, 1.0, concentration), diffusionSource);');
+    expect(internals.compositeMaterial.fragmentShader).toContain('vec3 diffusedPigment = mix(inkWatercolorInteriorFadeColor, depositedPigment, pigmentStrength);');
+    expect(internals.compositeMaterial.fragmentShader).not.toContain('localDiffusion');
+    expect(internals.compositeMaterial.fragmentShader).not.toContain('tintedPigment');
     const shaderSource = [
       internals.seedMaterial.fragmentShader,
       internals.downsampleMaterial.fragmentShader,

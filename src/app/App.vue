@@ -845,7 +845,7 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
           <label class="appearance-number-row">Color Mix Radius <input aria-label="Color mix radius" type="number" min="0" max="16" step="0.1" :value="session.inkAppearance.watercolorFill.diffusion.colorMixRadius" @change="setInkAppearanceNumber('colorMixRadius', $event)" /></label>
           <label class="appearance-number-row">Mix Strength <input aria-label="Color mix strength" type="number" min="0" max="1" step="0.01" :value="session.inkAppearance.watercolorFill.diffusion.colorMixStrength" @change="setInkAppearanceNumber('colorMixStrength', $event)" /></label>
           <label class="appearance-number-row">Interior Pigment <input aria-label="Interior pigment strength" type="number" min="0" max="1" step="0.01" :value="session.inkAppearance.watercolorFill.diffusion.interiorPigmentStrength" @change="setInkAppearanceNumber('interiorPigmentStrength', $event)" /></label>
-          <label class="appearance-color-row">Fade Color <input v-model="session.inkAppearance.watercolorFill.diffusion.interiorFadeColor" type="color" /></label>
+          <label class="appearance-color-row">Interior Fade Color <input v-model="session.inkAppearance.watercolorFill.diffusion.interiorFadeColor" aria-label="Interior fade color" type="color" /></label>
           <p class="note">Watercolor is an immediate viewport composite. TAA, history accumulation, jitter, and reprojection are intentionally excluded.</p>
         </section>
       </template>

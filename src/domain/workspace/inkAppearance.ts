@@ -20,6 +20,7 @@ export type InkWatercolorFillSettings = {
     colorMixRadius: number;
     colorMixStrength: number;
     interiorPigmentStrength: number;
+    /** Opaque colour mixed with pigment according to the inward diffusion concentration. */
     interiorFadeColor: string;
   };
 };
