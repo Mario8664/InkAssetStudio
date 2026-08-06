@@ -30,17 +30,68 @@ export type InkCuboidFace = 'positive-x' | 'negative-x' | 'positive-y' | 'negati
 export type InkCylinderSurface = 'side' | 'top' | 'bottom';
 export type InkFillSurfaceId = 'plane' | InkCuboidFace | InkCylinderSurface;
 export type InkFillBrushShape = 'square' | 'circle';
+
+type InkFillWaterTexelState = {
+  initialWetness: number;
+  maximumContribution: number;
+};
+
+type InkFillWaterSurfaceStrokeState = {
+  readonly texelRows: Map<number, Map<number, InkFillWaterTexelState>>;
+  readonly dirtyRows: Map<number, Map<number, number>>;
+};
+
+export type InkFillWaterAlphaPatch = Readonly<{
+  id: InkFillSurfaceId;
+  x: number;
+  y: number;
+  alpha: Uint8Array;
+}>;
+
 /**
  * Transient per-gesture water state. It records each texel's pre-stroke
  * wetness and the strongest coverage reached by this one continuous water
  * adjustment stroke. It is not authoring or compiled Ink data.
  */
 export type InkFillWaterStrokeState = {
-  readonly texels: Map<string, { initialWetness: number; maximumContribution: number }>;
+  readonly shapes: Map<string, Map<InkFillSurfaceId, InkFillWaterSurfaceStrokeState>>;
 };
 
 export function createInkFillWaterStrokeState(): InkFillWaterStrokeState {
-  return { texels: new Map() };
+  return { shapes: new Map() };
+}
+
+/**
+ * Returns only alpha runs changed since the previous preview frame. Persistent
+ * per-gesture contribution state remains intact so overlapping input samples
+ * stay de-duplicated until pointer-up.
+ */
+export function consumeInkFillWaterAlphaPatches(
+  state: InkFillWaterStrokeState,
+  shapeId: string,
+): InkFillWaterAlphaPatch[] {
+  const shape = state.shapes.get(shapeId);
+  if (!shape) return [];
+  const patches: InkFillWaterAlphaPatch[] = [];
+  for (const [id, surface] of shape) {
+    for (const [y, dirty] of surface.dirtyRows) {
+      const pixels = [...dirty].sort((left, right) => left[0] - right[0]);
+      let start = 0;
+      while (start < pixels.length) {
+        let end = start + 1;
+        while (end < pixels.length && pixels[end]![0] === pixels[end - 1]![0] + 1) end += 1;
+        patches.push({
+          id,
+          x: pixels[start]![0],
+          y,
+          alpha: Uint8Array.from(pixels.slice(start, end), (entry) => entry[1]),
+        });
+        start = end;
+      }
+    }
+    surface.dirtyRows.clear();
+  }
+  return patches;
 }
 /** Grid-aligned Group placement rotation, expressed in quarter turns around Y. */
 export type InkGroupRotation = 0 | 90 | 180 | 270;
@@ -772,6 +823,55 @@ function blurInkFillLayer(
   return fill;
 }
 
+type InkFillWaterBlockEntry = {
+  readonly index: number;
+  block: InkFillBlock;
+  copied: boolean;
+};
+
+type InkFillWaterSurfaceAccess = {
+  readonly surface: InkFillSurface;
+  readonly blockRows: Map<number, Map<number, InkFillWaterBlockEntry>>;
+};
+
+function createInkFillWaterSurfaceAccess(surface: InkFillSurface): InkFillWaterSurfaceAccess {
+  const blockRows = new Map<number, Map<number, InkFillWaterBlockEntry>>();
+  for (let index = 0; index < surface.blocks.length; index += 1) {
+    const block = surface.blocks[index]!;
+    let row = blockRows.get(block.y);
+    if (!row) {
+      row = new Map();
+      blockRows.set(block.y, row);
+    }
+    row.set(block.x, { index, block, copied: false });
+  }
+  return { surface, blockRows };
+}
+
+function getOrCreateInkFillWaterShapeStrokeState(
+  state: InkFillWaterStrokeState,
+  shapeId: string,
+): Map<InkFillSurfaceId, InkFillWaterSurfaceStrokeState> {
+  let shape = state.shapes.get(shapeId);
+  if (!shape) {
+    shape = new Map();
+    state.shapes.set(shapeId, shape);
+  }
+  return shape;
+}
+
+function getOrCreateInkFillWaterSurfaceStrokeState(
+  shape: Map<InkFillSurfaceId, InkFillWaterSurfaceStrokeState>,
+  id: InkFillSurfaceId,
+): InkFillWaterSurfaceStrokeState {
+  let surface = shape.get(id);
+  if (!surface) {
+    surface = { texelRows: new Map(), dirtyRows: new Map() };
+    shape.set(id, surface);
+  }
+  return surface;
+}
+
 function adjustInkFillWaterLayer(
   shape: InkShape,
   points: readonly InkSurfacePoint[],
@@ -784,8 +884,8 @@ function adjustInkFillWaterLayer(
   strokeState: InkFillWaterStrokeState,
 ): { fill: InkFillLayer; changed: boolean } {
   const fill = cloneInkFillLayer(shape.fill);
-  const copiedBlocks = new Set<InkFillBlock>();
-  const surfaces = new Map(fill.surfaces.map((surface) => [surface.id, surface] as const));
+  const surfaces = new Map(fill.surfaces.map((surface) => [surface.id, createInkFillWaterSurfaceAccess(surface)] as const));
+  const shapeStrokeState = getOrCreateInkFillWaterShapeStrokeState(strokeState, shape.id);
   const { core: coreRadius, outer: totalRadius } = getInkFillBrushRadii(size, softRadius);
   const featherRadius = totalRadius - coreRadius;
   const amount = Math.min(1, Math.max(0, waterAmount));
@@ -803,7 +903,7 @@ function adjustInkFillWaterLayer(
       const y = prior && prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * fraction : coordinate.y;
       changed = stampInkFillWater(
         shape, coordinate.id, x, y, coordinate.width, coordinate.height,
-        coreRadius, featherRadius, brush, amount, mode, copiedBlocks, surfaces, strokeState,
+        coreRadius, featherRadius, brush, amount, mode, surfaces, shapeStrokeState,
       ) || changed;
     }
     prior = coordinate;
@@ -1315,41 +1415,61 @@ function stampInkFillWater(
   brush: InkFillBrushShape,
   amount: number,
   mode: 'wet' | 'dry',
-  copiedBlocks: Set<InkFillBlock>,
-  surfaces: ReadonlyMap<InkFillSurfaceId, InkFillSurface>,
-  strokeState: InkFillWaterStrokeState,
+  surfaces: ReadonlyMap<InkFillSurfaceId, InkFillWaterSurfaceAccess>,
+  shapeStrokeState: Map<InkFillSurfaceId, InkFillWaterSurfaceStrokeState>,
 ): boolean {
   const totalRadius = coreRadius + featherRadius;
   const center: InkFillPixelCoordinate = { id, x: centerX, y: centerY, width, height };
   const range = Math.ceil(totalRadius);
+  const centerPixelX = Math.floor(centerX);
+  const centerPixelY = Math.floor(centerY);
+  const coreRadiusSquared = coreRadius * coreRadius;
+  const totalRadiusSquared = totalRadius * totalRadius;
   let changed = false;
   for (let offsetY = -range; offsetY <= range; offsetY += 1) for (let offsetX = -range; offsetX <= range; offsetX += 1) {
-    const deltaX = offsetX + Math.floor(centerX) + 0.5 - centerX;
-    const deltaY = offsetY + Math.floor(centerY) + 0.5 - centerY;
-    const distance = brush === 'circle' ? Math.hypot(deltaX, deltaY) : Math.max(Math.abs(deltaX), Math.abs(deltaY));
-    if (distance > totalRadius) continue;
-    const coordinate = getStampedInkFillPixelCoordinate(shape, center, offsetX, offsetY);
-    if (!coordinate) continue;
-    const surface = surfaces.get(coordinate.id);
-    if (!surface) continue;
-    const x = Math.floor(coordinate.x);
-    const y = Math.floor(coordinate.y);
-    const current = readInkFillPixel(surface, x, y);
-    if ((current[3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) continue;
-    const feather = distance <= coreRadius || featherRadius <= 0
+    const deltaX = offsetX + centerPixelX + 0.5 - centerX;
+    const deltaY = offsetY + centerPixelY + 0.5 - centerY;
+    const distanceSquared = deltaX * deltaX + deltaY * deltaY;
+    const squareDistance = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+    if (brush === 'circle' ? distanceSquared > totalRadiusSquared : squareDistance > totalRadius) continue;
+    const distance = brush === 'circle'
+      ? distanceSquared <= coreRadiusSquared ? 0 : Math.sqrt(distanceSquared)
+      : squareDistance;
+    const feather = (brush === 'circle' ? distanceSquared <= coreRadiusSquared : distance <= coreRadius) || featherRadius <= 0
       ? 1
       : 1 - smoothstep(coreRadius, totalRadius, distance);
     const strokeWetness = Math.min(1, Math.max(0, amount * feather));
-    const stateKey = `${shape.id}:${coordinate.id}:${x}:${y}`;
-    let texelState = strokeState.texels.get(stateKey);
+    let coordinateId = id;
+    let x = centerPixelX + offsetX;
+    let y = centerPixelY + offsetY;
+    if (width !== undefined && height !== undefined && (x < 0 || x >= width || y < 0 || y >= height)) {
+      const coordinate = offsetInkFillPixelCoordinate(shape, center, offsetX, offsetY);
+      if (!coordinate) continue;
+      coordinateId = coordinate.id;
+      x = Math.floor(coordinate.x);
+      y = Math.floor(coordinate.y);
+    }
+    const surfaceStrokeState = getOrCreateInkFillWaterSurfaceStrokeState(shapeStrokeState, coordinateId);
+    let texelRow = surfaceStrokeState.texelRows.get(y);
+    let texelState = texelRow?.get(x);
+    if (texelState && strokeWetness <= texelState.maximumContribution) continue;
+    const surface = surfaces.get(coordinateId);
+    const pixel = surface ? getInkFillWaterPixel(surface, x, y) : null;
+    if (!surface || !pixel) continue;
+    const currentAlpha = pixel.entry.block.rgba[pixel.offset + 3] ?? 0;
+    if (currentAlpha < INK_FILL_COVERAGE_ALPHA_MIN) continue;
     if (!texelState) {
       texelState = {
         initialWetness: Math.min(1, Math.max(0,
-          (INK_FILL_DRY_ALPHA - (current[3] ?? INK_FILL_DRY_ALPHA)) / (INK_FILL_DRY_ALPHA - INK_FILL_WET_ALPHA_MIN),
+          (INK_FILL_DRY_ALPHA - currentAlpha) / (INK_FILL_DRY_ALPHA - INK_FILL_WET_ALPHA_MIN),
         )),
         maximumContribution: 0,
       };
-      strokeState.texels.set(stateKey, texelState);
+      if (!texelRow) {
+        texelRow = new Map();
+        surfaceStrokeState.texelRows.set(y, texelRow);
+      }
+      texelRow.set(x, texelState);
     }
     // Dense raw/pointer samples and path interpolation overlap within one drag.
     // A later stroke starts from the newly adjusted wetness and can accumulate.
@@ -1359,26 +1479,44 @@ function stampInkFillWater(
       ? 1 - (1 - texelState.initialWetness) * (1 - texelState.maximumContribution)
       : texelState.initialWetness * (1 - texelState.maximumContribution);
     const targetAlpha = Math.round(INK_FILL_DRY_ALPHA - wetness * (INK_FILL_DRY_ALPHA - INK_FILL_WET_ALPHA_MIN));
-    const currentAlpha = current[3] ?? INK_FILL_DRY_ALPHA;
     if (mode === 'wet' ? targetAlpha >= currentAlpha : targetAlpha <= currentAlpha) continue;
-    writeInkFillPixel(surface, x, y, [current[0] ?? 0, current[1] ?? 0, current[2] ?? 0, targetAlpha], copiedBlocks);
+    const writableBlock = ensureWritableInkFillWaterBlock(surface, pixel.entry);
+    writableBlock.rgba[pixel.offset + 3] = targetAlpha;
+    let dirtyRow = surfaceStrokeState.dirtyRows.get(y);
+    if (!dirtyRow) {
+      dirtyRow = new Map();
+      surfaceStrokeState.dirtyRows.set(y, dirtyRow);
+    }
+    dirtyRow.set(x, targetAlpha);
     changed = true;
   }
   return changed;
 }
 
-function getStampedInkFillPixelCoordinate(
-  shape: InkShape,
-  origin: InkFillPixelCoordinate,
-  offsetX: number,
-  offsetY: number,
-): InkFillPixelCoordinate | null {
-  const x = Math.floor(origin.x) + offsetX;
-  const y = Math.floor(origin.y) + offsetY;
-  if (origin.width === undefined || origin.height === undefined || (x >= 0 && x < origin.width && y >= 0 && y < origin.height)) {
-    return { ...origin, x, y };
-  }
-  return offsetInkFillPixelCoordinate(shape, origin, offsetX, offsetY);
+function getInkFillWaterPixel(
+  surface: InkFillWaterSurfaceAccess,
+  x: number,
+  y: number,
+): { entry: InkFillWaterBlockEntry; offset: number } | null {
+  const blockX = floorDivide(x, INK_FILL_BLOCK_SIZE);
+  const blockY = floorDivide(y, INK_FILL_BLOCK_SIZE);
+  const entry = surface.blockRows.get(blockY)?.get(blockX);
+  if (!entry) return null;
+  const localX = x - blockX * INK_FILL_BLOCK_SIZE;
+  const localY = y - blockY * INK_FILL_BLOCK_SIZE;
+  return { entry, offset: (localY * INK_FILL_BLOCK_SIZE + localX) * 4 };
+}
+
+function ensureWritableInkFillWaterBlock(
+  surface: InkFillWaterSurfaceAccess,
+  entry: InkFillWaterBlockEntry,
+): InkFillBlock {
+  if (entry.copied) return entry.block;
+  const block = { x: entry.block.x, y: entry.block.y, rgba: [...entry.block.rgba] };
+  surface.surface.blocks[entry.index] = block;
+  entry.block = block;
+  entry.copied = true;
+  return block;
 }
 
 function smoothstep(edge0: number, edge1: number, value: number): number {

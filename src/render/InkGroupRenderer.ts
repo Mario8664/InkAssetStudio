@@ -35,6 +35,7 @@ import {
   type CompiledInkShape,
   type InkCuboidFace,
   type InkFillSurfaceId,
+  type InkFillWaterAlphaPatch,
   type InkGroupData,
   type InkShape,
 } from '../domain/ink/ink';
@@ -438,6 +439,65 @@ export function updateInkShapeFillSurfaces(
   }
 
   updateInkShapeSurfaceOutline(root, source, appearance);
+}
+
+/** Uploads Water/Water Eraser alpha runs without recompiling or recreating Fill resources. */
+export function updateInkShapeFillAlphaPatches(
+  root: Group,
+  patches: readonly InkFillWaterAlphaPatch[],
+): boolean {
+  if (patches.length === 0) return true;
+  const content = findInkShapeContentRoot(root);
+  if (!content) return false;
+  const meshes = new Map<InkFillSurfaceId, Mesh>();
+  for (const child of content.children) if (child instanceof Mesh
+    && child.name === 'InkFillSurface'
+    && typeof child.userData.inkFillSurfaceId === 'string') {
+    meshes.set(child.userData.inkFillSurfaceId as InkFillSurfaceId, child);
+  }
+
+  type PatchOperation = Readonly<{
+    texture: DataTexture;
+    image: { data: Uint8Array; width: number; height: number };
+    textureX: number;
+    textureY: number;
+    alpha: Uint8Array;
+  }>;
+  const operations: PatchOperation[] = [];
+  for (const patch of patches) {
+    if (patch.alpha.length === 0) continue;
+    const mesh = meshes.get(patch.id);
+    const texture = mesh?.userData.inkFillTexture as DataTexture | undefined;
+    const layout = mesh?.userData.inkFillTexturePatchLayout as InkFillTexturePatchLayout | undefined;
+    const image = texture?.image as { data?: unknown; width?: unknown; height?: unknown } | undefined;
+    if (!texture || !layout || !(image?.data instanceof Uint8Array)
+      || typeof image.width !== 'number' || typeof image.height !== 'number'
+      || !Number.isInteger(patch.x) || !Number.isInteger(patch.y)
+      || patch.x < layout.minX || patch.x + patch.alpha.length > layout.minX + layout.width
+      || patch.y < layout.minY || patch.y >= layout.minY + layout.height) return false;
+    const textureX = layout.textureOffsetX + patch.x - layout.minX;
+    const textureY = layout.textureOffsetY + patch.y - layout.minY;
+    if (textureX < 0 || textureX + patch.alpha.length > image.width
+      || textureY < 0 || textureY >= image.height) return false;
+    operations.push({
+      texture,
+      image: image as { data: Uint8Array; width: number; height: number },
+      textureX,
+      textureY,
+      alpha: patch.alpha,
+    });
+  }
+
+  const touchedTextures = new Set(operations.map((operation) => operation.texture));
+  for (const operation of operations) {
+    const firstPixel = operation.textureY * operation.image.width + operation.textureX;
+    for (let index = 0; index < operation.alpha.length; index += 1) {
+      operation.image.data[(firstPixel + index) * 4 + 3] = operation.alpha[index]!;
+    }
+    operation.texture.addUpdateRange(firstPixel * 4, operation.alpha.length * 4);
+  }
+  for (const texture of touchedTextures) texture.needsUpdate = true;
+  return true;
 }
 
 /** Updates the enabled analytic smooth-surface Ribbons for the active camera. */
@@ -1013,6 +1073,7 @@ function createInkFillSurfaceMesh(
   mesh.layers.set(INK_FILL_RENDER_LAYER);
   mesh.userData.inkFillSurfaceId = fill.id;
   mesh.userData.inkFillTexture = texture;
+  mesh.userData.inkFillTexturePatchLayout = getInkFillTexturePatchLayout(fill, textureLayout);
   mesh.userData.inkFillGeometryKey = getInkFillGeometryKey(fill, shape);
   // This material is used only by InkHardShadowMap. Keeping it separate from
   // castShadow prevents Ink from entering the shared PBR/Reference shadow map.
@@ -1062,6 +1123,7 @@ function updateInkFillSurfaceMesh(mesh: Mesh, fill: CompiledInkFillSurface, shap
       texture.needsUpdate = true;
     }
   }
+  mesh.userData.inkFillTexturePatchLayout = getInkFillTexturePatchLayout(fill, textureLayout);
   const crop = getInkFillCrop(fill, shape);
   const material = mesh.material as ShaderMaterial;
   (material.uniforms.inkFillUvMin!.value as Vector2).set(crop.minX, crop.minY);
@@ -1093,7 +1155,32 @@ type InkFillTextureLayout = Readonly<{
   height: number;
   uvOffset: Vector2;
   uvScale: Vector2;
+  textureOffsetX: number;
+  textureOffsetY: number;
 }>;
+
+type InkFillTexturePatchLayout = Readonly<{
+  minX: number;
+  minY: number;
+  width: number;
+  height: number;
+  textureOffsetX: number;
+  textureOffsetY: number;
+}>;
+
+function getInkFillTexturePatchLayout(
+  fill: CompiledInkFillSurface,
+  layout: InkFillTextureLayout,
+): InkFillTexturePatchLayout {
+  return {
+    minX: fill.minX,
+    minY: fill.minY,
+    width: fill.width,
+    height: fill.height,
+    textureOffsetX: layout.textureOffsetX,
+    textureOffsetY: layout.textureOffsetY,
+  };
+}
 
 /**
  * Internal compact-chart boundaries receive transparent guard texels. A Fill
@@ -1109,6 +1196,8 @@ function createInkFillTextureLayout(fill: CompiledInkFillSurface, shape: InkShap
       height: fill.height,
       uvOffset: new Vector2(),
       uvScale: new Vector2(1, 1),
+      textureOffsetX: 0,
+      textureOffsetY: 0,
     };
   }
   const leftGuard = fill.minX > 0 ? 1 : 0;
@@ -1129,6 +1218,8 @@ function createInkFillTextureLayout(fill: CompiledInkFillSurface, shape: InkShap
     height,
     uvOffset: new Vector2(leftGuard / width, bottomGuard / height),
     uvScale: new Vector2(fill.width / width, fill.height / height),
+    textureOffsetX: leftGuard,
+    textureOffsetY: bottomGuard,
   };
 }
 

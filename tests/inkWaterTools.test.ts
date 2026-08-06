@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   INK_FILL_COVERAGE_ALPHA_MIN,
   blurInkFill,
+  bucketFillInkShape,
   compileInkFill,
+  consumeInkFillWaterAlphaPatches,
   createInkFillWaterStrokeState,
+  createInkCuboidShape,
   createInkPlaneShape,
   eraseInkFillWater,
   paintInkFill,
@@ -73,6 +76,26 @@ describe('Ink Fill water tools', () => {
     expect(pixelAt(nextStroke)[3]).toBeLessThan(pixelAt(single)[3]!);
   });
 
+  it('emits contiguous per-frame alpha runs while retaining per-gesture de-duplication', () => {
+    const dry = createPaintedPlane();
+    const state = createInkFillWaterStrokeState();
+    const wet = paintInkFillWater(dry, [center], 0.04, 0.02, 'square', 0.5, false, state);
+    const patches = consumeInkFillWaterAlphaPatches(state, dry.id);
+
+    expect(patches.length).toBeGreaterThan(0);
+    expect(consumeInkFillWaterAlphaPatches(state, dry.id)).toEqual([]);
+    for (const patch of patches) {
+      expect(patch.alpha.length).toBeGreaterThan(0);
+      for (let index = 0; index < patch.alpha.length; index += 1) {
+        expect(patch.alpha[index]).toBe(pixelAt(wet, patch.x + index, patch.y)[3]);
+      }
+    }
+
+    const duplicate = paintInkFillWater(wet, [center], 0.04, 0.02, 'square', 0.5, false, state);
+    expect(duplicate).toBe(wet);
+    expect(consumeInkFillWaterAlphaPatches(state, dry.id)).toEqual([]);
+  });
+
   it('feathers water beyond the solid core and allows the reverse tool to re-dry it', () => {
     const dry = createPaintedPlane();
     const wet = paintInkFillWater(dry, [center], 0.02, 0.04, 'circle', 0.5);
@@ -84,5 +107,32 @@ describe('Ink Fill water tools', () => {
     expect(featherAlpha).toBeGreaterThan(coreAlpha);
     expect(pixelAt(dried)[3]).toBeGreaterThan(coreAlpha);
     expect(pixelAt(dried).slice(0, 3)).toEqual(pixelAt(wet).slice(0, 3));
+  });
+
+  it('keeps finite chart-neighbour mapping in alpha patches', () => {
+    let dry: InkShape = createInkCuboidShape();
+    dry = bucketFillInkShape(dry, { face: 'positive-z', u: 0, v: 0, pressure: 1 }, '#29adff');
+    const state = createInkFillWaterStrokeState();
+    const wet = paintInkFillWater(
+      dry,
+      [{ face: 'positive-z', u: 0.49, v: 0, pressure: 1 }],
+      0.2,
+      0.04,
+      'circle',
+      0.5,
+      false,
+      state,
+    );
+    const patches = consumeInkFillWaterAlphaPatches(state, dry.id);
+
+    expect(new Set(patches.map((patch) => patch.id))).toEqual(new Set(['positive-z', 'positive-x']));
+    const compiled = new Map(compileInkFill(wet).map((surface) => [surface.id, surface]));
+    for (const patch of patches) {
+      const surface = compiled.get(patch.id)!;
+      for (let index = 0; index < patch.alpha.length; index += 1) {
+        const offset = ((patch.y - surface.minY) * surface.width + patch.x + index - surface.minX) * 4 + 3;
+        expect(patch.alpha[index]).toBe(surface.rgba[offset]);
+      }
+    }
   });
 });

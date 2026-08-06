@@ -1,6 +1,6 @@
 # Ink Asset Studio 实现与验收记录
 
-更新日期：2026-08-06
+更新日期：2026-08-07
 
 ## 1. 当前结论
 
@@ -48,6 +48,7 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - Outline、Outline Eraser、Fill Paint、Fill Eraser、Blur、Water、Water Eraser、Bucket Fill、Fill Picker 全部以居中的 Emoji 触控按钮选择，并保留说明提示与无障碍名称。参数使用独立可换行区域；Blur/Water/Water Eraser 不显示颜色或色板控件。
 - Outline 保留带压力的可编辑表面点，并编译为世界宽度 Ribbon。
 - Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。`alpha < 128` 为透明；`255` 为干燥不透明；`128..254` 保存 Watercolor 湿度并仍按不透明 Fill 处理。Water/Water Eraser 只对已有覆盖调整 alpha，保持 RGB 不变；同一手势去重、不同手势叠加。
+- Water/Water Eraser 的盖章热路径按 Surface/稀疏块建立索引，并以数值坐标保存手势去重状态；实时预览只收集本帧变化的连续 alpha 行段并局部上传既有 `DataTexture`，不再逐帧完整编译 Fill、扫描整张纹理、重建 Shape Helper 或刷新硬阴影。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 均使用 Painting 当前的表面坐标和编译规则；Cylinder side chart 在环绕方向连续，Cylinder cap 与 Frustum 的六个面都保有独立 Fill 图表。
 - 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。Water 与 Water Eraser 额外提供 Session 持久化的 Soft Radius 与 Water Opacity；光标以恒定屏幕细线的实线核心加精确对应 Feather 外半径的虚线外框显示，增大半径不会加粗核心轮廓。
 - 支持直线辅助；其端点状态保存在作者数据中，不进入编译几何哈希。
@@ -75,6 +76,7 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - Ink Fill 可见材质与专属硬阴影 depth/owner material 均固定使用 `DoubleSide`，片元在背面翻转光照法线；每个有 Fill Shape 取得 transient `1..255` owner ID，超过上限安全使用 `0` 回退而不做自身排除。Cuboid、Sphere、Cylinder 与 Frustum 的表面三角形绕序均保持法线朝外。
 - Ink 阴影目标密度固定为 64 px/世界单位；普通 Three.js PCF 阴影保持关闭。
 - 阴影深度只在 Ink 几何/Transform、摆放或光照方向变化时失效；Reference 地形、灯光颜色和强度不会触发阴影深度重建。
+- Worker 回写的 Fill 以 `alpha >= 128` 的二值覆盖精确判断硬阴影失效；仅 RGB 或 Water 湿度变化会更新显示纹理，但不会重建覆盖未变的硬阴影深度。
 - 纯 Outline 与 Surface Outline 编辑不再重绘硬阴影；原生 depth capture 会隔离 Shape 格线、无限网格、笔刷圈及其他非 Mesh 可渲染辅助对象，并在捕获后恢复全部状态。
 - Ink Group 渲染按 Shape 复用已上传资源：Transform 只更新对象变换，Fill-only 更新复用 Ribbon，描边变化只替换对应 Shape，而不是重建整组 Ink。
 - Appearance 面板可即时选择 Source 或 Watercolor。Watercolor 使用双颜色附件捕获分档光照颜色、局部 Water 湿度和 Group-local 稳定噪声：湿度先在 capture 阶段把颜料稀释向纸白，再令 Water Edge/Soft Tail 只在局部湿区影响颜料。它执行三层 depth-aware soft-tail/color-mix 扩散与当前帧 composite，并以连续透明度蜡笔材质显示 Ribbon/Surface Outline。
@@ -99,7 +101,7 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 8 个 Vitest 文件、78 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 9 个 Vitest 文件、88 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
 - 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、参考地形/地块边缘/无限网格/坐标轴四个显示开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、Painting Ink Appearance 精确默认值/迁移/深拷贝/范围归一化、Source/Watercolor 双材质与 Fill/Ribbon 分层、MRT capture、三层非时域扩散、原始硬阴影深度及 Source 单中心/Watercolor 连续边界、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
@@ -159,6 +161,7 @@ npm.cmd run visual-check
 - [x] 修复 Plane 同笔越界扩展、扩大后的局部坐标映射、多 Shape Outline/Fill 预览与提交。
 - [x] 修复 Outline Worker 回写整体替换 Shape；现在只替换 Ribbon，保留 Fill GPU 资源和运行期硬阴影 owner。
 - [x] 将 Fill、Terrain、Helper 与 Transform 热路径改为精确局部更新。
+- [x] 将 Water/Water Eraser 实时预览改为稀疏块索引与连续 alpha 行段上传，并按二值覆盖精确限制硬阴影失效。
 - [x] 增加 Group/Shape Transform Handle、Cuboid Size Handle、Sphere Radius Handle、Cylinder Radius/Height Handle、Frustum Top/Height/Bottom Handle、World/Local 空间与持久化 Snap 设置。
 - [x] 将 Group/Shape 删除按钮移到左侧列表对应项，并增加 X/Y/Z/Camera Plane 创建按钮、Cylinder/Frustum 创建按钮和删除键左侧的 Shape 绘制排除眼睛按钮。
 - [x] 将可缩放、纵向滚动的色板移到左侧栏底部，底栏改为居中 Emoji 工具和独立参数区；将参考地形显隐及 Source/Watercolor 切换常驻视口顶层，并修复画笔核心光标随半径变粗。

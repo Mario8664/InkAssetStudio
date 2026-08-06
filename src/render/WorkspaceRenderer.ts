@@ -37,7 +37,9 @@ import {
   getInkCylinderSurfacePoint,
   type CompiledInkFillSurface,
   type CompiledInkShape,
+  INK_FILL_COVERAGE_ALPHA_MIN,
   type InkCuboidFace,
+  type InkFillWaterAlphaPatch,
   type InkGroupData,
   type InkShape,
   type InkSurfacePoint,
@@ -64,6 +66,7 @@ import {
   type InkFillLightingState,
   type InkRenderAppearanceState,
   updateInkSurfaceOutlines,
+  updateInkShapeFillAlphaPatches,
   updateInkShapeFillSurfaces,
   updateInkShapeRibbon,
 } from './InkGroupRenderer';
@@ -606,6 +609,19 @@ export class WorkspaceRenderer {
     this.requestRender();
   }
 
+  previewInkFillWater(
+    referenceId: string,
+    shape: InkShape,
+    patches: readonly InkFillWaterAlphaPatch[],
+  ): void {
+    const root = this.inkEntries.get(referenceId)?.shapes.get(shape.id);
+    if (!root || !updateInkShapeFillAlphaPatches(root, patches)) {
+      this.previewInkFill(referenceId, shape);
+      return;
+    }
+    this.requestRender();
+  }
+
   previewInkRibbon(referenceId: string, shape: InkShape): void {
     const root = this.inkEntries.get(referenceId)?.shapes.get(shape.id);
     if (!root) return;
@@ -836,7 +852,8 @@ export class WorkspaceRenderer {
 
       const shapeTransformChanged = !priorShape || didInkShapeTransformChange(priorShape, shape);
       const fillChanged = !sameCompiledInkFill(priorCompiled?.fill ?? [], compiled.fill);
-      if ((shapeTransformChanged || fillChanged)
+      const fillCoverageChanged = !sameCompiledInkFillCoverage(priorCompiled?.fill ?? [], compiled.fill);
+      if ((shapeTransformChanged || fillCoverageChanged)
         && (hasInkHardShadowCasterInShape(priorCompiled) || hasInkHardShadowCasterInShape(compiled))) {
         hardShadowChanged = true;
       }
@@ -1350,6 +1367,31 @@ function sameCompiledInkFill(
       || first.rgba.length !== second.rgba.length) return false;
     for (let componentIndex = 0; componentIndex < first.rgba.length; componentIndex += 1) {
       if (first.rgba[componentIndex] !== second.rgba[componentIndex]) return false;
+    }
+  }
+  return true;
+}
+
+/** Hard Fill shadows depend on the binary coverage mask, not pigment or wetness. */
+export function sameCompiledInkFillCoverage(
+  previous: readonly CompiledInkFillSurface[],
+  next: readonly CompiledInkFillSurface[],
+): boolean {
+  if (previous === next) return true;
+  if (previous.length !== next.length) return false;
+  for (let surfaceIndex = 0; surfaceIndex < previous.length; surfaceIndex += 1) {
+    const first = previous[surfaceIndex]!;
+    const second = next[surfaceIndex]!;
+    if (first === second) continue;
+    if (first.id !== second.id
+      || first.minX !== second.minX
+      || first.minY !== second.minY
+      || first.width !== second.width
+      || first.height !== second.height
+      || first.rgba.length !== second.rgba.length) return false;
+    for (let componentIndex = 3; componentIndex < first.rgba.length; componentIndex += 4) {
+      if ((first.rgba[componentIndex]! >= INK_FILL_COVERAGE_ALPHA_MIN)
+        !== (second.rgba[componentIndex]! >= INK_FILL_COVERAGE_ALPHA_MIN)) return false;
     }
   }
   return true;

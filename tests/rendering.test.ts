@@ -27,17 +27,20 @@ import {
   bucketFillInkShape,
   compileInkFill,
   compileInkShape,
+  consumeInkFillWaterAlphaPatches,
   createInkCuboidShape,
   createInkCylinderGeometry,
   createInkCylinderShape,
   createInkFrustumGeometry,
   createInkFrustumShape,
   createInkGroupData,
+  createInkFillWaterStrokeState,
   createInkOutlineStroke,
   createInkPlaneShape,
   createInkSphereGeometry,
   createInkSphereShape,
   paintInkFill,
+  paintInkFillWater,
   sampleInkFillColor,
   withCompiledInkGroup,
 } from '../src/domain/ink/ink';
@@ -70,6 +73,7 @@ import {
   INK_WATERCOLOR_FILL_CAPTURE_MATERIAL_KEY,
   setInkHardShadowOwnerId,
   updateInkSurfaceOutlines,
+  updateInkShapeFillAlphaPatches,
   updateInkShapeFillSurfaces,
 } from '../src/render/InkGroupRenderer';
 import { hasRendererMaterial, InkHardShadowMap } from '../src/render/InkHardShadowMap';
@@ -77,6 +81,7 @@ import { InkWatercolorFillLayer } from '../src/render/InkWatercolorFillLayer';
 import { disposeObjectTree } from '../src/render/dispose';
 import {
   createTerrainPreviewMaterial,
+  sameCompiledInkFillCoverage,
   TERRAIN_PREVIEW_COLOR,
   TERRAIN_PREVIEW_OPACITY,
   WorkspaceRenderer,
@@ -446,6 +451,62 @@ describe('Reference rendering', () => {
 
     disposeObjectTree(fullRoot);
     disposeObjectTree(partialRoot);
+  });
+
+  it('uploads Water alpha runs without replacing Fill GPU resources or RGB', () => {
+    const point = { surface: 'side' as const, u: 0, v: 0, pressure: 1 };
+    const dry = paintInkFill(createInkCylinderShape(), [point], '#29adff', 0.1, 'circle', false);
+    const root = createInkShapeRenderRoot(compileInkShape(dry), dry, createInkFillLightingState());
+    const mesh = root.getObjectByName('InkFillSurface') as Mesh;
+    const texture = mesh.userData.inkFillTexture;
+    const geometry = mesh.geometry;
+    const material = mesh.material;
+    const original = Uint8Array.from(texture.image.data as Uint8Array);
+    const state = createInkFillWaterStrokeState();
+    const wet = paintInkFillWater(dry, [point], 0.03, 0.02, 'circle', 0.5, false, state);
+    const patches = consumeInkFillWaterAlphaPatches(state, dry.id);
+
+    expect(updateInkShapeFillAlphaPatches(root, [
+      patches[0]!,
+      { ...patches[0]!, x: Number.MAX_SAFE_INTEGER },
+    ])).toBe(false);
+    expect(texture.image.data).toEqual(original);
+    expect(updateInkShapeFillAlphaPatches(root, patches)).toBe(true);
+    expect(mesh.userData.inkFillTexture).toBe(texture);
+    expect(mesh.geometry).toBe(geometry);
+    expect(mesh.material).toBe(material);
+    expect(texture.updateRanges).toHaveLength(patches.length);
+    for (let index = 0; index < original.length; index += 4) {
+      expect(texture.image.data[index]).toBe(original[index]);
+      expect(texture.image.data[index + 1]).toBe(original[index + 1]);
+      expect(texture.image.data[index + 2]).toBe(original[index + 2]);
+    }
+    const compiled = compileInkFill(wet).find((surface) => surface.id === 'side')!;
+    const layout = mesh.userData.inkFillTexturePatchLayout as {
+      minX: number;
+      minY: number;
+      textureOffsetX: number;
+      textureOffsetY: number;
+    };
+    for (const patch of patches) for (let index = 0; index < patch.alpha.length; index += 1) {
+      const sourceOffset = ((patch.y - compiled.minY) * compiled.width + patch.x + index - compiled.minX) * 4 + 3;
+      const textureOffset = (
+        (layout.textureOffsetY + patch.y - layout.minY) * texture.image.width
+        + layout.textureOffsetX + patch.x + index - layout.minX
+      ) * 4 + 3;
+      expect(texture.image.data[textureOffset]).toBe(compiled.rgba[sourceOffset]);
+    }
+    for (const range of texture.updateRanges) {
+      expect(range.start % 4).toBe(0);
+      expect(range.count % 4).toBe(0);
+      const firstPixel = range.start / 4;
+      const lastPixel = firstPixel + range.count / 4 - 1;
+      expect(Math.floor(firstPixel / texture.image.width)).toBe(Math.floor(lastPixel / texture.image.width));
+    }
+    expect(sameCompiledInkFillCoverage(compileInkFill(dry), compileInkFill(wet))).toBe(true);
+    expect(sameCompiledInkFillCoverage(compileInkFill(dry), [])).toBe(false);
+
+    disposeObjectTree(root);
   });
 
   it('replaces every matching colour across a Shape when Bucket Contiguous is disabled', () => {

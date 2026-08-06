@@ -2,6 +2,7 @@ import { Vector3 } from 'three';
 import {
   blurInkFill,
   bucketFillInkShape,
+  consumeInkFillWaterAlphaPatches,
   createInkFillWaterStrokeState,
   createInkOutlineStroke,
   eraseInkFillWater,
@@ -303,6 +304,7 @@ export class InkEditorController {
     this.previewFrame = null;
     const session = this.options.getSession();
     if (session.drawTool !== 'fill-brush' && session.drawTool !== 'fill-eraser' && session.drawTool !== 'fill-blur' && !isWaterAdjustmentTool(session.drawTool) && session.drawTool !== 'outline-eraser') return;
+    const waterPreviews = new Map<string, WorkingShape>();
     for (const segment of this.pendingInk) {
       if (segment.processedPointCount >= segment.points.length) continue;
       const key = workingShapeKey(segment.referenceId, segment.shapeId);
@@ -314,7 +316,17 @@ export class InkEditorController {
       if (shape === working.shape) continue;
       this.workingShapes.set(key, { referenceId: segment.referenceId, shape });
       if (session.drawTool === 'outline-eraser') this.options.renderer.previewInkRibbon(segment.referenceId, shape);
+      else if (isWaterAdjustmentTool(session.drawTool) && this.waterStrokeState) {
+        waterPreviews.set(key, { referenceId: segment.referenceId, shape });
+      }
       else this.options.renderer.previewInkFill(segment.referenceId, shape);
+    }
+    if (this.waterStrokeState) for (const preview of waterPreviews.values()) {
+      this.options.renderer.previewInkFillWater(
+        preview.referenceId,
+        preview.shape,
+        consumeInkFillWaterAlphaPatches(this.waterStrokeState, preview.shape.id),
+      );
     }
   }
 
