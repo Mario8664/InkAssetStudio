@@ -5,10 +5,10 @@ import {
   BufferGeometry,
   Color,
   DirectionalLight,
-  DoubleSide,
   Group,
   HalfFloatType,
   LinearSRGBColorSpace,
+  LineBasicMaterial,
   LineDashedMaterial,
   LineLoop,
   Mesh,
@@ -16,10 +16,8 @@ import {
   NoToneMapping,
   PerspectiveCamera,
   Plane,
-  PlaneGeometry,
   Quaternion,
   Raycaster,
-  RingGeometry,
   Scene,
   SRGBColorSpace,
   Vector2,
@@ -169,12 +167,12 @@ export class WorkspaceRenderer {
   private readonly inkEntries = new Map<string, InkRenderEntry>();
   private readonly shapePickers: Mesh[] = [];
   private readonly pivotPickers: Mesh[] = [];
-  private readonly cursorCircleGeometry = new RingGeometry(0.9, 1.1, 40);
-  private readonly cursorSquareGeometry = new PlaneGeometry(2, 2);
-  private readonly cursorOuterCircleGeometry = createCursorOuterGeometry(false);
-  private readonly cursorOuterSquareGeometry = createCursorOuterGeometry(true);
+  private readonly cursorCircleGeometry = createCursorLoopGeometry(false);
+  private readonly cursorSquareGeometry = createCursorLoopGeometry(true);
+  private readonly cursorOuterCircleGeometry = createCursorLoopGeometry(false);
+  private readonly cursorOuterSquareGeometry = createCursorLoopGeometry(true);
   private readonly pencilPresence = new PencilPresenceTracker();
-  private readonly cursor: Mesh;
+  private readonly cursor: LineLoop;
   private readonly cursorOuter: LineLoop;
   private readonly strokePreviews: StrokePreviewEntry[] = [];
   private readonly strokePreviewHandoffs: HandoffStrokePreviewEntry[] = [];
@@ -278,9 +276,9 @@ export class WorkspaceRenderer {
     this.strokePreviewHandoffRoot.name = 'InkStrokePreviewHandoffRoot';
     this.terrainPreviewRoot.name = 'TerrainEditPreviewRoot';
     this.terrainToolPreviewRoot.name = 'TerrainToolPreviewRoot';
-    this.cursor = new Mesh(
+    this.cursor = new LineLoop(
       this.cursorCircleGeometry,
-      new MeshBasicMaterial({ color: 0x111111, depthTest: false, depthWrite: false, side: DoubleSide }),
+      new LineBasicMaterial({ color: 0x111111, depthTest: false, depthWrite: false }),
     );
     this.cursor.visible = false;
     this.cursor.renderOrder = 2000;
@@ -703,7 +701,7 @@ export class WorkspaceRenderer {
     this.cursorSquareGeometry.dispose();
     this.cursorOuterCircleGeometry.dispose();
     this.cursorOuterSquareGeometry.dispose();
-    (this.cursor.material as MeshBasicMaterial).dispose();
+    (this.cursor.material as LineBasicMaterial).dispose();
     (this.cursorOuter.material as LineDashedMaterial).dispose();
     for (const entry of this.strokePreviews) entry.preview.dispose();
     for (const entry of this.strokePreviewHandoffs) entry.preview.dispose();
@@ -1243,8 +1241,8 @@ export class WorkspaceRenderer {
   }
 }
 
-/** A unit-radius loop so the dashed water-feather cursor uses the exact Fill brush radius. */
-function createCursorOuterGeometry(square: boolean): BufferGeometry {
+/** Unit-radius loops keep cursor outlines at a constant screen-space line width. */
+function createCursorLoopGeometry(square: boolean): BufferGeometry {
   const points: Vector3[] = [];
   if (square) {
     points.push(

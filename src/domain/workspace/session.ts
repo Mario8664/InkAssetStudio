@@ -32,6 +32,7 @@ export type StudioEditorSession = {
   outlineColor: string;
   fillColor: string;
   palette: string[];
+  paletteScale: number;
   outlineWidth: number;
   outlineEraserWidth: number;
   fillBrushSize: number;
@@ -75,6 +76,7 @@ export function createStudioEditorSession(): StudioEditorSession {
     outlineColor: DEFAULT_INK_STROKE_COLOR,
     fillColor: '#fff1e8',
     palette: [...DEFAULT_PALETTE],
+    paletteScale: 1,
     outlineWidth: DEFAULT_INK_STROKE_WIDTH,
     outlineEraserWidth: 0.1,
     fillBrushSize: DEFAULT_INK_FILL_BRUSH_SIZE,
@@ -134,6 +136,7 @@ export function normalizeStudioEditorSession(value: unknown): StudioEditorSessio
     palette: Array.isArray(source.palette)
       ? source.palette.filter((entry): entry is string => typeof entry === 'string' && /^#[0-9a-f]{6}$/i.test(entry)).slice(0, 32)
       : fallback.palette,
+    paletteScale: number(source.paletteScale, fallback.paletteScale, 0.55, 1.35),
     outlineWidth: number(source.outlineWidth, fallback.outlineWidth, 0.005, 0.5),
     outlineEraserWidth: number(source.outlineEraserWidth, fallback.outlineEraserWidth, 0.01, 1),
     fillBrushSize: number(source.fillBrushSize, fallback.fillBrushSize, 0.02, 1),

@@ -87,6 +87,9 @@ async function layoutSummary(label) {
     canvas: !!document.querySelector('canvas'),
     groups: document.querySelectorAll('.group-row').length,
     tools: document.querySelectorAll('.tool-tabs button').length,
+    quickPreviewControls: document.querySelectorAll('.viewport-quick-controls button').length,
+    paletteDock: !!document.querySelector('.palette-dock'),
+    paletteScale: document.querySelector('[aria-label="Palette swatch size"]')?.value ?? null,
     lighting: !!document.querySelector('.day-phase-control'),
     viewportGuides: [...document.querySelectorAll('.viewport-guide-options input[type="checkbox"]')].map((input) => ({
       label: input.closest('label')?.textContent?.trim() ?? '',
@@ -101,6 +104,21 @@ try {
   await page.goto(baseUrl, { waitUntil: 'networkidle' });
   await waitUntilReady();
   if (await page.getByRole('button', { name: 'Navigate', exact: true }).count()) throw new Error('Retired Navigate mode is still present.');
+  const quickPreviewControls = page.locator('.viewport-quick-controls');
+  const quickTerrain = quickPreviewControls.getByRole('button', { name: 'Reference terrain', exact: true });
+  const quickSource = quickPreviewControls.getByRole('button', { name: 'Source', exact: true });
+  const quickWatercolor = quickPreviewControls.getByRole('button', { name: 'Watercolor', exact: true });
+  if (!await quickTerrain.isVisible() || !await quickSource.isVisible() || !await quickWatercolor.isVisible()) {
+    throw new Error('The outer-level terrain and Ink appearance controls are not all visible.');
+  }
+  await quickTerrain.click();
+  if (await quickTerrain.getAttribute('aria-pressed') !== 'false') throw new Error('The quick terrain control did not hide reference terrain.');
+  await quickTerrain.click();
+  if (await quickTerrain.getAttribute('aria-pressed') !== 'true') throw new Error('The quick terrain control did not restore reference terrain.');
+  await quickSource.click();
+  if (!await quickSource.evaluate((button) => button.classList.contains('active'))) throw new Error('The quick Source preview did not activate.');
+  await quickWatercolor.click();
+  if (!await quickWatercolor.evaluate((button) => button.classList.contains('active'))) throw new Error('The quick Watercolor preview did not restore.');
 
   // Mouse is intentionally neither an authoring input nor a camera gesture.
   await dragMouse(0.488, 0.405, 0.512, 0.445);
@@ -179,6 +197,45 @@ try {
     await page.getByRole('button', { name: tool, exact: true }).click();
     if (!await page.getByLabel(label).isVisible()) throw new Error(`${label} direct numeric input is missing.`);
   }
+  if (await page.locator('.tool-tabs button').count() !== 9) throw new Error('The centered Draw tray does not expose all nine Ink tools.');
+  if ((await page.locator('.tool-tabs button').allTextContents()).some((label) => /[A-Za-z]/.test(label))) {
+    throw new Error('The Draw tray still contains long text labels instead of compact symbols.');
+  }
+
+  const paletteScale = page.getByLabel('Palette swatch size', { exact: true });
+  const firstSwatch = page.locator('.palette-grid .ink-swatch').first();
+  const defaultSwatchWidth = (await firstSwatch.boundingBox())?.width ?? 0;
+  await paletteScale.evaluate((input) => {
+    input.value = '0.55';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const smallSwatchWidth = (await firstSwatch.boundingBox())?.width ?? 0;
+  await paletteScale.evaluate((input) => {
+    input.value = '1.35';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const largeSwatchWidth = (await firstSwatch.boundingBox())?.width ?? 0;
+  if (!(smallSwatchWidth < defaultSwatchWidth && defaultSwatchWidth < largeSwatchWidth)) {
+    throw new Error(`Palette scaling did not resize swatches: ${JSON.stringify({ smallSwatchWidth, defaultSwatchWidth, largeSwatchWidth })}`);
+  }
+  const paletteScrolls = await page.locator('.palette-scroll').evaluate((scroll) => {
+    const grid = scroll.querySelector('.palette-grid');
+    const swatch = grid?.querySelector('.ink-swatch');
+    if (!grid || !swatch) return false;
+    for (let index = grid.children.length; index < 32; index += 1) {
+      const clone = swatch.cloneNode(true);
+      clone.dataset.visualCheckClone = '';
+      grid.append(clone);
+    }
+    const scrollable = scroll.scrollHeight > scroll.clientHeight;
+    scroll.querySelectorAll('[data-visual-check-clone]').forEach((clone) => clone.remove());
+    return scrollable;
+  });
+  if (!paletteScrolls) throw new Error('A full 32-color palette does not scroll vertically at the large swatch size.');
+  await paletteScale.evaluate((input) => {
+    input.value = '1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 
   await page.locator('button[title="Edit and reorder palette"]').click();
   if (await page.locator('.palette-editor-row').count() < 2) throw new Error('Palette editor did not expose editable colors.');
@@ -241,8 +298,9 @@ try {
   await page.screenshot({ path: 'studio-lighting.png', fullPage: true });
 
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();
-  const sourceAppearance = page.getByRole('button', { name: 'Source', exact: true });
-  const watercolorAppearance = page.getByRole('button', { name: 'Watercolor', exact: true });
+  const appearancePanel = page.locator('.right-panel');
+  const sourceAppearance = appearancePanel.getByRole('button', { name: 'Source', exact: true });
+  const watercolorAppearance = appearancePanel.getByRole('button', { name: 'Watercolor', exact: true });
   if (!await sourceAppearance.isVisible() || !await watercolorAppearance.isVisible()) throw new Error('Source and Watercolor choices are not both visible.');
   if (!await watercolorAppearance.evaluate((button) => button.classList.contains('active'))) throw new Error('Painting saved Watercolor default is not active.');
   const appearanceDefaults = await page.evaluate(() => Object.fromEntries([
@@ -286,7 +344,7 @@ try {
   await page.waitForFunction(() => document.querySelector('[aria-label="Watercolor noise scale"]')?.value === '3');
   await page.screenshot({ path: 'studio-appearance.png', fullPage: true });
 
-  await page.getByRole('button', { name: 'Terrain' }).click();
+  await page.getByRole('button', { name: 'Terrain', exact: true }).click();
   if (await page.locator('.terrain-tools .terrain-tool').count() !== 3) throw new Error('Terrain Tile tools are not three direct preview buttons.');
   if (await page.locator('.terrain-direction-pad button').count() !== 4) throw new Error('Terrain direction is not exposed as four direct arrow buttons.');
   if (await page.locator('.terrain-axis-buttons button').count() !== 3) throw new Error('Terrain X/Y/Z work-plane buttons are missing.');
@@ -329,6 +387,14 @@ try {
     return status && !status.classList.contains('pending') && status.textContent?.includes('Saved locally');
   }, undefined, { timeout: 10_000 });
   await page.waitForTimeout(450);
+  const transientOverlap = await page.evaluate(() => {
+    const toast = document.querySelector('.toast')?.getBoundingClientRect();
+    const quick = document.querySelector('.viewport-quick-controls')?.getBoundingClientRect();
+    return !!toast && !!quick
+      && Math.min(toast.right, quick.right) > Math.max(toast.left, quick.left)
+      && Math.min(toast.bottom, quick.bottom) > Math.max(toast.top, quick.top);
+  });
+  if (transientOverlap) throw new Error('The import toast overlaps the outer-level preview controls.');
   await page.screenshot({ path: 'studio-preview.png', fullPage: true });
   const summaries = [await layoutSummary('desktop')];
 
@@ -354,12 +420,38 @@ try {
   await page.setViewportSize({ width: 1024, height: 768 });
   await page.waitForTimeout(100);
   if (!await page.locator('.day-phase-control').isVisible()) throw new Error('Day/night control is not visible at iPad landscape size.');
+  await page.getByRole('button', { name: 'Water', exact: true }).click();
+  for (const label of ['Fill brush size', 'Water soft radius', 'Water opacity']) {
+    if (!await page.locator(`input[aria-label="${label}"]`).isVisible()) throw new Error(`${label} is not visible for the Water tool.`);
+  }
+  const landscapeLayout = await page.evaluate(() => {
+    const box = (selector) => document.querySelector(selector)?.getBoundingClientRect();
+    const overlaps = (first, second) => !!first && !!second
+      && Math.min(first.right, second.right) > Math.max(first.left, second.left)
+      && Math.min(first.bottom, second.bottom) > Math.max(first.top, second.top);
+    const quick = box('.viewport-quick-controls');
+    return {
+      toolsOverlapOptions: overlaps(box('.tool-tabs'), box('.tool-options')),
+      quickOverlapsLeftPanel: overlaps(quick, box('.left-panel')),
+      quickOverlapsRightPanel: overlaps(quick, box('.right-panel')),
+    };
+  });
+  if (Object.values(landscapeLayout).some(Boolean)) throw new Error(`iPad landscape controls overlap: ${JSON.stringify(landscapeLayout)}`);
+  await page.getByRole('button', { name: 'Fill Paint', exact: true }).click();
+  if (!await page.locator('.palette-dock').isVisible()) throw new Error('The palette dock is not visible at iPad landscape size.');
   await page.screenshot({ path: 'studio-ipad-landscape.png', fullPage: true });
   summaries.push(await layoutSummary('ipad-landscape'));
 
   await page.setViewportSize({ width: 768, height: 1024 });
   await page.waitForTimeout(100);
   if (!await page.locator('.day-phase-control').isVisible()) throw new Error('Day/night control is not visible at iPad portrait size.');
+  const portraitQuickOverlap = await page.evaluate(() => {
+    const quick = document.querySelector('.viewport-quick-controls')?.getBoundingClientRect();
+    const panels = [...document.querySelectorAll('.panel')].map((panel) => panel.getBoundingClientRect());
+    return !!quick && panels.some((panel) => Math.min(quick.right, panel.right) > Math.max(quick.left, panel.left)
+      && Math.min(quick.bottom, panel.bottom) > Math.max(quick.top, panel.top));
+  });
+  if (portraitQuickOverlap) throw new Error('The outer-level preview controls overlap an iPad portrait side panel.');
   await page.screenshot({ path: 'studio-ipad-portrait.png', fullPage: true });
   summaries.push(await layoutSummary('ipad-portrait'));
 
@@ -367,7 +459,7 @@ try {
     if (summary.bodyWidth > summary.viewport.width || summary.bodyHeight > summary.viewport.height) {
       throw new Error(`${summary.label} layout overflows the viewport.`);
     }
-    if (summary.groups !== 2 || (summary.tools !== 6 && !summary.lighting)) {
+    if (summary.groups !== 2 || summary.tools !== 9 || summary.quickPreviewControls !== 3) {
       throw new Error(`${summary.label} did not restore the complete editable workspace.`);
     }
   }

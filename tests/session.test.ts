@@ -73,8 +73,15 @@ describe('Editor viewport session', () => {
   it('preserves an existing palette while adding Fill water defaults to an older session', () => {
     const session = normalizeStudioEditorSession({ palette: ['#123456', '#abcdef'] });
     expect(session.palette).toEqual(['#123456', '#abcdef']);
+    expect(session.paletteScale).toBe(1);
     expect(session.fillSoftRadius).toBe(0.05);
     expect(session.fillWaterOpacity).toBe(0.5);
+  });
+
+  it('persists and bounds the palette display scale', () => {
+    expect(normalizeStudioEditorSession({ paletteScale: 0.75 }).paletteScale).toBe(0.75);
+    expect(normalizeStudioEditorSession({ paletteScale: 0.1 }).paletteScale).toBe(0.55);
+    expect(normalizeStudioEditorSession({ paletteScale: 9 }).paletteScale).toBe(1.35);
   });
 
   it('normalizes the added Fill water tools and bounded session settings', () => {

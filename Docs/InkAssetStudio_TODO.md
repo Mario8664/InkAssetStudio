@@ -45,13 +45,13 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - Shape 视口拖动支持 XZ 移动和 Y 轴旋转，手势结束后才提交一次作者事务。
 - Shape 编辑辅助已与 Painting 当前视觉一致：选中 Surface 使用 `#63c7fa / 0.34`，未选中及 Draw 模式 Surface 使用 `#548097 / 0.16`；相应参考网格使用 `#b9ebff / 0.84` 与 `#7aa0ae / 0.42`。辅助面读取深度但不写入深度，不再使用黄色 wireframe。
 - Plane 辅助面按 Outline 与稀疏 Fill 内容动态扩展并保留最小 `1×1` 范围；Cuboid/Frustum 显示六面世界单位网格，Sphere 显示每面 `4×4` 的球化六面体网格，Cylinder 依据三角化圆柱表面显示网格。辅助面及其网格仅属于编辑器视口，不进入作者源或导出文件。
-- Outline、Outline Eraser、Fill Paint、Fill Eraser、Blur、Water、Water Eraser、Bucket Fill、Fill Picker 全部可通过触控 UI 选择。Water Eraser 使用 `💨`，Blur/Water/Water Eraser 不显示颜色或色板控件。
+- Outline、Outline Eraser、Fill Paint、Fill Eraser、Blur、Water、Water Eraser、Bucket Fill、Fill Picker 全部以居中的 Emoji 触控按钮选择，并保留说明提示与无障碍名称。参数使用独立可换行区域；Blur/Water/Water Eraser 不显示颜色或色板控件。
 - Outline 保留带压力的可编辑表面点，并编译为世界宽度 Ribbon。
 - Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。`alpha < 128` 为透明；`255` 为干燥不透明；`128..254` 保存 Watercolor 湿度并仍按不透明 Fill 处理。Water/Water Eraser 只对已有覆盖调整 alpha，保持 RGB 不变；同一手势去重、不同手势叠加。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 均使用 Painting 当前的表面坐标和编译规则；Cylinder side chart 在环绕方向连续，Cylinder cap 与 Frustum 的六个面都保有独立 Fill 图表。
-- 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。Water 与 Water Eraser 额外提供 Session 持久化的 Soft Radius 与 Water Opacity；光标以实线核心加精确对应 Feather 外半径的虚线外框显示。
+- 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。Water 与 Water Eraser 额外提供 Session 持久化的 Soft Radius 与 Water Opacity；光标以恒定屏幕细线的实线核心加精确对应 Feather 外半径的虚线外框显示，增大半径不会加粗核心轮廓。
 - 支持直线辅助；其端点状态保存在作者数据中，不进入编译几何哈希。
-- 调色板可新增、删除、直接改色和触控排序，最多 32 色，并作为 Editor Session 独立保存。
+- 调色板可新增、删除、直接改色和触控排序，最多 32 色，并作为 Editor Session 独立保存。颜色工具将色板固定在左侧栏底部，色块显示缩放同样随 Session 保存；色块区域独立纵向滚动，不与底部工具或 Water 参数争抢空间。
 - Apple Pencil 使用 Pointer Events、合并事件和可用时的 `pointerrawupdate`；压感开启时只有非零 raw 压力才取代合并事件，避免 iPad Safari 的零压力 raw 更新使压感失效。手势取消、失焦和 Pointer Capture 丢失都会丢弃未提交临时数据并清理状态。
 - 自适应稳定器在采样阶段平滑表面点，不在提交后重解释作者轨迹。
 - 压感默认开启且始终有可见开关。关闭时新 Outline 点写入 `pressure: 1`；旧笔画不会被回写。
@@ -161,4 +161,5 @@ npm.cmd run visual-check
 - [x] 将 Fill、Terrain、Helper 与 Transform 热路径改为精确局部更新。
 - [x] 增加 Group/Shape Transform Handle、Cuboid Size Handle、Sphere Radius Handle、Cylinder Radius/Height Handle、Frustum Top/Height/Bottom Handle、World/Local 空间与持久化 Snap 设置。
 - [x] 将 Group/Shape 删除按钮移到左侧列表对应项，并增加 X/Y/Z/Camera Plane 创建按钮、Cylinder/Frustum 创建按钮和删除键左侧的 Shape 绘制排除眼睛按钮。
+- [x] 将可缩放、纵向滚动的色板移到左侧栏底部，底栏改为居中 Emoji 工具和独立参数区；将参考地形显隐及 Source/Watercolor 切换常驻视口顶层，并修复画笔核心光标随半径变粗。
 - [x] 补齐单元、交互、iPad 尺寸、离线与部署后远程验收，再提交推送 GitHub Pages。

@@ -82,6 +82,7 @@ const isFillBrushTool = computed(() => session.drawTool === 'fill-brush'
 const isColorTool = computed(() => session.drawTool !== 'outline-eraser'
   && session.drawTool !== 'fill-blur'
   && !isWaterTool.value);
+const paletteSwatchSize = computed(() => `${Math.round(session.paletteScale * 34)}px`);
 const isDirty = computed(() => !!snapshot.value && snapshot.value.revision > snapshot.value.savedRevision);
 const isUnexported = computed(() => !!snapshot.value && snapshot.value.revision > snapshot.value.exportedRevision);
 const saveLabel = computed(() => isDirty.value ? 'Saving…' : isUnexported.value ? 'Saved locally · not exported' : 'Saved locally');
@@ -656,64 +657,99 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
     </nav>
 
     <aside v-if="session.leftPanelOpen" class="panel left-panel">
-      <div class="panel-heading">
-        <div><strong>Ink Groups</strong><small>{{ document?.ink.assetReferences.length ?? 0 }} groups</small></div>
-        <button class="round-button" title="New Group" @click="createGroup">＋</button>
-      </div>
-      <div class="group-list">
-        <div
-          v-for="reference in document?.ink.assetReferences"
-          :key="reference.id"
-          class="list-row-shell"
-          :class="{ active: reference.id === session.activeReferenceId }"
-        >
-          <button class="group-row" @click="selectGroup(reference.id)">
-            <span class="group-dot" />
-            <span>{{ document?.ink.embeddedAssets.find(asset => asset.assetId === reference.assetId)?.group.name }}</span>
-            <small>{{ reference.anchorPosition.x.toFixed(1) }}, {{ reference.anchorPosition.z.toFixed(1) }}</small>
-          </button>
-          <button class="list-delete-button" :aria-label="`Delete ${document?.ink.embeddedAssets.find(asset => asset.assetId === reference.assetId)?.group.name ?? 'Group'}`" title="Delete Group" @click="deleteGroup(reference.id)">⌫</button>
+      <div class="left-panel-scroll">
+        <div class="panel-heading">
+          <div><strong>Ink Groups</strong><small>{{ document?.ink.assetReferences.length ?? 0 }} groups</small></div>
+          <button class="round-button" title="New Group" @click="createGroup">＋</button>
+        </div>
+        <div class="group-list">
+          <div
+            v-for="reference in document?.ink.assetReferences"
+            :key="reference.id"
+            class="list-row-shell"
+            :class="{ active: reference.id === session.activeReferenceId }"
+          >
+            <button class="group-row" @click="selectGroup(reference.id)">
+              <span class="group-dot" />
+              <span>{{ document?.ink.embeddedAssets.find(asset => asset.assetId === reference.assetId)?.group.name }}</span>
+              <small>{{ reference.anchorPosition.x.toFixed(1) }}, {{ reference.anchorPosition.z.toFixed(1) }}</small>
+            </button>
+            <button class="list-delete-button" :aria-label="`Delete ${document?.ink.embeddedAssets.find(asset => asset.assetId === reference.assetId)?.group.name ?? 'Group'}`" title="Delete Group" @click="deleteGroup(reference.id)">⌫</button>
+          </div>
+        </div>
+        <div v-if="activeGroup" class="shape-list-section">
+          <div class="subheading"><span>Shapes</span><span>{{ activeGroup.shapes.length }}</span></div>
+          <div
+            v-for="(shape, index) in activeGroup.shapes"
+            :key="shape.id"
+            class="list-row-shell shape-list-row"
+            :class="{ active: shape.id === session.activeShapeId }"
+          >
+            <button class="shape-row" @click="session.activeShapeId = shape.id; session.mode = 'shape'">
+              <span>{{ shape.kind === 'plane' ? '▱' : shape.kind === 'cuboid' ? '⬡' : shape.kind === 'sphere' ? '●' : shape.kind === 'cylinder' ? '▯' : '△' }}</span>
+              <span>{{ shape.kind }} {{ index + 1 }}</span>
+            </button>
+            <button
+              class="list-delete-button shape-visibility-button"
+              :class="{ active: !session.excludedShapeIds.includes(shape.id) }"
+              :aria-label="`${session.excludedShapeIds.includes(shape.id) ? 'Show' : 'Hide'} ${shape.kind} ${index + 1} for drawing`"
+              :title="session.excludedShapeIds.includes(shape.id) ? 'Allow drawing on Shape' : 'Temporarily hide from drawing'"
+              @click="toggleShapeDrawingExclusion(shape.id)"
+            >👁</button>
+            <button class="list-delete-button" :aria-label="`Delete ${shape.kind} ${index + 1}`" title="Delete Shape" @click="deleteShape(shape.id)">⌫</button>
+          </div>
+          <label class="shape-create-label">Add Plane</label>
+          <div class="plane-create-row" aria-label="Plane orientation">
+            <button title="Plane normal X" @click="createPlane('x')">X</button>
+            <button title="Plane normal Y" @click="createPlane('y')">Y</button>
+            <button title="Plane normal Z" @click="createPlane('z')">Z</button>
+            <button title="Face the current editor camera" @click="createPlane('camera')">Camera</button>
+          </div>
+          <div class="shape-create-row">
+            <button @click="createShape('cuboid')">+ Box</button>
+            <button @click="createShape('sphere')">+ Sphere</button>
+            <button @click="createShape('cylinder')">+ Cylinder</button>
+            <button @click="createShape('frustum')">+ Frustum</button>
+          </div>
         </div>
       </div>
-      <div v-if="activeGroup" class="shape-list-section">
-        <div class="subheading"><span>Shapes</span><span>{{ activeGroup.shapes.length }}</span></div>
-        <div
-          v-for="(shape, index) in activeGroup.shapes"
-          :key="shape.id"
-          class="list-row-shell shape-list-row"
-          :class="{ active: shape.id === session.activeShapeId }"
-        >
-          <button class="shape-row" @click="session.activeShapeId = shape.id; session.mode = 'shape'">
-            <span>{{ shape.kind === 'plane' ? '▱' : shape.kind === 'cuboid' ? '⬡' : shape.kind === 'sphere' ? '●' : shape.kind === 'cylinder' ? '▯' : '△' }}</span>
-            <span>{{ shape.kind }} {{ index + 1 }}</span>
-          </button>
-          <button
-            class="list-delete-button shape-visibility-button"
-            :class="{ active: !session.excludedShapeIds.includes(shape.id) }"
-            :aria-label="`${session.excludedShapeIds.includes(shape.id) ? 'Show' : 'Hide'} ${shape.kind} ${index + 1} for drawing`"
-            :title="session.excludedShapeIds.includes(shape.id) ? 'Allow drawing on Shape' : 'Temporarily hide from drawing'"
-            @click="toggleShapeDrawingExclusion(shape.id)"
-          >👁</button>
-          <button class="list-delete-button" :aria-label="`Delete ${shape.kind} ${index + 1}`" title="Delete Shape" @click="deleteShape(shape.id)">⌫</button>
+      <section v-if="session.mode === 'draw' && isColorTool" class="palette-dock" aria-label="Color palette">
+        <header class="palette-dock-header">
+          <strong>Palette</strong>
+          <div class="palette-actions">
+            <button title="Add current color" aria-label="Add current color" @click="addPaletteColor">＋</button>
+            <button title="Edit and reorder palette" aria-label="Edit and reorder palette" :class="{ active: paletteEditing }" @click="paletteEditing = !paletteEditing">✎</button>
+          </div>
+        </header>
+        <label class="palette-scale-control" title="Palette swatch size">
+          <span aria-hidden="true">−</span>
+          <input v-model.number="session.paletteScale" aria-label="Palette swatch size" type="range" min="0.55" max="1.35" step="0.05" />
+          <span aria-hidden="true">＋</span>
+        </label>
+        <div class="palette-scroll">
+          <div class="palette-grid" :style="{ '--palette-swatch-size': paletteSwatchSize }">
+            <button v-for="(color, index) in session.palette" :key="`${color}-${index}`" class="ink-swatch" :style="{ background: color }" :title="`Use ${color}`" :aria-label="`Use palette color ${color}`" @click="usePaletteColor(color)" />
+          </div>
         </div>
-        <label class="shape-create-label">Add Plane</label>
-        <div class="plane-create-row" aria-label="Plane orientation">
-          <button title="Plane normal X" @click="createPlane('x')">X</button>
-          <button title="Plane normal Y" @click="createPlane('y')">Y</button>
-          <button title="Plane normal Z" @click="createPlane('z')">Z</button>
-          <button title="Face the current editor camera" @click="createPlane('camera')">Camera</button>
-        </div>
-        <div class="shape-create-row">
-          <button @click="createShape('cuboid')">+ Box</button>
-          <button @click="createShape('sphere')">+ Sphere</button>
-          <button @click="createShape('cylinder')">+ Cylinder</button>
-          <button @click="createShape('frustum')">+ Frustum</button>
-        </div>
-      </div>
+      </section>
     </aside>
 
     <main class="viewport">
       <canvas ref="canvas" aria-label="Ink Studio 3D viewport" />
+      <div class="viewport-quick-controls" aria-label="Preview controls">
+        <button
+          class="terrain-visibility-button"
+          :class="{ active: session.showReferenceTerrain }"
+          :aria-pressed="session.showReferenceTerrain"
+          :title="session.showReferenceTerrain ? 'Hide reference terrain' : 'Show reference terrain'"
+          aria-label="Reference terrain"
+          @click="session.showReferenceTerrain = !session.showReferenceTerrain"
+        >🏞️</button>
+        <div class="segmented preview-appearance-toggle" aria-label="Ink appearance">
+          <button :class="{ active: session.inkAppearance.appearance === 'source' }" @click="session.inkAppearance.appearance = 'source'">Source</button>
+          <button :class="{ active: session.inkAppearance.appearance === 'watercolor' }" @click="session.inkAppearance.appearance = 'watercolor'">Watercolor</button>
+        </div>
+      </div>
       <div class="viewport-hint">
         <template v-if="session.mode === 'terrain'">Pencil: {{ session.terrainOperation }} {{ session.terrainAction }} · finger: orbit / pan / zoom</template>
         <template v-else-if="session.mode === 'select'">Pencil: select or use the Group handle · finger: orbit / pan / zoom</template>
@@ -917,20 +953,15 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
 
     <footer v-if="session.mode === 'draw'" class="tooltray">
       <div class="tool-group tool-tabs">
-        <button :class="{ active: session.drawTool === 'outline' }" @click="session.drawTool = 'outline'">Outline</button>
-        <button :class="{ active: session.drawTool === 'outline-eraser' }" @click="session.drawTool = 'outline-eraser'">Line Erase</button>
-        <button :class="{ active: session.drawTool === 'fill-brush' }" @click="session.drawTool = 'fill-brush'">Fill Paint</button>
-        <button :class="{ active: session.drawTool === 'fill-eraser' }" @click="session.drawTool = 'fill-eraser'">Fill Erase</button>
-        <button :class="{ active: session.drawTool === 'fill-blur' }" @click="session.drawTool = 'fill-blur'">Blur</button>
-        <button :class="{ active: session.drawTool === 'fill-water' }" @click="session.drawTool = 'fill-water'">Water</button>
-        <button :class="{ active: session.drawTool === 'fill-water-eraser' }" title="Erase water / re-dry Fill" @click="session.drawTool = 'fill-water-eraser'">💨</button>
-        <button :class="{ active: session.drawTool === 'fill-bucket' }" @click="session.drawTool = 'fill-bucket'">Bucket</button>
-        <button :class="{ active: session.drawTool === 'picker' }" @click="session.drawTool = 'picker'">Picker</button>
-      </div>
-      <div v-if="isColorTool" class="tool-group palette-row">
-        <button v-for="(color, index) in session.palette" :key="`${color}-${index}`" class="ink-swatch" :style="{ background: color }" :title="`Use ${color}`" :aria-label="`Use palette color ${color}`" @click="usePaletteColor(color)" />
-        <button class="small-button" title="Add current color" @click="addPaletteColor">＋</button>
-        <button class="small-button" title="Edit and reorder palette" :class="{ active: paletteEditing }" @click="paletteEditing = !paletteEditing">✎</button>
+        <button :class="{ active: session.drawTool === 'outline' }" title="Outline" aria-label="Outline" @click="session.drawTool = 'outline'">✒️</button>
+        <button :class="{ active: session.drawTool === 'outline-eraser' }" title="Line Erase" aria-label="Line Erase" @click="session.drawTool = 'outline-eraser'">✂️</button>
+        <button :class="{ active: session.drawTool === 'fill-brush' }" title="Fill Paint" aria-label="Fill Paint" @click="session.drawTool = 'fill-brush'">🖌️</button>
+        <button :class="{ active: session.drawTool === 'fill-eraser' }" title="Fill Erase" aria-label="Fill Erase" @click="session.drawTool = 'fill-eraser'">🧽</button>
+        <button :class="{ active: session.drawTool === 'fill-blur' }" title="Blur" aria-label="Blur" @click="session.drawTool = 'fill-blur'">🌫️</button>
+        <button :class="{ active: session.drawTool === 'fill-water' }" title="Water" aria-label="Water" @click="session.drawTool = 'fill-water'">💧</button>
+        <button :class="{ active: session.drawTool === 'fill-water-eraser' }" title="Water Eraser" aria-label="Water Eraser" @click="session.drawTool = 'fill-water-eraser'">💨</button>
+        <button :class="{ active: session.drawTool === 'fill-bucket' }" title="Bucket" aria-label="Bucket" @click="session.drawTool = 'fill-bucket'">🪣</button>
+        <button :class="{ active: session.drawTool === 'picker' }" title="Picker" aria-label="Picker" @click="session.drawTool = 'picker'">🎨</button>
       </div>
       <div class="tool-group tool-options">
         <label v-if="isColorTool" class="color-field"><span>Color</span><input v-if="session.drawTool === 'outline'" v-model="session.outlineColor" type="color" /><input v-else v-model="session.fillColor" type="color" /></label>
@@ -944,18 +975,19 @@ function degrees(value: number): number { return Math.round(value * 180 / Math.P
         <button class="toggle" :class="{ active: session.pressureEnabled }" title="Use Apple Pencil pressure for new outline points" @click="session.pressureEnabled = !session.pressureEnabled">Pressure {{ session.pressureEnabled ? 'On' : 'Off' }}</button>
         <button v-if="session.drawTool === 'outline'" class="toggle" :class="{ active: session.straightLineEnabled }" @click="session.straightLineEnabled = !session.straightLineEnabled">Straight {{ session.straightLineEnabled ? 'On' : 'Off' }}</button>
       </div>
-      <section v-if="paletteEditing && isColorTool" class="palette-editor" aria-label="Palette editor">
-        <header><strong>Edit Palette</strong><button @click="paletteEditing = false">Done</button></header>
-        <div class="palette-editor-list">
-          <div v-for="(color, index) in session.palette" :key="`edit-${index}`" class="palette-editor-row">
-            <input type="color" :value="color" :aria-label="`Edit palette color ${index + 1}`" @input="setPaletteColor(index, $event)" />
-            <button :disabled="index === 0" title="Move left" @click="movePaletteColor(index, -1)">←</button>
-            <button :disabled="index === session.palette.length - 1" title="Move right" @click="movePaletteColor(index, 1)">→</button>
-            <button class="palette-delete" title="Remove color" @click="removePaletteColor(index)">⌫</button>
-          </div>
-        </div>
-      </section>
     </footer>
+
+    <section v-if="paletteEditing && session.mode === 'draw' && isColorTool" class="palette-editor" aria-label="Palette editor">
+      <header><strong>Edit Palette</strong><button @click="paletteEditing = false">Done</button></header>
+      <div class="palette-editor-list">
+        <div v-for="(color, index) in session.palette" :key="`edit-${index}`" class="palette-editor-row">
+          <input type="color" :value="color" :aria-label="`Edit palette color ${index + 1}`" @input="setPaletteColor(index, $event)" />
+          <button :disabled="index === 0" title="Move left" @click="movePaletteColor(index, -1)">←</button>
+          <button :disabled="index === session.palette.length - 1" title="Move right" @click="movePaletteColor(index, 1)">→</button>
+          <button class="palette-delete" title="Remove color" @click="removePaletteColor(index)">⌫</button>
+        </div>
+      </div>
+    </section>
 
     <div v-if="message" class="toast" :class="message.tone">{{ message.text }}</div>
     <div v-if="loading" class="loading-cover"><div class="studio-mark">墨</div><strong>Opening offline workspace…</strong></div>
