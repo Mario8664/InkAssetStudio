@@ -175,6 +175,9 @@ describe('Reference rendering', () => {
       expect(surface.wireframe).toBe(false);
       expect(surface.depthTest).toBe(true);
       expect(surface.depthWrite).toBe(false);
+      expect(surface.polygonOffset).toBe(true);
+      expect(surface.polygonOffsetFactor).toBe(-1);
+      expect(surface.polygonOffsetUnits).toBe(-1);
       expect(surface.side).toBe(DoubleSide);
       expect(grid.color.getHexString()).toBe(gridStyle.color.slice(1));
       expect(grid.opacity).toBe(gridStyle.opacity);

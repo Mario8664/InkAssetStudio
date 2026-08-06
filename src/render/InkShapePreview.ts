@@ -47,6 +47,10 @@ export function createInkShapePreview(shape: InkShape, active: boolean): InkShap
     opacity: style.opacity,
     depthTest: true,
     depthWrite: false,
+    // Keep the editor-only surface just ahead of its co-planar authored Fill.
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
     side: DoubleSide,
   });
   const surface = shape.kind === 'plane'
