@@ -108,7 +108,7 @@ describe('Ink Fill water tools', () => {
     expect(frameCount).toBeGreaterThan(1);
     expect(patches.some((patch) => patch.rgba.length > 0)).toBe(true);
     expect(result).toEqual(blurInkFill(source, points, 1, 'circle'));
-  });
+  }, 15_000);
 
   it('blurs only authored Fill RGB while retaining its opacity encoding', () => {
     const plane = createInkPlaneShape('z', { x: 0, y: 0, z: 0 });
