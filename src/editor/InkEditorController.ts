@@ -9,6 +9,7 @@ import {
   createInkFillWaterStrokeState,
   createInkOutlineStroke,
   eraseInkFillWater,
+  finalizeInkFillBlurWork,
   getInkFillBrushRadii,
   getInkCylinderSurfacePosition,
   getInkFrustumFacePosition,
@@ -57,9 +58,11 @@ const STABILIZER_MAX_SPEED_PIXELS_PER_MILLISECOND = 0.85;
 const STABILIZER_REFERENCE_INTERVAL_MILLISECONDS = 1000 / 60;
 const FINAL_SAMPLE_MIN_SCREEN_DISTANCE_PIXELS = 0.5;
 // A Smudge operation is one pickup capture or one target write, not a full
-// two-dimensional Gaussian kernel. This budget keeps large Pencil dabs live
-// while retaining a bounded frame workload.
+// two-dimensional Gaussian kernel. The time slice is the primary bound so a
+// slower iPad does not spend an entire frame on the same fixed operation count.
+const FILL_SMUDGE_FRAME_BUDGET_MILLISECONDS = 4;
 const FILL_SMUDGE_TARGET_OPERATION_BUDGET = 4_096;
+const FILL_SMUDGE_OPERATION_CHUNK = 256;
 
 export type InkEditorControllerOptions = {
   renderer: WorkspaceRenderer;
@@ -77,7 +80,7 @@ export class InkEditorController {
   private readonly workingShapes = new Map<string, WorkingShape>();
   /** One drag keeps only the strongest wet/dry contribution per Fill texel. */
   private waterStrokeState: InkFillWaterStrokeState | null = null;
-  private readonly blurWorks = new Map<string, InkFillBlurWork>();
+  private readonly blurWorks = new Map<number, InkFillBlurWork>();
   private blurPointerReleased = false;
   private usesRawPointerUpdates = false;
   private receivedRawPointerUpdate = false;
@@ -221,6 +224,7 @@ export class InkEditorController {
 
   private beginGesture(event: PointerEvent): void {
     this.pointerId = event.pointerId;
+    this.options.renderer.setInkRenderScaleInteractionActive(true);
     this.pendingInk = [];
     this.workingShapes.clear();
     this.blurWorks.clear();
@@ -356,31 +360,43 @@ export class InkEditorController {
   }
 
   private flushBlurLivePreview(session: StudioEditorSession): void {
+    const frameStartedAt = performance.now();
     let remainingBudget = FILL_SMUDGE_TARGET_OPERATION_BUDGET;
-    for (const segment of this.pendingInk) {
+    for (let index = 0; index < this.pendingInk.length; index += 1) {
+      const segment = this.pendingInk[index]!;
       const key = workingShapeKey(segment.referenceId, segment.shapeId);
       let working = this.workingShapes.get(key) ?? { referenceId: segment.referenceId, shape: segment.shape };
-      let work = this.blurWorks.get(key);
+      let work = this.blurWorks.get(index);
       if (segment.processedPointCount < segment.points.length) {
         const firstNew = segment.processedPointCount;
         const points = segment.points.slice(Math.max(0, firstNew - 1));
         segment.processedPointCount = segment.points.length;
         if (work) appendInkFillBlurWorkPoints(work, points, session.fillBrushSize);
         else work = createInkFillBlurWork(working.shape, points, session.fillBrushSize, session.fillBrushShape) ?? undefined;
-        if (work) this.blurWorks.set(key, work);
+        if (work) this.blurWorks.set(index, work);
       }
-      if (!work || remainingBudget <= 0) continue;
-      const progress = processInkFillBlurWork(work, remainingBudget);
-      remainingBudget -= progress.processedTargetCount;
-      if (progress.changed || this.workingShapes.has(key)) {
+      if (!work) continue;
+      if (remainingBudget <= 0 || performance.now() - frameStartedAt >= FILL_SMUDGE_FRAME_BUDGET_MILLISECONDS) break;
+      let progress: ReturnType<typeof processInkFillBlurWork> | null = null;
+      while (!work.complete
+        && remainingBudget > 0
+        && performance.now() - frameStartedAt < FILL_SMUDGE_FRAME_BUDGET_MILLISECONDS) {
+        progress = processInkFillBlurWork(work, Math.min(remainingBudget, FILL_SMUDGE_OPERATION_CHUNK));
+        remainingBudget -= progress.processedTargetCount;
+        if (progress.processedTargetCount === 0) break;
+      }
+      if (progress && (progress.changed || this.workingShapes.has(key))) {
         working = { referenceId: segment.referenceId, shape: progress.shape };
         this.workingShapes.set(key, working);
       }
       const patches = consumeInkFillBlurRgbaPatches(work);
-      if (patches.length > 0) this.options.renderer.previewInkFillBlur(segment.referenceId, progress.shape, patches);
-      if (progress.complete) this.blurWorks.delete(key);
+      if (patches.length > 0 && progress) this.options.renderer.previewInkFillBlur(segment.referenceId, progress.shape, patches);
+      // Process surface segments in arrival order. Re-entering a Shape after
+      // another Shape must not connect two independent pickup paths.
+      if (!work.complete) break;
     }
     if (this.blurPointerReleased && !this.hasPendingBlurWork()) {
+      this.finalizeBlurLivePreview();
       this.commitInk(session);
       this.endGesture(false);
       return;
@@ -389,7 +405,20 @@ export class InkEditorController {
   }
 
   private hasPendingBlurWork(): boolean {
-    return this.blurWorks.size > 0 || this.pendingInk.some((segment) => segment.processedPointCount < segment.points.length);
+    return [...this.blurWorks.values()].some((work) => !work.complete)
+      || this.pendingInk.some((segment) => segment.processedPointCount < segment.points.length);
+  }
+
+  /** Normalization is intentionally delayed so a drained live queue can accept the next Pencil sample. */
+  private finalizeBlurLivePreview(): void {
+    for (const [index, work] of this.blurWorks) {
+      const segment = this.pendingInk[index];
+      if (!segment) continue;
+      const key = workingShapeKey(segment.referenceId, segment.shapeId);
+      const working = this.workingShapes.get(key);
+      if (!working) continue;
+      this.workingShapes.set(key, { ...working, shape: finalizeInkFillBlurWork(work) });
+    }
   }
 
   private updateCursor(event: PointerEvent): void {
@@ -447,6 +476,7 @@ export class InkEditorController {
     if (this.previewFrame !== null) window.cancelAnimationFrame(this.previewFrame);
     this.previewFrame = null;
     this.options.renderer.clearStrokePreview();
+    this.options.renderer.setInkRenderScaleInteractionActive(false);
     if (restorePreview) {
       const document = this.options.store.getDocument();
       for (const working of this.workingShapes.values()) {

@@ -49,13 +49,14 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - Outline 保留带压力的可编辑表面点，并编译为世界宽度 Ribbon。
 - Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。`alpha < 128` 为透明；`255` 为干燥不透明；`128..254` 保存 Watercolor 湿度并仍按不透明 Fill 处理。Water/Water Eraser 只对已有覆盖调整 alpha，保持 RGB 不变；同一手势去重、不同手势叠加。
 - Water/Water Eraser 的盖章热路径按 Surface/稀疏块建立索引，并以数值坐标保存手势去重状态；实时预览只收集本帧变化的连续 alpha 行段并局部上传既有 `DataTexture`，不再逐帧完整编译 Fill、扫描整张纹理、重建 Shape Helper 或刷新硬阴影。
-- Fill Blur 保留工具名称但改为方向性拾色拖抹（Smudge）：首次 Pencil dab 只拾取当前局部颜料；每次移动从前一 dab 的同形状 footprint 读取 RGB，再以固定比例拖入当前 dab。单个 stamp 先捕获全部 source/target texel，再按 Pencil 顺序写入，避免新写颜色回读或旧后台任务覆盖当前笔势；每个目标 texel只有一次 pickup 读取和一次写入，不再枚举 Gaussian 模糊核。Fill coverage 与 Water alpha 保持不变，两个 footprint 均使用既有 chart neighbour 映射跨 seam。每帧固定预算处理 capture/write 操作，实时预览只上传本帧变更的连续 RGBA 行段；Pencil 抬起后仅在尚未完成的有序 Smudge 批次继续，完成后再写入一条作者源/Undo 事务。正常的 `lostpointercapture` 不得取消该已抬笔批次，Pencil 尚未抬起时的异常 capture 丢失仍会取消手势；不逐帧完整编译 Fill、重建 Shape Helper 或刷新 Ink 硬阴影深度。
+- Fill Blur 保留工具名称但改为方向性拾色拖抹（Smudge）：首次 Pencil dab 只拾取当前局部颜料；每次移动从前一 dab 的同形状 footprint 读取 RGB，再以固定比例拖入当前 dab。单个 stamp 先捕获全部 source/target texel，再按 Pencil 顺序写入，避免新写颜色回读或旧后台任务覆盖当前笔势；每个目标 texel只有一次 pickup 读取和一次写入，不再枚举 Gaussian 模糊核。Fill coverage 与 Water alpha 保持不变，两个 footprint 均使用既有 chart neighbour 映射跨 seam。每帧以 `4 ms` 或 `4096` 操作为上限、每次至多 `256` 操作推进，实时预览只上传本帧变更的连续 RGBA 行段；队列耗尽时保持同一 pickup 状态等待下一批 Pencil 样本，Pencil 抬起后才完成、归一化并写入一条作者源/Undo 事务。正常的 `lostpointercapture` 不得取消该已抬笔批次，Pencil 尚未抬起时的异常 capture 丢失仍会取消手势；不逐帧完整编译 Fill、重建 Shape Helper 或刷新 Ink 硬阴影深度。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 均使用 Painting 当前的表面坐标和编译规则；Cylinder side chart 在环绕方向连续，Cylinder cap 与 Frustum 的六个面都保有独立 Fill 图表。
 - 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。Water 与 Water Eraser 额外提供 Session 持久化的 Soft Radius 与 Water Opacity；光标以恒定屏幕细线的实线核心加精确对应 Feather 外半径的虚线外框显示，增大半径不会加粗核心轮廓。
 - 支持直线辅助；其端点状态保存在作者数据中，不进入编译几何哈希。
 - 调色板可新增、删除、直接改色和触控排序，最多 32 色，并作为 Editor Session 独立保存。颜色工具将色板固定在左侧栏底部，色块显示缩放同样随 Session 保存；色块区域独立纵向滚动，不与底部工具或 Water 参数争抢空间。
 - Apple Pencil 使用 Pointer Events、合并事件和可用时的 `pointerrawupdate`；压感开启时只有非零 raw 压力才取代合并事件，避免 iPad Safari 的零压力 raw 更新使压感失效。Pencil 尚未抬起时的手势取消、失焦和 Pointer Capture 丢失都会丢弃未提交临时数据并清理状态；Fill Blur 已抬笔后的正常 capture release 会保留增量批次直至提交。
 - 自适应稳定器在采样阶段平滑表面点，不在提交后重解释作者轨迹。
+- `WorkspaceRenderer` 使用内部自适应渲染比例：高 DPI 初始 backing store 限制在约 `2,000,000` 物理像素，比例在 `1..2` 内按连续慢帧/富余帧以 `0.25` 调整，并在 Pencil 手势及其待完成 Smudge 队列期间锁定；不新增质量设置、不修改作者数据或 Watercolor 视觉路径。
 - 压感默认开启且始终有可见开关。开启时 Fill Brush、Fill Eraser 与 Fill Blur 的每个盖印半径及可见光标按采样压力的 `0.05～1` 范围缩放，Fill Blur 的混色采样半径使用同一比例；Water 与 Water Eraser 的每个盖印按同一比例缩放 `fillWaterOpacity`，但笔刷尺寸和羽化半径不变。关闭时新 Outline 点写入 `pressure: 1`，这些工具使用完整配置值；旧笔画不会被回写。
 - 正式落笔后的 Ink 编译在常驻编译 Worker 中完成。Worker 在初始载入或 Shape 集合改变时保存 Group 作者源和轻量 Shape hash；每次提交只接收受影响 Shape、只回传该 Shape 的派生缓存，未变 Shape 的 Ribbon/Fill 留在主文档复用。Worker 结果作为派生缓存协调回主文档，不增加历史或内容 revision。
 - 已提交的 Outline 预览会保留至对应 Shape 的 Worker 派生缓存回写并挂载后再释放，避免松笔时出现可见空档；取消手势和切换工作场景会立即清理该预览。
@@ -102,8 +103,8 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 9 个 Vitest 文件、95 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
-- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、参考地形/地块边缘/无限网格/坐标轴四个显示开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、Painting Ink Appearance 精确默认值/迁移/深拷贝/范围归一化、Source/Watercolor 双材质与 Fill/Ribbon 分层、MRT capture、三层非时域扩散、原始硬阴影深度及 Source 单中心/Watercolor 连续边界、多个 Group、五种 Shape 的 Outline/Fill 编译、Fill Brush/Fill Eraser/Fill Blur 压感半径缩放与 Water/Water Eraser 压感强度缩放、连续大笔刷 Blur 的固定帧预算、局部 RGBA 上传与 GPU 资源复用、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
+- 10 个 Vitest 文件、99 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、参考地形/地块边缘/无限网格/坐标轴四个显示开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、Painting Ink Appearance 精确默认值/迁移/深拷贝/范围归一化、Source/Watercolor 双材质与 Fill/Ribbon 分层、MRT capture、三层非时域扩散、原始硬阴影深度及 Source 单中心/Watercolor 连续边界、多个 Group、五种 Shape 的 Outline/Fill 编译、Fill Brush/Fill Eraser/Fill Blur 压感半径缩放与 Water/Water Eraser 压感强度缩放、连续大笔刷 Blur 的时间片预算、队列耗尽后的继续追加、局部 RGBA 上传与 GPU 资源复用、自适应高 DPI 物理像素预算与交互锁定、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
 真实 Chrome 自动验收命令：

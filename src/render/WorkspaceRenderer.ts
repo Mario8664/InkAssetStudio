@@ -81,6 +81,7 @@ import { TerrainRenderer } from './TerrainRenderer';
 import { createTerrainBatchGeometry } from './terrainGeometry';
 import { disposeObjectTree } from './dispose';
 import { PencilPresenceTracker, canNavigateWithFinger } from '../editor/pointerInput';
+import { AdaptiveRenderScale } from './AdaptiveRenderScale';
 
 export const TERRAIN_PREVIEW_COLOR = '#74c7f7';
 export const TERRAIN_PREVIEW_OPACITY = 0.42;
@@ -167,6 +168,7 @@ export class WorkspaceRenderer {
   private readonly ambientLight = new AmbientLight(0xffffff, 0.22);
   private readonly hardShadow: InkHardShadowMap;
   private readonly watercolorFill: InkWatercolorFillLayer;
+  private readonly adaptiveRenderScale = new AdaptiveRenderScale();
   private readonly raycaster = new Raycaster();
   private readonly pointer = new Vector2();
   private readonly inkEntries = new Map<string, InkRenderEntry>();
@@ -701,6 +703,11 @@ export class WorkspaceRenderer {
     window.requestAnimationFrame(this.render);
   }
 
+  /** Locks adaptive render-scale target replacement during Pencil input. */
+  setInkRenderScaleInteractionActive(active: boolean): void {
+    this.adaptiveRenderScale.setInteractionActive(active);
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -1140,19 +1147,22 @@ export class WorkspaceRenderer {
     const bounds = this.canvas.getBoundingClientRect();
     const width = Math.max(1, Math.round(bounds.width));
     const height = Math.max(1, Math.round(bounds.height));
+    const pixelRatio = this.adaptiveRenderScale.setViewport(width, height, window.devicePixelRatio || 1);
+    this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height, false);
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
     this.composer.setSize(width, height);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.referenceLayer.setSize(width, height, this.renderer.getPixelRatio());
-    this.watercolorFill.setSize(width, height, this.renderer.getPixelRatio());
+    this.referenceLayer.setSize(width, height, pixelRatio);
+    this.watercolorFill.setSize(width, height, pixelRatio);
     this.requestRender();
   };
 
   private readonly render = (): void => {
     this.frameRequested = false;
     if (this.disposed) return;
+    const frameStartedAt = performance.now();
     this.camera.updateMatrixWorld();
     this.editorGuides.update();
     const hasReference = this.referenceLayer.render(this.scene, this.camera, new Set<Object3D>([this.terrain.referenceRoot]));
@@ -1160,6 +1170,8 @@ export class WorkspaceRenderer {
     if (hasReference) this.renderReferenceOutput();
     this.renderInkDisplay(hasReference);
     this.renderEditorOverlay();
+    const nextPixelRatio = this.adaptiveRenderScale.reportFrame(performance.now() - frameStartedAt, performance.now());
+    if (nextPixelRatio !== null) this.handleResize();
   };
 
   /** Stage 5: ACES + sRGB applies only to the captured Map Reference display. */

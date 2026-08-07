@@ -7,6 +7,7 @@ import {
   consumeInkFillBlurRgbaPatches,
   compileInkFill,
   createInkFillBlurWork,
+  finalizeInkFillBlurWork,
   consumeInkFillWaterAlphaPatches,
   createInkFillWaterStrokeState,
   createInkCuboidShape,
@@ -122,6 +123,24 @@ describe('Ink Fill water tools', () => {
     expect(patches.some((patch) => patch.rgba.length > 0)).toBe(true);
     expect(result).toEqual(blurInkFill(source, points, 0.5, 'circle'));
   }, 15_000);
+
+  it('keeps one live Smudge pickup batch after it drains between Pencil samples', () => {
+    const redFill = paintInkFill(createInkPlaneShape('z', { x: 0, y: 0, z: 0 }), [center], '#ff004d', 0.5, 'square');
+    const source = paintInkFill(redFill, [{ x: -0.12, y: 0, pressure: 1 }], '#29adff', 0.06, 'circle');
+    const points = [
+      { x: -0.12, y: 0, pressure: 1 },
+      { x: 0, y: 0, pressure: 1 },
+      { x: 0.12, y: 0, pressure: 1 },
+    ];
+    const work = createInkFillBlurWork(source, points.slice(0, 2), 0.2, 'circle')!;
+    while (!work.complete) processInkFillBlurWork(work, 256);
+
+    expect(appendInkFillBlurWorkPoints(work, points.slice(1), 0.2)).toBe(true);
+    expect(work.complete).toBe(false);
+    while (!work.complete) processInkFillBlurWork(work, 256);
+
+    expect(finalizeInkFillBlurWork(work)).toEqual(blurInkFill(source, points, 0.2, 'circle'));
+  });
 
   it('smudges only authored Fill RGB while retaining its opacity encoding', () => {
     const plane = createInkPlaneShape('z', { x: 0, y: 0, z: 0 });

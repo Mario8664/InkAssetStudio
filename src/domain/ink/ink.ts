@@ -837,7 +837,7 @@ export function blurInkFill(
   if (!work) return shape;
   let changed = false;
   while (!work.complete) changed = processInkFillBlurWork(work, Number.MAX_SAFE_INTEGER).changed || changed;
-  return changed ? { ...shape, fill: work.fill } : shape;
+  return changed ? finalizeInkFillBlurWork(work) : shape;
 }
 
 /** Paints Watercolor wetness into existing opaque Fill pixels with an outer feather. */
@@ -919,10 +919,13 @@ export function appendInkFillBlurWorkPoints(
   points: readonly InkSurfacePoint[],
   size: number,
 ): boolean {
-  if (work.complete || points.length === 0 || !Number.isFinite(size) || size <= 0) return false;
+  if (points.length === 0 || !Number.isFinite(size) || size <= 0) return false;
   const stamps = collectInkFillBlurStamps(work.shape, points, size);
   if (stamps.length === 0) return false;
   work.stamps.push(...stamps);
+  // A live Pencil gesture can briefly catch up with its current samples before
+  // the next raw/coalesced event arrives. Keep the same pickup state alive.
+  work.complete = false;
   return true;
 }
 
@@ -958,7 +961,6 @@ export function processInkFillBlurWork(work: InkFillBlurWork, maximumTargetCount
   }
   if (work.nextStampIndex >= work.stamps.length) {
     work.complete = true;
-    normalizeInkFillLayer(work.fill);
   }
   return {
     shape: { ...work.shape, fill: work.fill },
@@ -966,6 +968,12 @@ export function processInkFillBlurWork(work: InkFillBlurWork, maximumTargetCount
     processedTargetCount,
     changed,
   };
+}
+
+/** Compacts one drained Smudge batch exactly once, when its gesture is released. */
+export function finalizeInkFillBlurWork(work: InkFillBlurWork): InkShape {
+  if (work.complete) normalizeInkFillLayer(work.fill);
+  return { ...work.shape, fill: work.fill };
 }
 
 /** Returns changed RGBA texture runs since the previous incremental Blur preview. */
