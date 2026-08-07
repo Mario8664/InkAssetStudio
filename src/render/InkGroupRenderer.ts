@@ -549,13 +549,37 @@ export function updateInkShapeFillRgbaPatches(
     });
   }
 
-  const touchedTextures = new Set(operations.map((operation) => operation.texture));
+  const pendingRanges = new Map<DataTexture, Array<readonly [number, number]>>();
   for (const operation of operations) {
     const firstPixel = operation.textureY * operation.image.width + operation.textureX;
     operation.image.data.set(operation.rgba, firstPixel * 4);
-    operation.texture.addUpdateRange(firstPixel * 4, operation.rgba.length);
+    let ranges = pendingRanges.get(operation.texture);
+    if (!ranges) {
+      operation.texture.clearUpdateRanges();
+      ranges = [];
+      pendingRanges.set(operation.texture, ranges);
+    }
+    ranges.push([firstPixel * 4, firstPixel * 4 + operation.rgba.length]);
   }
-  for (const texture of touchedTextures) texture.needsUpdate = true;
+  for (const [texture, ranges] of pendingRanges) {
+    ranges.sort((left, right) => left[0] - right[0]);
+    let start = -1;
+    let end = -1;
+    for (const range of ranges) {
+      if (start < 0) {
+        start = range[0];
+        end = range[1];
+      } else if (range[0] <= end) {
+        end = Math.max(end, range[1]);
+      } else {
+        texture.addUpdateRange(start, end - start);
+        start = range[0];
+        end = range[1];
+      }
+    }
+    if (start >= 0) texture.addUpdateRange(start, end - start);
+    texture.needsUpdate = true;
+  }
   return true;
 }
 

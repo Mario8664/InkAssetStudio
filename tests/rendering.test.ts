@@ -536,6 +536,7 @@ describe('Reference rendering', () => {
 
     expect(patches.length).toBeGreaterThan(0);
     expect(updateInkShapeFillRgbaPatches(root, patches)).toBe(true);
+    expect(texture.updateRanges.length).toBeLessThan(patches.length);
     expect(mesh.userData.inkFillTexture).toBe(texture);
     expect(mesh.geometry).toBe(geometry);
     expect(mesh.material).toBe(material);

@@ -67,6 +67,8 @@ type InkFillBlurStamp = {
   phase: 'capture' | 'apply';
   nextTargetIndex: number;
   readonly samples: InkFillBlurSample[];
+  targetCoordinates?: readonly (InkFillPixelCoordinate | null)[];
+  sourceCoordinates?: readonly (InkFillPixelCoordinate | null)[];
 };
 
 type InkFillBlurTargetOffset = Readonly<{ x: number; y: number }>;
@@ -937,8 +939,13 @@ export function processInkFillBlurWork(work: InkFillBlurWork, maximumTargetCount
   let changed = false;
   while (processedTargetCount < limit && work.nextStampIndex < work.stamps.length) {
     const stamp = work.stamps[work.nextStampIndex]!;
-    const offsets = getInkFillBlurTargetOffsets(Math.ceil(stamp.radius));
+    const range = Math.ceil(stamp.radius);
+    const offsets = getInkFillBlurTargetOffsets(range);
     if (stamp.phase === 'capture') {
+      if (!stamp.targetCoordinates || !stamp.sourceCoordinates) {
+        stamp.targetCoordinates = buildInkFillBlurCoordinateTable(work.shape, stamp.center, range);
+        stamp.sourceCoordinates = buildInkFillBlurCoordinateTable(work.shape, stamp.sourceCenter, range);
+      }
       const offset = offsets[stamp.nextTargetIndex];
       if (!offset) {
         stamp.phase = 'apply';
@@ -947,7 +954,15 @@ export function processInkFillBlurWork(work: InkFillBlurWork, maximumTargetCount
       }
       stamp.nextTargetIndex += 1;
       processedTargetCount += 1;
-      captureInkFillSmudgeTarget(work, stamp, offset);
+      const diameter = range * 2 + 1;
+      const coordinateIndex = (offset.y + range) * diameter + offset.x + range;
+      captureInkFillSmudgeTarget(
+        work,
+        stamp,
+        offset,
+        stamp.targetCoordinates![coordinateIndex] ?? null,
+        stamp.sourceCoordinates![coordinateIndex] ?? null,
+      );
       continue;
     }
     const sample = stamp.samples[stamp.nextTargetIndex];
@@ -986,11 +1001,20 @@ export function consumeInkFillBlurRgbaPatches(work: InkFillBlurWork): InkFillRgb
       while (start < pixels.length) {
         let end = start + 1;
         while (end < pixels.length && pixels[end]![0] === pixels[end - 1]![0] + 1) end += 1;
+        const rgba = new Uint8Array((end - start) * 4);
+        for (let index = start; index < end; index += 1) {
+          const pixel = pixels[index]![1];
+          const outputOffset = (index - start) * 4;
+          rgba[outputOffset] = pixel[0];
+          rgba[outputOffset + 1] = pixel[1];
+          rgba[outputOffset + 2] = pixel[2];
+          rgba[outputOffset + 3] = pixel[3];
+        }
         patches.push({
           id,
           x: pixels[start]![0],
           y,
-          rgba: Uint8Array.from(pixels.slice(start, end).flatMap((entry) => entry[1])),
+          rgba,
         });
         start = end;
       }
@@ -1056,12 +1080,12 @@ function captureInkFillSmudgeTarget(
   work: InkFillBlurWork,
   stamp: InkFillBlurStamp,
   offset: InkFillBlurTargetOffset,
+  targetCoordinate: InkFillPixelCoordinate | null,
+  sourceCoordinate: InkFillPixelCoordinate | null,
 ): void {
   const deltaX = offset.x + Math.floor(stamp.center.x) + 0.5 - stamp.center.x;
   const deltaY = offset.y + Math.floor(stamp.center.y) + 0.5 - stamp.center.y;
   if (work.brush === 'circle' && deltaX * deltaX + deltaY * deltaY > stamp.radius * stamp.radius) return;
-  const targetCoordinate = offsetInkFillPixelCoordinate(work.shape, stamp.center, offset.x, offset.y);
-  const sourceCoordinate = offsetInkFillPixelCoordinate(work.shape, stamp.sourceCenter, offset.x, offset.y);
   if (!targetCoordinate || !sourceCoordinate) return;
   const targetX = Math.floor(targetCoordinate.x);
   const targetY = Math.floor(targetCoordinate.y);
@@ -1090,6 +1114,43 @@ function captureInkFillSmudgeTarget(
       sourcePixel.rgba[sourcePixel.offset + 3] ?? INK_FILL_DRY_ALPHA,
     ],
   });
+}
+
+/** Builds the same X-then-Y chart walk as offsetInkFillPixelCoordinate, but
+ * reuses each horizontal prefix for the whole brush footprint. */
+function buildInkFillBlurCoordinateTable(
+  shape: InkShape,
+  origin: InkFillPixelCoordinate,
+  range: number,
+): readonly (InkFillPixelCoordinate | null)[] {
+  const diameter = range * 2 + 1;
+  const table = new Array<InkFillPixelCoordinate | null>(diameter * diameter).fill(null);
+  const horizontal = new Array<InkFillPixelCoordinate | null>(diameter).fill(null);
+  const base: InkFillPixelCoordinate = { ...origin, x: Math.floor(origin.x), y: Math.floor(origin.y) };
+  horizontal[range] = base;
+  for (let index = range + 1; index < diameter; index += 1) {
+    const previous = horizontal[index - 1];
+    horizontal[index] = (previous && getInkFillNeighbour(shape, previous, 1, 0)) ?? null;
+  }
+  for (let index = range - 1; index >= 0; index -= 1) {
+    const previous = horizontal[index + 1];
+    horizontal[index] = (previous && getInkFillNeighbour(shape, previous, -1, 0)) ?? null;
+  }
+  for (let horizontalIndex = 0; horizontalIndex < diameter; horizontalIndex += 1) {
+    const horizontalOrigin = horizontal[horizontalIndex] ?? null;
+    table[range * diameter + horizontalIndex] = horizontalOrigin;
+    let current = horizontalOrigin;
+    for (let y = 1; y <= range; y += 1) {
+      current = (current && getInkFillNeighbour(shape, current, 0, 1)) ?? null;
+      table[(range + y) * diameter + horizontalIndex] = current;
+    }
+    current = horizontalOrigin;
+    for (let y = 1; y <= range; y += 1) {
+      current = (current && getInkFillNeighbour(shape, current, 0, -1)) ?? null;
+      table[(range - y) * diameter + horizontalIndex] = current;
+    }
+  }
+  return table;
 }
 
 function applyInkFillSmudgeTarget(work: InkFillBlurWork, sample: InkFillBlurSample): boolean {

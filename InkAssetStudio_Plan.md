@@ -251,7 +251,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 
 ## 9. 性能、资源与可靠性要求
 
-`Fill Blur` 保留工具名称，但作者语义为方向性拾色拖抹（Smudge），不是局部二维 Gaussian。首次落笔只拾取既有不透明 Fill RGB；每次移动把前一 dab 的同形状 pickup footprint 拖入当前 dab 并以固定比例混合。单个 stamp 必须先捕获全部 source/target texel、再按 Pencil 顺序写入，避免刚写颜色被同一 stamp 回读；每个目标 texel只执行一次 pickup 读取和一次写入。source/target footprint 都沿既有 chart neighbour 规则跨 Shape seam；Fill coverage 与 Water alpha 原样保留。该过程仅维护临时稀疏 Fill 工作副本，以每帧最多 `4 ms`、最多 `4096` 次 capture/write、每次至多 `256` 次操作的时间片推进并上传局部 RGBA 行段。工作副本可在下一批 raw/coalesced Pencil 样本抵达前短暂耗尽，但必须保持同一 pickup 状态以继续追加；只在 Pencil 松笔、剩余队列完成后归一化并形成一条作者源/Undo 事务。
+`Fill Blur` 保留工具名称，但作者语义为方向性拾色拖抹（Smudge），不是局部二维 Gaussian。首次落笔只拾取既有不透明 Fill RGB；每次移动把前一 dab 的同形状 pickup footprint 拖入当前 dab 并以固定比例混合。单个 stamp 必须先捕获全部 source/target texel、再按 Pencil 顺序写入，避免刚写颜色被同一 stamp 回读；每个目标 texel只执行一次 pickup 读取和一次写入。source/target footprint 都沿既有 chart neighbour 规则跨 Shape seam；Fill coverage 与 Water alpha 原样保留。每个 stamp 必须按既有 X 后 Y 邻接语义缓存 source/target footprint 坐标表并复用横向前缀，禁止为每个目标 texel 从中心重复走 seam；同一 `DataTexture` 的重叠或相邻 RGBA 更新范围必须合并。该过程仅维护临时稀疏 Fill 工作副本，以每帧最多 `4 ms`、最多 `4096` 次 capture/write、每次至多 `256` 次操作的时间片推进并上传局部 RGBA 行段。工作副本可在下一批 raw/coalesced Pencil 样本抵达前短暂耗尽，但必须保持同一 pickup 状态以继续追加；只在 Pencil 松笔、剩余队列完成后归一化并形成一条作者源/Undo 事务。
 
 - 指针拖动期间仅维护临时 Ribbon 或 Fill 工作副本；松手后才形成一次作者源写入和一条 Undo/Redo 记录。
 - Fill Blur 使用项目内的 transient、按 Pencil 顺序推进的 Smudge 批次：每帧以 `4 ms` 或 `4096` 次 pickup capture/write 为上限、每次至多 `256` 次操作，复用手势级 surface/block 索引；一个 stamp 只在完整捕获其 source/target 后才写入，且每个目标 texel不枚举卷积核。暂时耗尽的批次保留 pickup 状态，等待后续样本继续追加；Pencil 抬起后完成并归一化，再写入一次作者源与 Undo/Redo。预览只上传变更的连续 RGBA 行段，不重编译完整 Fill、不重建 Shape Helper，也不刷新仅依赖 alpha 的 Ink 硬阴影深度。

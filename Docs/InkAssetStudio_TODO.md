@@ -50,6 +50,7 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。`alpha < 128` 为透明；`255` 为干燥不透明；`128..254` 保存 Watercolor 湿度并仍按不透明 Fill 处理。Water/Water Eraser 只对已有覆盖调整 alpha，保持 RGB 不变；同一手势去重、不同手势叠加。
 - Water/Water Eraser 的盖章热路径按 Surface/稀疏块建立索引，并以数值坐标保存手势去重状态；实时预览只收集本帧变化的连续 alpha 行段并局部上传既有 `DataTexture`，不再逐帧完整编译 Fill、扫描整张纹理、重建 Shape Helper 或刷新硬阴影。
 - Fill Blur 保留工具名称但改为方向性拾色拖抹（Smudge）：首次 Pencil dab 只拾取当前局部颜料；每次移动从前一 dab 的同形状 footprint 读取 RGB，再以固定比例拖入当前 dab。单个 stamp 先捕获全部 source/target texel，再按 Pencil 顺序写入，避免新写颜色回读或旧后台任务覆盖当前笔势；每个目标 texel只有一次 pickup 读取和一次写入，不再枚举 Gaussian 模糊核。Fill coverage 与 Water alpha 保持不变，两个 footprint 均使用既有 chart neighbour 映射跨 seam。每帧以 `4 ms` 或 `4096` 操作为上限、每次至多 `256` 操作推进，实时预览只上传本帧变更的连续 RGBA 行段；队列耗尽时保持同一 pickup 状态等待下一批 Pencil 样本，Pencil 抬起后才完成、归一化并写入一条作者源/Undo 事务。正常的 `lostpointercapture` 不得取消该已抬笔批次，Pencil 尚未抬起时的异常 capture 丢失仍会取消手势；不逐帧完整编译 Fill、重建 Shape Helper 或刷新 Ink 硬阴影深度。
+- Fill Blur 的 footprint 坐标表按既有 X 后 Y 邻接语义复用横向前缀，不为每个目标 texel 从 dab 中心逐像素重走图表；RGBA patch 直接填充 `Uint8Array`，同一 Fill 纹理的重叠或相邻范围合并为更少的 GPU 上传。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 均使用 Painting 当前的表面坐标和编译规则；Cylinder side chart 在环绕方向连续，Cylinder cap 与 Frustum 的六个面都保有独立 Fill 图表。
 - 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。Water 与 Water Eraser 额外提供 Session 持久化的 Soft Radius 与 Water Opacity；光标以恒定屏幕细线的实线核心加精确对应 Feather 外半径的虚线外框显示，增大半径不会加粗核心轮廓。
 - 支持直线辅助；其端点状态保存在作者数据中，不进入编译几何哈希。
