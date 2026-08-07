@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createInkOutlineStroke, createInkPlaneShape, getCameraFacingInkPlaneRotation } from '../src/domain/ink/ink';
-import { chooseInkFallbackPlane, eraseInkOutline, resolveInkGesturePoint } from '../src/editor/InkEditorController';
+import {
+  chooseInkFallbackPlane,
+  eraseInkOutline,
+  resolveInkGesturePoint,
+  shouldCancelInkGestureOnLostPointerCapture,
+} from '../src/editor/InkEditorController';
 import { closestRayLineParameter } from '../src/editor/PencilTransformController';
 import { PencilPresenceTracker, canNavigateWithFinger, isApplePencilPointer, isFingerNavigationPointer } from '../src/editor/pointerInput';
 import { Euler, Quaternion, Vector3 } from 'three';
@@ -84,6 +89,11 @@ describe('iPad editor input boundaries', () => {
     pencil.observe({ ...penHover, type: 'pointerleave' } as PointerEvent);
     expect(pencil.isPresent).toBe(false);
     expect(canNavigateWithFinger(finger, pencil.isPresent)).toBe(true);
+  });
+
+  it('keeps a released Blur batch alive through the browser\'s normal capture release', () => {
+    expect(shouldCancelInkGestureOnLostPointerCapture(false)).toBe(true);
+    expect(shouldCancelInkGestureOnLostPointerCapture(true)).toBe(false);
   });
 
   it('projects intrinsic size drags onto the selected Shape axis', () => {

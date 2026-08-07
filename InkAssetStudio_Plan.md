@@ -247,7 +247,7 @@ Ink Shape 辅助面必须与 Painting 当前编辑器保持一致，而不是使
 
 界面至少包含：顶部文档栏、可收起 Group Outliner、可收起 Shape/属性面板、主视口、底部 Ink 工具栏、地形工具抽屉、Undo/Redo 和导出入口。颜色工具的调色板固定在左侧栏底部，以 Editor Session 持久化的缩放控制改变色块尺寸；最多 32 个色块在独立区域中纵向触控滚动，不得挤压底部工具或参数栏。参考地形显隐以及 Source/Watercolor 外观切换必须常驻主视口顶层，详细参数仍由相应 Inspector 面板编辑。Undo/Redo 必须是带文字、始终直接可见且能清楚表达禁用状态的触控按钮，不能只显示难以辨认的小图标。触控目标必须适合 iPad，不能把桌面 Inspector 的窄行控件简单缩放后复用。
 
-Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合并事件；`pointerrawupdate` 仅作为浏览器支持时的增强，不能假设 iPad Safari 一定提供它。压感开启时，只有带有效非零压力的 raw 样本才能替代合并事件；零压力 raw 样本必须继续回退到合并事件，避免 iPad Safari 丢失真实 Pencil 压力。无压力、非 Pencil 或压感关闭时写入稳定的 `1`。手势被取消、失焦或失去 Pointer Capture 时必须丢弃未提交的临时操作并清理输入状态。
+Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合并事件；`pointerrawupdate` 仅作为浏览器支持时的增强，不能假设 iPad Safari 一定提供它。压感开启时，只有带有效非零压力的 raw 样本才能替代合并事件；零压力 raw 样本必须继续回退到合并事件，避免 iPad Safari 丢失真实 Pencil 压力。无压力、非 Pencil 或压感关闭时写入稳定的 `1`。Pencil 尚未抬起时，手势被取消、失焦或失去 Pointer Capture 必须丢弃未提交的临时操作并清理输入状态；Fill Blur 抬笔后浏览器正常触发的 `lostpointercapture` 必须保留剩余增量批次，待其完成后提交一次作者源和 Undo/Redo。
 
 ## 9. 性能、资源与可靠性要求
 
@@ -289,7 +289,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - 可见 Fill 使用 `DoubleSide` 并在背面翻转光照法线；专属 alpha-clip hard-shadow depth/owner pass 同样使用 `DoubleSide`。内部紧凑图表裁剪由透明 guard texel 表达，物理图表边缘使用 `ClampToEdge`，三条 alpha 查询路径共享同一纹理 UV 映射。
 - 描边/擦除/填色/Fill 擦除/局部混色模糊/Water 标记与擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成；非颜色工具不显示颜色或色板控件。画笔核心光标使用恒定屏幕线宽，改变世界单位半径不得同步加粗轮廓。
 - Apple Pencil 压感开启时记录有效压力，并以 `0.05～1` 比例缩放 Fill Brush、Fill Eraser 与 Fill Blur 的作用半径，缩放 Water 与 Water Eraser 的湿化/复干强度；关闭时新描边全部记录为 `1`，这些工具使用完整配置值；切换不会改写历史笔画。
-- 失焦、取消和 Pointer Capture 丢失不会产生半条已保存笔画或卡住的工具状态。
+- 失焦、取消和 Pencil 尚未抬起时的 Pointer Capture 丢失不会产生半条已保存笔画或卡住的工具状态；Fill Blur 抬笔后的正常 capture release 会完成剩余批次并保留该笔结果。
 
 ### 10.4 兼容与导出
 

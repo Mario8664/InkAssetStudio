@@ -207,7 +207,9 @@ export class InkEditorController {
   };
 
   private readonly handleLostCapture = (event: PointerEvent): void => {
-    if (event.pointerId === this.pointerId) this.cancelGesture();
+    if (event.pointerId === this.pointerId && shouldCancelInkGestureOnLostPointerCapture(this.blurPointerReleased)) {
+      this.cancelGesture();
+    }
   };
 
   private readonly handlePointerLeave = (event: PointerEvent): void => {
@@ -477,6 +479,15 @@ export function resolvePointerPressure(
   if (!enabled || event.pointerType !== 'pen') return 1;
   if (!Number.isFinite(event.pressure) || event.pressure <= 0) return previousPressure ?? 1;
   return Math.min(1, Math.max(0.05, event.pressure));
+}
+
+/**
+ * Pointer capture is normally released immediately after Pencil-up. Blur keeps
+ * its in-memory batch alive past that event, so that expected release must not
+ * discard the batch before its remaining frames can commit one author edit.
+ */
+export function shouldCancelInkGestureOnLostPointerCapture(blurPointerReleased: boolean): boolean {
+  return !blurPointerReleased;
 }
 
 export function hasUsablePencilPressure(event: Pick<PointerEvent, 'pointerType' | 'pressure'>): boolean {

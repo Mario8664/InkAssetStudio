@@ -78,6 +78,34 @@ async function exportWorkFile() {
   return { json: JSON.parse(await readFile(path, 'utf8')), path };
 }
 
+async function setFillColor(color) {
+  await page.locator('.tool-options .color-field input[type="color"]').evaluate((input, value) => {
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, color);
+}
+
+function countChangedFillRgbPixels(before, after) {
+  const blockKey = (assetId, shapeId, surfaceId, blockX, blockY) => `${assetId}:${shapeId}:${surfaceId}:${blockX}:${blockY}`;
+  const beforeBlocks = new Map();
+  for (const asset of before.ink.embeddedAssets) for (const shape of asset.group.shapes) for (const surface of shape.fill.surfaces) {
+    for (const block of surface.blocks) beforeBlocks.set(blockKey(asset.assetId, shape.id, surface.id, block.x, block.y), block.rgba);
+  }
+  let changed = 0;
+  for (const asset of after.ink.embeddedAssets) for (const shape of asset.group.shapes) for (const surface of shape.fill.surfaces) {
+    for (const block of surface.blocks) {
+      const previous = beforeBlocks.get(blockKey(asset.assetId, shape.id, surface.id, block.x, block.y));
+      if (!previous) continue;
+      for (let index = 0; index < block.rgba.length; index += 4) {
+        if (block.rgba[index] !== previous[index]
+          || block.rgba[index + 1] !== previous[index + 1]
+          || block.rgba[index + 2] !== previous[index + 2]) changed += 1;
+      }
+    }
+  }
+  return changed;
+}
+
 async function layoutSummary(label) {
   return page.evaluate((name) => ({
     label: name,
@@ -138,13 +166,25 @@ try {
   // Keep the automated stroke inside that visible central surface.
   await dragPencil(0.488, 0.405, 0.512, 0.445);
   await page.getByRole('button', { name: 'Fill Paint' }).click();
+  await page.getByLabel('Fill brush size').fill('0.4');
+  await page.getByLabel('Fill brush size').press('Enter');
+  await setFillColor('#ff004d');
   await dragPencil(0.495, 0.412, 0.507, 0.438);
   await page.waitForTimeout(350);
+  await page.getByLabel('Fill brush size').fill('0.08');
+  await page.getByLabel('Fill brush size').press('Enter');
+  await setFillColor('#29adff');
+  await dragPencil(0.495, 0.412, 0.507, 0.438);
+  await page.waitForTimeout(350);
+  const beforeBlur = await exportWorkFile();
   await page.getByRole('button', { name: 'Blur' }).click();
   await page.getByLabel('Fill brush size').fill('0.4');
   await page.getByLabel('Fill brush size').press('Enter');
   await dragPencil(0.495, 0.412, 0.507, 0.438);
-  await page.waitForTimeout(1800);
+  await page.waitForTimeout(6000);
+  const afterBlur = await exportWorkFile();
+  const blurredRgbPixels = countChangedFillRgbPixels(beforeBlur.json, afterBlur.json);
+  if (blurredRgbPixels === 0) throw new Error('Released Blur stroke did not persist any Fill RGB changes.');
 
   await pressure.click();
   if (!(await pressure.textContent())?.includes('On')) throw new Error('Pressure On toggle did not update.');
