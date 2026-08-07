@@ -27,7 +27,61 @@ function pixelAt(shape: InkShape, x = 0, y = 0): number[] {
   return surface!.rgba.slice(offset, offset + 4);
 }
 
+function coveragePixelCount(shape: InkShape): number {
+  return compileInkFill(shape).reduce((count, surface) => {
+    for (let offset = 3; offset < surface.rgba.length; offset += 4) {
+      if (surface.rgba[offset]! >= INK_FILL_COVERAGE_ALPHA_MIN) count += 1;
+    }
+    return count;
+  }, 0);
+}
+
+function changedRgbPixelCount(before: InkShape, after: InkShape): number {
+  const previous = new Map(compileInkFill(before).map((surface) => [surface.id, surface]));
+  return compileInkFill(after).reduce((count, surface) => {
+    const prior = previous.get(surface.id);
+    if (!prior) return count;
+    for (let offset = 0; offset < surface.rgba.length; offset += 4) {
+      if (surface.rgba[offset] !== prior.rgba[offset]
+        || surface.rgba[offset + 1] !== prior.rgba[offset + 1]
+        || surface.rgba[offset + 2] !== prior.rgba[offset + 2]) count += 1;
+    }
+    return count;
+  }, 0);
+}
+
 describe('Ink Fill water tools', () => {
+  it('scales Fill Brush and Fill Eraser coverage by sampled pressure', () => {
+    const shape = createInkPlaneShape('z', { x: 0, y: 0, z: 0 });
+    const lightBrush = paintInkFill(shape, [{ x: 0, y: 0, pressure: 0.25 }], '#29adff', 0.2, 'circle');
+    const fullBrush = paintInkFill(shape, [{ x: 0, y: 0, pressure: 1 }], '#29adff', 0.2, 'circle');
+    const lightlyErased = paintInkFill(fullBrush, [{ x: 0, y: 0, pressure: 0.25 }], '#29adff', 0.2, 'circle', true);
+    const fullyErased = paintInkFill(fullBrush, [{ x: 0, y: 0, pressure: 1 }], '#29adff', 0.2, 'circle', true);
+
+    expect(coveragePixelCount(lightBrush)).toBeLessThan(coveragePixelCount(fullBrush));
+    expect(coveragePixelCount(lightlyErased)).toBeGreaterThan(coveragePixelCount(fullyErased));
+  });
+
+  it('scales Water and Water Eraser strength by sampled pressure', () => {
+    const dry = createPaintedPlane();
+    const lowPressureWet = paintInkFillWater(dry, [{ x: 0, y: 0, pressure: 0.25 }], 0.02, 0, 'square', 0.8);
+    const fullPressureWet = paintInkFillWater(dry, [{ x: 0, y: 0, pressure: 1 }], 0.02, 0, 'square', 0.8);
+    const lowPressureDry = eraseInkFillWater(fullPressureWet, [{ x: 0, y: 0, pressure: 0.25 }], 0.02, 0, 'square', 0.8);
+    const fullPressureDry = eraseInkFillWater(fullPressureWet, [{ x: 0, y: 0, pressure: 1 }], 0.02, 0, 'square', 0.8);
+
+    expect(pixelAt(lowPressureWet)[3]).toBeGreaterThan(pixelAt(fullPressureWet)[3]!);
+    expect(pixelAt(lowPressureDry)[3]).toBeLessThan(pixelAt(fullPressureDry)[3]!);
+  });
+
+  it('scales Fill Blur coverage and sampling radius by sampled pressure', () => {
+    const redFill = paintInkFill(createInkPlaneShape('z', { x: 0, y: 0, z: 0 }), [center], '#ff004d', 0.5, 'square');
+    const source = paintInkFill(redFill, [center], '#29adff', 0.04, 'square');
+    const lowPressureBlur = blurInkFill(source, [{ x: 0, y: 0, pressure: 0.25 }], 0.2, 'circle');
+    const fullPressureBlur = blurInkFill(source, [{ x: 0, y: 0, pressure: 1 }], 0.2, 'circle');
+
+    expect(changedRgbPixelCount(source, lowPressureBlur)).toBeLessThan(changedRgbPixelCount(source, fullPressureBlur));
+  });
+
   it('blurs only authored Fill RGB while retaining its opacity encoding', () => {
     const plane = createInkPlaneShape('z', { x: 0, y: 0, z: 0 });
     const painted = paintInkFill(

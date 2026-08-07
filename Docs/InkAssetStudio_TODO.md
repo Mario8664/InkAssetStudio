@@ -55,7 +55,7 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - 调色板可新增、删除、直接改色和触控排序，最多 32 色，并作为 Editor Session 独立保存。颜色工具将色板固定在左侧栏底部，色块显示缩放同样随 Session 保存；色块区域独立纵向滚动，不与底部工具或 Water 参数争抢空间。
 - Apple Pencil 使用 Pointer Events、合并事件和可用时的 `pointerrawupdate`；压感开启时只有非零 raw 压力才取代合并事件，避免 iPad Safari 的零压力 raw 更新使压感失效。手势取消、失焦和 Pointer Capture 丢失都会丢弃未提交临时数据并清理状态。
 - 自适应稳定器在采样阶段平滑表面点，不在提交后重解释作者轨迹。
-- 压感默认开启且始终有可见开关。关闭时新 Outline 点写入 `pressure: 1`；旧笔画不会被回写。
+- 压感默认开启且始终有可见开关。开启时 Fill Brush、Fill Eraser 与 Fill Blur 的每个盖印半径及可见光标按采样压力的 `0.05～1` 范围缩放，Fill Blur 的混色采样半径使用同一比例；Water 与 Water Eraser 的每个盖印按同一比例缩放 `fillWaterOpacity`，但笔刷尺寸和羽化半径不变。关闭时新 Outline 点写入 `pressure: 1`，这些工具使用完整配置值；旧笔画不会被回写。
 - 正式落笔后的 Ink 编译在常驻编译 Worker 中完成。Worker 在初始载入或 Shape 集合改变时保存 Group 作者源和轻量 Shape hash；每次提交只接收受影响 Shape、只回传该 Shape 的派生缓存，未变 Shape 的 Ribbon/Fill 留在主文档复用。Worker 结果作为派生缓存协调回主文档，不增加历史或内容 revision。
 - 已提交的 Outline 预览会保留至对应 Shape 的 Worker 派生缓存回写并挂载后再释放，避免松笔时出现可见空档；取消手势和切换工作场景会立即清理该预览。
 
@@ -101,8 +101,8 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 9 个 Vitest 文件、88 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
-- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、参考地形/地块边缘/无限网格/坐标轴四个显示开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、Painting Ink Appearance 精确默认值/迁移/深拷贝/范围归一化、Source/Watercolor 双材质与 Fill/Ribbon 分层、MRT capture、三层非时域扩散、原始硬阴影深度及 Source 单中心/Watercolor 连续边界、多个 Group、五种 Shape 的 Outline/Fill 编译、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
+- 9 个 Vitest 文件、91 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、参考地形/地块边缘/无限网格/坐标轴四个显示开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、Painting Ink Appearance 精确默认值/迁移/深拷贝/范围归一化、Source/Watercolor 双材质与 Fill/Ribbon 分层、MRT capture、三层非时域扩散、原始硬阴影深度及 Source 单中心/Watercolor 连续边界、多个 Group、五种 Shape 的 Outline/Fill 编译、Fill Brush/Fill Eraser/Fill Blur 压感半径缩放与 Water/Water Eraser 压感强度缩放、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 
 真实 Chrome 自动验收命令：

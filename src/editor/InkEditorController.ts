@@ -270,7 +270,7 @@ export class InkEditorController {
     const session = this.options.getSession();
     this.options.renderer.showCursor(
       hit,
-      getToolRadius(session),
+      getToolRadius(session, hit.point.pressure),
       session.fillBrushShape === 'square' && isFillTool(session.drawTool),
       getToolOuterRadius(session),
     );
@@ -340,7 +340,7 @@ export class InkEditorController {
     );
     if (hit) this.options.renderer.showCursor(
       hit,
-      getToolRadius(session),
+      getToolRadius(session, hit.point.pressure),
       session.fillBrushShape === 'square' && isFillTool(session.drawTool),
       getToolOuterRadius(session),
     );
@@ -635,10 +635,15 @@ function isWaterAdjustmentTool(tool: StudioEditorSession['drawTool']): boolean {
   return tool === 'fill-water' || tool === 'fill-water-eraser';
 }
 
-function getToolRadius(session: StudioEditorSession): number {
+function isPressureSizedFillTool(tool: StudioEditorSession['drawTool']): boolean {
+  return tool === 'fill-brush' || tool === 'fill-eraser' || tool === 'fill-blur';
+}
+
+function getToolRadius(session: StudioEditorSession, pressure = 1): number {
   if (session.drawTool === 'outline') return session.outlineWidth * 0.5;
   if (session.drawTool === 'outline-eraser') return session.outlineEraserWidth * 0.5;
-  return getInkFillBrushRadii(session.fillBrushSize).core / INK_FILL_PIXELS_PER_WORLD_UNIT;
+  const radius = getInkFillBrushRadii(session.fillBrushSize).core / INK_FILL_PIXELS_PER_WORLD_UNIT;
+  return isPressureSizedFillTool(session.drawTool) ? radius * Math.min(1, Math.max(0.05, pressure)) : radius;
 }
 
 function getToolOuterRadius(session: StudioEditorSession): number | undefined {

@@ -40,11 +40,11 @@ Studio 不是图片画板、Procreate 导入器、远程桌面，也不是完整
 
 Studio 的 Ink 工具状态必须提供始终可见、可随时切换的 `压感：开 / 关` 控件。
 
-- 默认开启，Apple Pencil 压力按当前 Ink 规则写入新描边点。
-- 关闭时，新描边采样统一写入 `pressure: 1`，忽略 Pencil 的原始压力。
+- 默认开启，Apple Pencil 压力按当前 Ink 规则写入新描边点，缩放 Fill Brush、Fill Eraser 与 Fill Blur 的作用半径，并缩放 Water 与 Water Eraser 的湿化/复干强度。
+- 关闭时，新描边采样统一写入 `pressure: 1`，Fill Brush、Fill Eraser 与 Fill Blur 均以配置的完整尺寸工作，Water 与 Water Eraser 均以配置的完整 Opacity 工作，忽略 Pencil 的原始压力。
 - 切换仅影响切换之后开始采样的新点；不得回写、归一化或重新解释已提交笔画的历史压力。
 - 该设置属于 Studio Editor Session，不属于 Ink Group、公开资产或交换文件中的作者内容。
-- Fill、Bucket Fill 和橡皮的尺寸继续由各自的工具数值决定，压感开关不改变它们的既有语义。
+- `fillBrushSize` 表示满压力时的最大尺寸；压感开启时，Fill Brush、Fill Eraser 与 Fill Blur 的每个盖印半径和可见光标按采样压力的 `0.05～1` 范围缩放，Fill Blur 的混色采样半径使用同一比例。`fillWaterOpacity` 表示满压力时的湿化/复干强度；Water 与 Water Eraser 的每个盖印按相同 `0.05～1` 范围缩放该强度，但笔刷尺寸和羽化半径不变。Outline Eraser 与 Bucket Fill 的尺寸继续由各自的工具数值决定，不受压感开关影响。
 
 ### 3.3 简化格子地图
 
@@ -287,7 +287,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 - Sphere/Cylinder 的 `surfaceOutline` 开关和宽度可实时预览、Undo/Redo、保存、导出和重新导入；Sphere 显示无接缝的外轮廓，Cylinder 仅显示两条侧面母线，二者均按 Fill alpha 裁切。
 - 可见 Fill 使用 `DoubleSide` 并在背面翻转光照法线；专属 alpha-clip hard-shadow depth/owner pass 同样使用 `DoubleSide`。内部紧凑图表裁剪由透明 guard texel 表达，物理图表边缘使用 `ClampToEdge`，三条 alpha 查询路径共享同一纹理 UV 映射。
 - 描边/擦除/填色/Fill 擦除/局部混色模糊/Water 标记与擦除/Bucket Fill/吸色/色板/笔宽/直线辅助均可在触摸 UI 下完成；非颜色工具不显示颜色或色板控件。画笔核心光标使用恒定屏幕线宽，改变世界单位半径不得同步加粗轮廓。
-- Apple Pencil 压感开启时记录有效压力；关闭时新描边全部记录为 `1`；切换不会改写历史笔画。
+- Apple Pencil 压感开启时记录有效压力，并以 `0.05～1` 比例缩放 Fill Brush、Fill Eraser 与 Fill Blur 的作用半径，缩放 Water 与 Water Eraser 的湿化/复干强度；关闭时新描边全部记录为 `1`，这些工具使用完整配置值；切换不会改写历史笔画。
 - 失焦、取消和 Pointer Capture 丢失不会产生半条已保存笔画或卡住的工具状态。
 
 ### 10.4 兼容与导出
@@ -341,7 +341,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 | 渲染 | Map Reference + 编辑网格 + 可切换 Ink Source/非 TAA Watercolor + Ink 硬阴影。 |
 | 常规阴影 / PBR | 不在移动端启用。 |
 | 灯光 | 完整参数可调；初值和 Reset 使用 Painting 当前保存值，不自动影响 Painting 全局灯光。 |
-| 压感 | 默认开启，可随时关闭；只影响新描边采样。 |
+| 压感 | 默认开启，可随时关闭；影响新描边采样、Fill Brush / Fill Eraser / Fill Blur 的作用半径，以及 Water / Water Eraser 的强度。 |
 | Surface Outline | Sphere/Cylinder Shape 配置；实时预览，不进入作者描边编译缓存。 |
 | 图片导入 | 不做。 |
 | 网络 | 当前不实现；离线能力先完成。 |

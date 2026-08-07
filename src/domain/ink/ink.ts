@@ -722,19 +722,35 @@ export function paintInkFill(
   const fill = cloneInkFillLayer(shape.fill);
   const copiedBlocks = new Set<InkFillBlock>();
   const rgba = erase ? [0, 0, 0, 0] : toInkFillRgba(color);
-  const radius = Math.max(0.5, size * INK_FILL_PIXELS_PER_WORLD_UNIT * 0.5);
-  let prior: InkFillPixelCoordinate | null = null;
+  let prior: (InkFillPixelCoordinate & { pressure: number }) | null = null;
   for (const point of points) {
-    const coordinate = getInkFillPixelCoordinate(shape, point);
-    if (!coordinate) continue;
+    const pixelCoordinate = getInkFillPixelCoordinate(shape, point);
+    if (!pixelCoordinate) continue;
+    const coordinate = { ...pixelCoordinate, pressure: normalizeInkFillPressure(point.pressure) };
+    const radius = getInkFillStampRadius(size, coordinate.pressure);
+    const priorRadius = prior ? getInkFillStampRadius(size, prior.pressure) : radius;
     const steps = prior && prior.id === coordinate.id
-      ? Math.max(1, Math.ceil(Math.hypot(coordinate.x - prior.x, coordinate.y - prior.y) / Math.max(1, radius * 0.5)))
+      ? Math.max(1, Math.ceil(Math.hypot(coordinate.x - prior.x, coordinate.y - prior.y) / Math.max(1, Math.min(priorRadius, radius) * 0.5)))
       : 1;
     for (let step = 1; step <= steps; step += 1) {
       const fraction = prior && prior.id === coordinate.id ? step / steps : 1;
       const x = prior && prior.id === coordinate.id ? prior.x + (coordinate.x - prior.x) * fraction : coordinate.x;
       const y = prior && prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * fraction : coordinate.y;
-      stampInkFill(fill, coordinate.id, x, y, coordinate.width, coordinate.height, radius, brush, rgba, copiedBlocks);
+      const pressure = prior && prior.id === coordinate.id
+        ? prior.pressure + (coordinate.pressure - prior.pressure) * fraction
+        : coordinate.pressure;
+      stampInkFill(
+        fill,
+        coordinate.id,
+        x,
+        y,
+        coordinate.width,
+        coordinate.height,
+        getInkFillStampRadius(size, pressure),
+        brush,
+        rgba,
+        copiedBlocks,
+      );
     }
     prior = coordinate;
   }
@@ -802,20 +818,33 @@ function blurInkFillLayer(
 ): InkFillLayer {
   const fill = cloneInkFillLayer(source);
   const copiedBlocks = new Set<InkFillBlock>();
-  const radius = Math.max(0.5, size * INK_FILL_PIXELS_PER_WORLD_UNIT * 0.5);
-  const blurRadius = Math.min(6, Math.max(1, Math.round(size * INK_FILL_PIXELS_PER_WORLD_UNIT * 0.25)));
-  let prior: InkFillPixelCoordinate | null = null;
+  let prior: (InkFillPixelCoordinate & { pressure: number }) | null = null;
   for (const point of points) {
-    const coordinate = getInkFillPixelCoordinate(shape, point);
-    if (!coordinate) continue;
+    const pixelCoordinate = getInkFillPixelCoordinate(shape, point);
+    if (!pixelCoordinate) continue;
+    const coordinate = { ...pixelCoordinate, pressure: normalizeInkFillPressure(point.pressure) };
+    const radius = getInkFillStampRadius(size, coordinate.pressure);
+    const priorRadius = prior ? getInkFillStampRadius(size, prior.pressure) : radius;
     const steps = prior && prior.id === coordinate.id
-      ? Math.max(1, Math.ceil(Math.hypot(coordinate.x - prior.x, coordinate.y - prior.y) / Math.max(1, radius * 0.5)))
+      ? Math.max(1, Math.ceil(Math.hypot(coordinate.x - prior.x, coordinate.y - prior.y) / Math.max(1, Math.min(priorRadius, radius) * 0.5)))
       : 1;
     for (let step = 1; step <= steps; step += 1) {
       const fraction = prior && prior.id === coordinate.id ? step / steps : 1;
       const x = prior && prior.id === coordinate.id ? prior.x + (coordinate.x - prior.x) * fraction : coordinate.x;
       const y = prior && prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * fraction : coordinate.y;
-      stampInkFillBlur(shape, source, fill, { ...coordinate, x, y }, radius, brush, blurRadius, copiedBlocks);
+      const pressure = prior && prior.id === coordinate.id
+        ? prior.pressure + (coordinate.pressure - prior.pressure) * fraction
+        : coordinate.pressure;
+      stampInkFillBlur(
+        shape,
+        source,
+        fill,
+        { ...coordinate, x, y },
+        getInkFillStampRadius(size, pressure),
+        brush,
+        getInkFillBlurRadius(size, pressure),
+        copiedBlocks,
+      );
     }
     prior = coordinate;
   }
@@ -889,11 +918,12 @@ function adjustInkFillWaterLayer(
   const { core: coreRadius, outer: totalRadius } = getInkFillBrushRadii(size, softRadius);
   const featherRadius = totalRadius - coreRadius;
   const amount = Math.min(1, Math.max(0, waterAmount));
-  let prior: InkFillPixelCoordinate | null = null;
+  let prior: (InkFillPixelCoordinate & { pressure: number }) | null = null;
   let changed = false;
   for (const point of points) {
-    const coordinate = getInkFillPixelCoordinate(shape, point);
-    if (!coordinate) continue;
+    const pixelCoordinate = getInkFillPixelCoordinate(shape, point);
+    if (!pixelCoordinate) continue;
+    const coordinate = { ...pixelCoordinate, pressure: normalizeInkFillPressure(point.pressure) };
     const steps = prior && prior.id === coordinate.id
       ? Math.max(1, Math.ceil(Math.hypot(coordinate.x - prior.x, coordinate.y - prior.y) / Math.max(1, coreRadius * 0.5)))
       : 1;
@@ -901,9 +931,12 @@ function adjustInkFillWaterLayer(
       const fraction = prior && prior.id === coordinate.id ? step / steps : 1;
       const x = prior && prior.id === coordinate.id ? prior.x + (coordinate.x - prior.x) * fraction : coordinate.x;
       const y = prior && prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * fraction : coordinate.y;
+      const pressure = prior && prior.id === coordinate.id
+        ? prior.pressure + (coordinate.pressure - prior.pressure) * fraction
+        : coordinate.pressure;
       changed = stampInkFillWater(
         shape, coordinate.id, x, y, coordinate.width, coordinate.height,
-        coreRadius, featherRadius, brush, amount, mode, surfaces, shapeStrokeState,
+        coreRadius, featherRadius, brush, amount * pressure, mode, surfaces, shapeStrokeState,
       ) || changed;
     }
     prior = coordinate;
@@ -1158,6 +1191,18 @@ function getInkFillPixelCoordinate(shape: InkShape, point: InkSurfacePoint): Ink
     return { id: point.face, x: (point.u + 0.5) * dimensions.width, y: (point.v + 0.5) * dimensions.height, ...dimensions };
   }
   return null;
+}
+
+function normalizeInkFillPressure(pressure: number): number {
+  return Number.isFinite(pressure) ? Math.min(1, Math.max(0.05, pressure)) : 1;
+}
+
+function getInkFillStampRadius(size: number, pressure: number): number {
+  return Math.max(0.5, size * INK_FILL_PIXELS_PER_WORLD_UNIT * 0.5 * normalizeInkFillPressure(pressure));
+}
+
+function getInkFillBlurRadius(size: number, pressure: number): number {
+  return Math.min(6, Math.max(1, Math.round(size * INK_FILL_PIXELS_PER_WORLD_UNIT * 0.25 * normalizeInkFillPressure(pressure))));
 }
 
 function getInkFillSurfaceDimensions(shape: InkShape, id: InkFillSurfaceId): { width: number; height: number } | null {
