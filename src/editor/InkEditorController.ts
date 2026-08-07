@@ -1,5 +1,6 @@
 import { Vector3 } from 'three';
 import {
+  appendInkFillBlurWorkPoints,
   blurInkFill,
   bucketFillInkShape,
   consumeInkFillBlurRgbaPatches,
@@ -355,11 +356,12 @@ export class InkEditorController {
       const key = workingShapeKey(segment.referenceId, segment.shapeId);
       let working = this.workingShapes.get(key) ?? { referenceId: segment.referenceId, shape: segment.shape };
       let work = this.blurWorks.get(key);
-      if (!work && segment.processedPointCount < segment.points.length) {
+      if (segment.processedPointCount < segment.points.length) {
         const firstNew = segment.processedPointCount;
         const points = segment.points.slice(Math.max(0, firstNew - 1));
         segment.processedPointCount = segment.points.length;
-        work = createInkFillBlurWork(working.shape, points, session.fillBrushSize, session.fillBrushShape) ?? undefined;
+        if (work) appendInkFillBlurWorkPoints(work, points, session.fillBrushSize);
+        else work = createInkFillBlurWork(working.shape, points, session.fillBrushSize, session.fillBrushShape) ?? undefined;
         this.workingShapes.set(key, working);
         if (work) this.blurWorks.set(key, work);
       }

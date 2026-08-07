@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   INK_FILL_COVERAGE_ALPHA_MIN,
+  appendInkFillBlurWorkPoints,
   blurInkFill,
   bucketFillInkShape,
   consumeInkFillBlurRgbaPatches,
@@ -85,18 +86,24 @@ describe('Ink Fill water tools', () => {
     expect(changedRgbPixelCount(source, lowPressureBlur)).toBeLessThan(changedRgbPixelCount(source, fullPressureBlur));
   });
 
-  it('processes a large continuous Blur gesture within a fixed per-frame texel budget', () => {
+  it('processes a large continuous Blur gesture within a fixed per-frame texel budget while following its newest Pencil sample', () => {
     const redFill = paintInkFill(createInkPlaneShape('z', { x: 0, y: 0, z: 0 }), [center], '#ff004d', 1, 'square');
     const source = paintInkFill(redFill, [center], '#29adff', 0.08, 'circle');
     const points = [
       { x: -0.2, y: 0, pressure: 1 },
       { x: 0, y: 0, pressure: 1 },
-      { x: 0.2, y: 0, pressure: 1 },
     ];
-    const work = createInkFillBlurWork(source, points, 1, 'circle')!;
+    const work = createInkFillBlurWork(source, points.slice(0, 1), 1, 'circle')!;
+    expect(appendInkFillBlurWorkPoints(work, points.slice(1), 1)).toBe(true);
     const patches = [];
     let result = source;
     let frameCount = 0;
+    const firstFrame = processInkFillBlurWork(work, 96);
+    expect(firstFrame.processedTargetCount).toBeLessThanOrEqual(96);
+    expect(pixelAt(firstFrame.shape)).not.toEqual(pixelAt(source));
+    result = firstFrame.shape;
+    patches.push(...consumeInkFillBlurRgbaPatches(work));
+    frameCount += 1;
     while (!work.complete) {
       const progress = processInkFillBlurWork(work, 96);
       expect(progress.processedTargetCount).toBeLessThanOrEqual(96);

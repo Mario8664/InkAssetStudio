@@ -49,7 +49,7 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - Outline 保留带压力的可编辑表面点，并编译为世界宽度 Ribbon。
 - Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。`alpha < 128` 为透明；`255` 为干燥不透明；`128..254` 保存 Watercolor 湿度并仍按不透明 Fill 处理。Water/Water Eraser 只对已有覆盖调整 alpha，保持 RGB 不变；同一手势去重、不同手势叠加。
 - Water/Water Eraser 的盖章热路径按 Surface/稀疏块建立索引，并以数值坐标保存手势去重状态；实时预览只收集本帧变化的连续 alpha 行段并局部上传既有 `DataTexture`，不再逐帧完整编译 Fill、扫描整张纹理、重建 Shape Helper 或刷新硬阴影。
-- Fill Blur 使用 transient 增量工作批次；每帧固定预算处理目标 texel，复用稳定的预批次 Fill 源、预计算模糊核和手势级 surface/block 索引。Pencil 抬起后继续在后续帧完成剩余工作，再写入一条作者源/Undo 事务；实时预览只上传本帧变更的连续 RGBA 行段，不再逐帧完整编译 Fill、重建 Shape Helper 或刷新 Ink 硬阴影深度。
+- Fill Blur 使用 transient 增量工作批次；每帧固定预算处理目标 texel，复用稳定的预批次 Fill 源、预计算模糊核和手势级 surface/block 索引。新到 Pencil 盖印优先、从笔刷中心向外处理；同一 texel 保留时间上最后一个盖印，避免后台旧任务覆盖当前笔尖。Pencil 抬起后继续在后续帧完成剩余工作，再写入一条作者源/Undo 事务；实时预览只上传本帧变更的连续 RGBA 行段，不再逐帧完整编译 Fill、重建 Shape Helper 或刷新 Ink 硬阴影深度。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 均使用 Painting 当前的表面坐标和编译规则；Cylinder side chart 在环绕方向连续，Cylinder cap 与 Frustum 的六个面都保有独立 Fill 图表。
 - 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。Water 与 Water Eraser 额外提供 Session 持久化的 Soft Radius 与 Water Opacity；光标以恒定屏幕细线的实线核心加精确对应 Feather 外半径的虚线外框显示，增大半径不会加粗核心轮廓。
 - 支持直线辅助；其端点状态保存在作者数据中，不进入编译几何哈希。
