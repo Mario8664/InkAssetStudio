@@ -49,7 +49,7 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - Outline 保留带压力的可编辑表面点，并编译为世界宽度 Ribbon。
 - Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。`alpha < 128` 为透明；`255` 为干燥不透明；`128..254` 保存 Watercolor 湿度并仍按不透明 Fill 处理。Water/Water Eraser 只对已有覆盖调整 alpha，保持 RGB 不变；同一手势去重、不同手势叠加。
 - Water/Water Eraser 的盖章热路径按 Surface/稀疏块建立索引，并以数值坐标保存手势去重状态；实时预览只收集本帧变化的连续 alpha 行段并局部上传既有 `DataTexture`，不再逐帧完整编译 Fill、扫描整张纹理、重建 Shape Helper 或刷新硬阴影。
-- Fill Blur 使用 transient 增量工作批次；每帧固定预算处理目标 texel，复用稳定的预批次 Fill 源、预计算模糊核和手势级 surface/block 索引。新到 Pencil 盖印优先、从笔刷中心向外处理；同一 texel 保留时间上最后一个盖印，避免后台旧任务覆盖当前笔尖。Pencil 抬起后继续在后续帧完成剩余工作，再写入一条作者源/Undo 事务；其后浏览器正常触发的 `lostpointercapture` 不得取消已抬笔的待提交批次，Pencil 尚未抬起时的异常 capture 丢失仍会取消手势。实时预览只上传本帧变更的连续 RGBA 行段，不再逐帧完整编译 Fill、重建 Shape Helper 或刷新 Ink 硬阴影深度。
+- Fill Blur 保留工具名称但改为方向性拾色拖抹（Smudge）：首次 Pencil dab 只拾取当前局部颜料；每次移动从前一 dab 的同形状 footprint 读取 RGB，再以固定比例拖入当前 dab。单个 stamp 先捕获全部 source/target texel，再按 Pencil 顺序写入，避免新写颜色回读或旧后台任务覆盖当前笔势；每个目标 texel只有一次 pickup 读取和一次写入，不再枚举 Gaussian 模糊核。Fill coverage 与 Water alpha 保持不变，两个 footprint 均使用既有 chart neighbour 映射跨 seam。每帧固定预算处理 capture/write 操作，实时预览只上传本帧变更的连续 RGBA 行段；Pencil 抬起后仅在尚未完成的有序 Smudge 批次继续，完成后再写入一条作者源/Undo 事务。正常的 `lostpointercapture` 不得取消该已抬笔批次，Pencil 尚未抬起时的异常 capture 丢失仍会取消手势；不逐帧完整编译 Fill、重建 Shape Helper 或刷新 Ink 硬阴影深度。
 - Plane、Cuboid、Sphere、Cylinder、Frustum 均使用 Painting 当前的表面坐标和编译规则；Cylinder side chart 在环绕方向连续，Cylinder cap 与 Frustum 的六个面都保有独立 Fill 图表。
 - 支持圆形/方形 Fill 笔刷、笔刷尺寸、Outline 宽度和可见笔刷光标。Water 与 Water Eraser 额外提供 Session 持久化的 Soft Radius 与 Water Opacity；光标以恒定屏幕细线的实线核心加精确对应 Feather 外半径的虚线外框显示，增大半径不会加粗核心轮廓。
 - 支持直线辅助；其端点状态保存在作者数据中，不进入编译几何哈希。
@@ -102,7 +102,7 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 9 个 Vitest 文件、94 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 9 个 Vitest 文件、95 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
 - 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、参考地形/地块边缘/无限网格/坐标轴四个显示开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、Painting Ink Appearance 精确默认值/迁移/深拷贝/范围归一化、Source/Watercolor 双材质与 Fill/Ribbon 分层、MRT capture、三层非时域扩散、原始硬阴影深度及 Source 单中心/Watercolor 连续边界、多个 Group、五种 Shape 的 Outline/Fill 编译、Fill Brush/Fill Eraser/Fill Blur 压感半径缩放与 Water/Water Eraser 压感强度缩放、连续大笔刷 Blur 的固定帧预算、局部 RGBA 上传与 GPU 资源复用、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 

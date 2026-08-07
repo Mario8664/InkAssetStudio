@@ -48,7 +48,7 @@ export type InkFillWaterAlphaPatch = Readonly<{
   alpha: Uint8Array;
 }>;
 
-/** A contiguous RGBA run changed by the incremental Fill Blur preview. */
+/** A contiguous RGBA run changed by the incremental Fill Smudge preview. */
 export type InkFillRgbaPatch = Readonly<{
   id: InkFillSurfaceId;
   x: number;
@@ -56,43 +56,49 @@ export type InkFillRgbaPatch = Readonly<{
   rgba: Uint8Array;
 }>;
 
-type InkFillBlurKernelSample = Readonly<{ x: number; y: number; weight: number }>;
+const INK_FILL_SMUDGE_STRENGTH = 0.72;
 
 type InkFillBlurStamp = {
+  /** The brush footprint before this directional Smudge step. */
+  readonly sourceCenter: InkFillPixelCoordinate;
   readonly center: InkFillPixelCoordinate;
   readonly radius: number;
-  readonly blurRadius: number;
-  /** Preserves Pencil order when newer stamps are previewed first. */
-  readonly sequence: number;
+  /** Capture every source texel before applying any target write. */
+  phase: 'capture' | 'apply';
   nextTargetIndex: number;
+  readonly samples: InkFillBlurSample[];
 };
 
 type InkFillBlurTargetOffset = Readonly<{ x: number; y: number }>;
 
+type InkFillBlurSample = Readonly<{
+  id: InkFillSurfaceId;
+  x: number;
+  y: number;
+  current: readonly [number, number, number, number];
+  pickup: readonly [number, number, number, number];
+}>;
+
 type InkFillBlurSurfaceAccess = {
-  readonly source: InkFillSurface;
   readonly target: InkFillSurface;
-  readonly sourceBlocks: Map<string, InkFillBlock>;
   readonly targetBlocks: Map<string, InkFillBlock>;
 };
 
 /**
- * Transient, frame-budgeted Fill Blur work. This stays outside authored Ink
- * data so a long Pencil gesture can yield between texture samples.
+ * Transient, frame-budgeted directional Fill Smudge work. This stays outside
+ * authored Ink data so a long Pencil gesture can yield between local pickup
+ * and write operations without blocking the viewport.
  */
 export type InkFillBlurWork = {
   readonly shape: InkShape;
-  readonly source: InkFillLayer;
   readonly fill: InkFillLayer;
   readonly brush: InkFillBrushShape;
   readonly stamps: InkFillBlurStamp[];
   readonly surfaces: Map<InkFillSurfaceId, InkFillBlurSurfaceAccess>;
   readonly copiedBlocks: Set<InkFillBlock>;
   readonly dirtyRows: Map<InkFillSurfaceId, Map<number, Map<number, readonly [number, number, number, number]>>>;
-  /** Latest pending stamps stay at the top so the preview follows Pencil input. */
-  readonly pendingStampIndices: number[];
-  /** A newer stamp wins if background work reaches the same texel later. */
-  readonly latestAppliedStampRows: Map<InkFillSurfaceId, Map<number, Map<number, number>>>;
+  /** Smudge input must remain ordered because each dab picks up the prior one. */
+  nextStampIndex: number;
   complete: boolean;
 };
 
@@ -103,7 +109,6 @@ export type InkFillBlurProgress = Readonly<{
   changed: boolean;
 }>;
 
-const inkFillBlurKernels = new Map<number, readonly InkFillBlurKernelSample[]>();
 const inkFillBlurTargetOffsets = new Map<number, readonly InkFillBlurTargetOffset[]>();
 
 /**
@@ -816,7 +821,11 @@ export function paintInkFill(
   return { ...shape, fill };
 }
 
-/** Applies a local authoring blur to Fill RGB while preserving coverage and Watercolor wetness. */
+/**
+ * Applies a directional pickup Smudge to Fill RGB while preserving coverage
+ * and Watercolor wetness. The initial dab only picks up pigment; dragging
+ * transfers that footprint along the Pencil path.
+ */
 export function blurInkFill(
   shape: InkShape,
   points: readonly InkSurfacePoint[],
@@ -826,8 +835,9 @@ export function blurInkFill(
   if (points.length === 0 || !Number.isFinite(size) || size <= 0) return shape;
   const work = createInkFillBlurWork(shape, points, size, brush);
   if (!work) return shape;
-  while (!work.complete) processInkFillBlurWork(work, Number.MAX_SAFE_INTEGER);
-  return { ...shape, fill: work.fill };
+  let changed = false;
+  while (!work.complete) changed = processInkFillBlurWork(work, Number.MAX_SAFE_INTEGER).changed || changed;
+  return changed ? { ...shape, fill: work.fill } : shape;
 }
 
 /** Paints Watercolor wetness into existing opaque Fill pixels with an outer feather. */
@@ -869,7 +879,7 @@ export function normalizeInkFillShape(shape: InkShape): InkShape {
   return { ...shape, fill };
 }
 
-/** Creates one incremental Blur batch from a stable pre-batch Fill source. */
+/** Creates one incremental, ordered Smudge batch. */
 export function createInkFillBlurWork(
   shape: InkShape,
   points: readonly InkSurfacePoint[],
@@ -879,78 +889,74 @@ export function createInkFillBlurWork(
   if (points.length === 0 || !Number.isFinite(size) || size <= 0) return null;
   const stamps = collectInkFillBlurStamps(shape, points, size);
   if (stamps.length === 0) return null;
-  const source = shape.fill;
-  const fill = cloneInkFillLayer(source);
+  const fill = cloneInkFillLayer(shape.fill);
   const targets = new Map(fill.surfaces.map((surface) => [surface.id, surface] as const));
   const surfaces = new Map<InkFillSurfaceId, InkFillBlurSurfaceAccess>();
-  for (const sourceSurface of source.surfaces) {
-    const target = targets.get(sourceSurface.id);
-    if (!target) continue;
-    surfaces.set(sourceSurface.id, {
-      source: sourceSurface,
-      target,
-      sourceBlocks: new Map(sourceSurface.blocks.map((block) => [inkFillBlockKey(block.x, block.y), block] as const)),
-      targetBlocks: new Map(target.blocks.map((block) => [inkFillBlockKey(block.x, block.y), block] as const)),
+  for (const target of fill.surfaces) {
+    const currentTarget = targets.get(target.id);
+    if (!currentTarget) continue;
+    surfaces.set(target.id, {
+      target: currentTarget,
+      targetBlocks: new Map(currentTarget.blocks.map((block) => [inkFillBlockKey(block.x, block.y), block] as const)),
     });
   }
   return {
     shape,
-    source,
     fill,
     brush,
     stamps,
     surfaces,
     copiedBlocks: new Set(),
     dirtyRows: new Map(),
-    pendingStampIndices: stamps.map((_, index) => index),
-    latestAppliedStampRows: new Map(),
+    nextStampIndex: 0,
     complete: false,
   };
 }
 
-/** Adds fresh Pencil samples to an in-flight Blur batch without delaying their preview. */
+/** Adds fresh Pencil samples to an in-flight Smudge batch in pen order. */
 export function appendInkFillBlurWorkPoints(
   work: InkFillBlurWork,
   points: readonly InkSurfacePoint[],
   size: number,
 ): boolean {
   if (work.complete || points.length === 0 || !Number.isFinite(size) || size <= 0) return false;
-  const firstSequence = work.stamps.length;
-  const stamps = collectInkFillBlurStamps(work.shape, points, size, firstSequence);
+  const stamps = collectInkFillBlurStamps(work.shape, points, size);
   if (stamps.length === 0) return false;
-  for (const stamp of stamps) {
-    work.pendingStampIndices.push(work.stamps.length);
-    work.stamps.push(stamp);
-  }
+  work.stamps.push(...stamps);
   return true;
 }
 
-/** Processes a bounded number of Blur target texels, yielding the partial Fill. */
+/** Processes a bounded number of ordered Smudge capture/write operations. */
 export function processInkFillBlurWork(work: InkFillBlurWork, maximumTargetCount: number): InkFillBlurProgress {
   if (work.complete) return { shape: { ...work.shape, fill: work.fill }, complete: true, processedTargetCount: 0, changed: false };
   const limit = Math.max(1, Math.floor(maximumTargetCount));
   let processedTargetCount = 0;
   let changed = false;
-  while (processedTargetCount < limit && work.pendingStampIndices.length > 0) {
-    const stampIndex = work.pendingStampIndices.at(-1)!;
-    const stamp = work.stamps[stampIndex]!;
+  while (processedTargetCount < limit && work.nextStampIndex < work.stamps.length) {
+    const stamp = work.stamps[work.nextStampIndex]!;
     const offsets = getInkFillBlurTargetOffsets(Math.ceil(stamp.radius));
-    const offset = offsets[stamp.nextTargetIndex];
-    if (!offset) {
-      work.pendingStampIndices.pop();
+    if (stamp.phase === 'capture') {
+      const offset = offsets[stamp.nextTargetIndex];
+      if (!offset) {
+        stamp.phase = 'apply';
+        stamp.nextTargetIndex = 0;
+        continue;
+      }
+      stamp.nextTargetIndex += 1;
+      processedTargetCount += 1;
+      captureInkFillSmudgeTarget(work, stamp, offset);
+      continue;
+    }
+    const sample = stamp.samples[stamp.nextTargetIndex];
+    if (!sample) {
+      work.nextStampIndex += 1;
       continue;
     }
     stamp.nextTargetIndex += 1;
     processedTargetCount += 1;
-    const deltaX = offset.x + Math.floor(stamp.center.x) + 0.5 - stamp.center.x;
-    const deltaY = offset.y + Math.floor(stamp.center.y) + 0.5 - stamp.center.y;
-    if (work.brush === 'circle' && deltaX * deltaX + deltaY * deltaY > stamp.radius * stamp.radius) continue;
-    const target = offsetInkFillPixelCoordinate(work.shape, stamp.center, offset.x, offset.y);
-    if (!target) continue;
-    changed = blurInkFillTarget(work, target, stamp.blurRadius, stamp.sequence) || changed;
-    if (stamp.nextTargetIndex >= offsets.length) work.pendingStampIndices.pop();
+    changed = applyInkFillSmudgeTarget(work, sample) || changed;
   }
-  if (work.pendingStampIndices.length === 0) {
+  if (work.nextStampIndex >= work.stamps.length) {
     work.complete = true;
     normalizeInkFillLayer(work.fill);
   }
@@ -990,7 +996,6 @@ function collectInkFillBlurStamps(
   shape: InkShape,
   points: readonly InkSurfacePoint[],
   size: number,
-  firstSequence = 0,
 ): InkFillBlurStamp[] {
   const stamps: InkFillBlurStamp[] = [];
   let prior: (InkFillPixelCoordinate & { pressure: number }) | null = null;
@@ -1000,26 +1005,38 @@ function collectInkFillBlurStamps(
     const coordinate = { ...pixelCoordinate, pressure: normalizeInkFillPressure(point.pressure) };
     const radius = getInkFillStampRadius(size, coordinate.pressure);
     const priorRadius = prior ? getInkFillStampRadius(size, prior.pressure) : radius;
-    const steps = prior && prior.id === coordinate.id
+    if (!prior) {
+      prior = coordinate;
+      continue;
+    }
+    const steps = prior.id === coordinate.id
       ? Math.max(1, Math.ceil(Math.hypot(coordinate.x - prior.x, coordinate.y - prior.y) / Math.max(1, Math.min(priorRadius, radius) * 0.5)))
       : 1;
     for (let step = 1; step <= steps; step += 1) {
-      const fraction = prior && prior.id === coordinate.id ? step / steps : 1;
-      const pressure = prior && prior.id === coordinate.id
+      const previousFraction = prior.id === coordinate.id ? (step - 1) / steps : 0;
+      const fraction = prior.id === coordinate.id ? step / steps : 1;
+      const pressure = prior.id === coordinate.id
         ? prior.pressure + (coordinate.pressure - prior.pressure) * fraction
         : coordinate.pressure;
       stamps.push({
+        sourceCenter: {
+          id: prior.id,
+          x: prior.id === coordinate.id ? prior.x + (coordinate.x - prior.x) * previousFraction : prior.x,
+          y: prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * previousFraction : prior.y,
+          ...(prior.width !== undefined ? { width: prior.width } : {}),
+          ...(prior.height !== undefined ? { height: prior.height } : {}),
+        },
         center: {
           id: coordinate.id,
-          x: prior && prior.id === coordinate.id ? prior.x + (coordinate.x - prior.x) * fraction : coordinate.x,
-          y: prior && prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * fraction : coordinate.y,
+          x: prior.id === coordinate.id ? prior.x + (coordinate.x - prior.x) * fraction : coordinate.x,
+          y: prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * fraction : coordinate.y,
           ...(coordinate.width !== undefined ? { width: coordinate.width } : {}),
           ...(coordinate.height !== undefined ? { height: coordinate.height } : {}),
         },
         radius: getInkFillStampRadius(size, pressure),
-        blurRadius: getInkFillBlurRadius(size, pressure),
-        sequence: firstSequence + stamps.length,
+        phase: 'capture',
         nextTargetIndex: 0,
+        samples: [],
       });
     }
     prior = coordinate;
@@ -1027,57 +1044,66 @@ function collectInkFillBlurStamps(
   return stamps;
 }
 
-function blurInkFillTarget(
+function captureInkFillSmudgeTarget(
   work: InkFillBlurWork,
-  targetCoordinate: InkFillPixelCoordinate,
-  blurRadius: number,
-  stampSequence: number,
-): boolean {
+  stamp: InkFillBlurStamp,
+  offset: InkFillBlurTargetOffset,
+): void {
+  const deltaX = offset.x + Math.floor(stamp.center.x) + 0.5 - stamp.center.x;
+  const deltaY = offset.y + Math.floor(stamp.center.y) + 0.5 - stamp.center.y;
+  if (work.brush === 'circle' && deltaX * deltaX + deltaY * deltaY > stamp.radius * stamp.radius) return;
+  const targetCoordinate = offsetInkFillPixelCoordinate(work.shape, stamp.center, offset.x, offset.y);
+  const sourceCoordinate = offsetInkFillPixelCoordinate(work.shape, stamp.sourceCenter, offset.x, offset.y);
+  if (!targetCoordinate || !sourceCoordinate) return;
   const targetX = Math.floor(targetCoordinate.x);
   const targetY = Math.floor(targetCoordinate.y);
-  if (getLatestInkFillBlurStampSequence(work, targetCoordinate.id, targetX, targetY) >= stampSequence) return false;
   const targetAccess = work.surfaces.get(targetCoordinate.id);
-  if (!targetAccess) return false;
-  const targetPixel = getInkFillBlurPixel(targetAccess, false, targetCoordinate.x, targetCoordinate.y);
-  if (!targetPixel || (targetPixel.rgba[targetPixel.offset + 3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) return false;
-  let red = 0;
-  let green = 0;
-  let blue = 0;
-  let weightTotal = 0;
-  for (const sample of getInkFillBlurKernel(blurRadius)) {
-    const coordinate = offsetInkFillPixelCoordinate(work.shape, targetCoordinate, sample.x, sample.y);
-    if (!coordinate) continue;
-    const sourceAccess = work.surfaces.get(coordinate.id);
-    const sourcePixel = sourceAccess && getInkFillBlurPixel(sourceAccess, true, coordinate.x, coordinate.y);
-    if (!sourcePixel || (sourcePixel.rgba[sourcePixel.offset + 3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) continue;
-    red += (sourcePixel.rgba[sourcePixel.offset] ?? 0) * sample.weight;
-    green += (sourcePixel.rgba[sourcePixel.offset + 1] ?? 0) * sample.weight;
-    blue += (sourcePixel.rgba[sourcePixel.offset + 2] ?? 0) * sample.weight;
-    weightTotal += sample.weight;
-  }
-  if (weightTotal <= 0) return false;
-  setLatestInkFillBlurStampSequence(work, targetCoordinate.id, targetX, targetY, stampSequence);
+  const sourceAccess = work.surfaces.get(sourceCoordinate.id);
+  if (!targetAccess || !sourceAccess) return;
+  const targetPixel = getInkFillBlurPixel(targetAccess, targetCoordinate.x, targetCoordinate.y);
+  const sourcePixel = getInkFillBlurPixel(sourceAccess, sourceCoordinate.x, sourceCoordinate.y);
+  if (!targetPixel || !sourcePixel
+    || (targetPixel.rgba[targetPixel.offset + 3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN
+    || (sourcePixel.rgba[sourcePixel.offset + 3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) return;
+  stamp.samples.push({
+    id: targetCoordinate.id,
+    x: targetX,
+    y: targetY,
+    current: [
+      targetPixel.rgba[targetPixel.offset] ?? 0,
+      targetPixel.rgba[targetPixel.offset + 1] ?? 0,
+      targetPixel.rgba[targetPixel.offset + 2] ?? 0,
+      targetPixel.rgba[targetPixel.offset + 3] ?? INK_FILL_DRY_ALPHA,
+    ],
+    pickup: [
+      sourcePixel.rgba[sourcePixel.offset] ?? 0,
+      sourcePixel.rgba[sourcePixel.offset + 1] ?? 0,
+      sourcePixel.rgba[sourcePixel.offset + 2] ?? 0,
+      sourcePixel.rgba[sourcePixel.offset + 3] ?? INK_FILL_DRY_ALPHA,
+    ],
+  });
+}
+
+function applyInkFillSmudgeTarget(work: InkFillBlurWork, sample: InkFillBlurSample): boolean {
   const rgba: readonly [number, number, number, number] = [
-    Math.round(red / weightTotal),
-    Math.round(green / weightTotal),
-    Math.round(blue / weightTotal),
-    targetPixel.rgba[targetPixel.offset + 3] ?? INK_FILL_DRY_ALPHA,
+    Math.round(sample.current[0] * (1 - INK_FILL_SMUDGE_STRENGTH) + sample.pickup[0] * INK_FILL_SMUDGE_STRENGTH),
+    Math.round(sample.current[1] * (1 - INK_FILL_SMUDGE_STRENGTH) + sample.pickup[1] * INK_FILL_SMUDGE_STRENGTH),
+    Math.round(sample.current[2] * (1 - INK_FILL_SMUDGE_STRENGTH) + sample.pickup[2] * INK_FILL_SMUDGE_STRENGTH),
+    sample.current[3],
   ];
-  if (targetPixel.rgba[targetPixel.offset] === rgba[0]
-    && targetPixel.rgba[targetPixel.offset + 1] === rgba[1]
-    && targetPixel.rgba[targetPixel.offset + 2] === rgba[2]) return false;
-  if (!writeInkFillBlurPixel(work, targetCoordinate.id, targetCoordinate.x, targetCoordinate.y, rgba)) return false;
-  let rows = work.dirtyRows.get(targetCoordinate.id);
+  if (sameInkFillRgba(sample.current, rgba)) return false;
+  if (!writeInkFillBlurPixel(work, sample.id, sample.x, sample.y, rgba)) return false;
+  let rows = work.dirtyRows.get(sample.id);
   if (!rows) {
     rows = new Map();
-    work.dirtyRows.set(targetCoordinate.id, rows);
+    work.dirtyRows.set(sample.id, rows);
   }
-  let row = rows.get(Math.floor(targetCoordinate.y));
+  let row = rows.get(sample.y);
   if (!row) {
     row = new Map();
-    rows.set(Math.floor(targetCoordinate.y), row);
+    rows.set(sample.y, row);
   }
-  row.set(Math.floor(targetCoordinate.x), rgba);
+  row.set(sample.x, rgba);
   return true;
 }
 
@@ -1096,55 +1122,12 @@ function getInkFillBlurTargetOffsets(range: number): readonly InkFillBlurTargetO
   return offsets;
 }
 
-function getLatestInkFillBlurStampSequence(
-  work: InkFillBlurWork,
-  id: InkFillSurfaceId,
-  x: number,
-  y: number,
-): number {
-  return work.latestAppliedStampRows.get(id)?.get(y)?.get(x) ?? -1;
-}
-
-function setLatestInkFillBlurStampSequence(
-  work: InkFillBlurWork,
-  id: InkFillSurfaceId,
-  x: number,
-  y: number,
-  sequence: number,
-): void {
-  let rows = work.latestAppliedStampRows.get(id);
-  if (!rows) {
-    rows = new Map();
-    work.latestAppliedStampRows.set(id, rows);
-  }
-  let row = rows.get(y);
-  if (!row) {
-    row = new Map();
-    rows.set(y, row);
-  }
-  row.set(x, sequence);
-}
-
-function getInkFillBlurKernel(radius: number): readonly InkFillBlurKernelSample[] {
-  const cached = inkFillBlurKernels.get(radius);
-  if (cached) return cached;
-  const kernel: InkFillBlurKernelSample[] = [];
-  for (let y = -radius; y <= radius; y += 1) for (let x = -radius; x <= radius; x += 1) {
-    const distanceSquared = x * x + y * y;
-    if (distanceSquared > radius * radius) continue;
-    kernel.push({ x, y, weight: Math.exp(-distanceSquared / Math.max(1, radius * radius * 0.5)) });
-  }
-  inkFillBlurKernels.set(radius, kernel);
-  return kernel;
-}
-
 function getInkFillBlurPixel(
   access: InkFillBlurSurfaceAccess,
-  source: boolean,
   x: number,
   y: number,
 ): { rgba: number[]; offset: number } | null {
-  const block = (source ? access.sourceBlocks : access.targetBlocks).get(inkFillBlockKey(floorDivide(x, INK_FILL_BLOCK_SIZE), floorDivide(y, INK_FILL_BLOCK_SIZE)));
+  const block = access.targetBlocks.get(inkFillBlockKey(floorDivide(x, INK_FILL_BLOCK_SIZE), floorDivide(y, INK_FILL_BLOCK_SIZE)));
   if (!block) return null;
   return { rgba: block.rgba, offset: (modulo(y, INK_FILL_BLOCK_SIZE) * INK_FILL_BLOCK_SIZE + modulo(x, INK_FILL_BLOCK_SIZE)) * 4 };
 }
@@ -1525,10 +1508,6 @@ function normalizeInkFillPressure(pressure: number): number {
 
 function getInkFillStampRadius(size: number, pressure: number): number {
   return Math.max(0.5, size * INK_FILL_PIXELS_PER_WORLD_UNIT * 0.5 * normalizeInkFillPressure(pressure));
-}
-
-function getInkFillBlurRadius(size: number, pressure: number): number {
-  return Math.min(6, Math.max(1, Math.round(size * INK_FILL_PIXELS_PER_WORLD_UNIT * 0.25 * normalizeInkFillPressure(pressure))));
 }
 
 function getInkFillSurfaceDimensions(shape: InkShape, id: InkFillSurfaceId): { width: number; height: number } | null {

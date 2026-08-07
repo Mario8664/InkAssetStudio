@@ -77,60 +77,66 @@ describe('Ink Fill water tools', () => {
     expect(pixelAt(lowPressureDry)[3]).toBeLessThan(pixelAt(fullPressureDry)[3]!);
   });
 
-  it('scales Fill Blur coverage and sampling radius by sampled pressure', () => {
+  it('scales directional Fill Smudge coverage by sampled pressure', () => {
     const redFill = paintInkFill(createInkPlaneShape('z', { x: 0, y: 0, z: 0 }), [center], '#ff004d', 0.5, 'square');
-    const source = paintInkFill(redFill, [center], '#29adff', 0.04, 'square');
-    const lowPressureBlur = blurInkFill(source, [{ x: 0, y: 0, pressure: 0.25 }], 0.2, 'circle');
-    const fullPressureBlur = blurInkFill(source, [{ x: 0, y: 0, pressure: 1 }], 0.2, 'circle');
+    const source = paintInkFill(redFill, [{ x: -0.12, y: 0, pressure: 1 }], '#29adff', 0.06, 'square');
+    const lowPressureBlur = blurInkFill(source, [{ x: -0.12, y: 0, pressure: 0.25 }, { x: 0.12, y: 0, pressure: 0.25 }], 0.2, 'circle');
+    const fullPressureBlur = blurInkFill(source, [{ x: -0.12, y: 0, pressure: 1 }, { x: 0.12, y: 0, pressure: 1 }], 0.2, 'circle');
 
     expect(changedRgbPixelCount(source, lowPressureBlur)).toBeLessThan(changedRgbPixelCount(source, fullPressureBlur));
   });
 
-  it('processes a large continuous Blur gesture within a fixed per-frame texel budget while following its newest Pencil sample', () => {
-    const redFill = paintInkFill(createInkPlaneShape('z', { x: 0, y: 0, z: 0 }), [center], '#ff004d', 1, 'square');
-    const source = paintInkFill(redFill, [center], '#29adff', 0.08, 'circle');
+  it('uses the initial Fill Smudge dab only to pick up existing pigment', () => {
+    const source = createPaintedPlane();
+
+    expect(blurInkFill(source, [center], 0.2, 'circle')).toBe(source);
+  });
+
+  it('processes an ordered large Smudge gesture in a small number of bounded frames', () => {
+    const redFill = paintInkFill(createInkPlaneShape('z', { x: 0, y: 0, z: 0 }), [center], '#ff004d', 0.5, 'square');
+    const source = paintInkFill(redFill, [{ x: -0.1, y: 0, pressure: 1 }], '#29adff', 0.08, 'circle');
     const points = [
-      { x: -0.2, y: 0, pressure: 1 },
+      { x: -0.1, y: 0, pressure: 1 },
       { x: 0, y: 0, pressure: 1 },
+      { x: 0.1, y: 0, pressure: 1 },
     ];
-    const work = createInkFillBlurWork(source, points.slice(0, 1), 1, 'circle')!;
-    expect(appendInkFillBlurWorkPoints(work, points.slice(1), 1)).toBe(true);
+    const work = createInkFillBlurWork(source, points.slice(0, 2), 0.5, 'circle')!;
+    expect(appendInkFillBlurWorkPoints(work, points.slice(1), 0.5)).toBe(true);
     const patches = [];
     let result = source;
     let frameCount = 0;
-    const firstFrame = processInkFillBlurWork(work, 96);
-    expect(firstFrame.processedTargetCount).toBeLessThanOrEqual(96);
-    expect(pixelAt(firstFrame.shape)).not.toEqual(pixelAt(source));
+    const firstFrame = processInkFillBlurWork(work, 4_096);
+    expect(firstFrame.processedTargetCount).toBeLessThanOrEqual(4_096);
     result = firstFrame.shape;
     patches.push(...consumeInkFillBlurRgbaPatches(work));
     frameCount += 1;
     while (!work.complete) {
-      const progress = processInkFillBlurWork(work, 96);
-      expect(progress.processedTargetCount).toBeLessThanOrEqual(96);
+      const progress = processInkFillBlurWork(work, 4_096);
+      expect(progress.processedTargetCount).toBeLessThanOrEqual(4_096);
       result = progress.shape;
       patches.push(...consumeInkFillBlurRgbaPatches(work));
       frameCount += 1;
     }
 
-    expect(frameCount).toBeGreaterThan(1);
+    expect(frameCount).toBeLessThanOrEqual(2);
     expect(patches.some((patch) => patch.rgba.length > 0)).toBe(true);
-    expect(result).toEqual(blurInkFill(source, points, 1, 'circle'));
+    expect(result).toEqual(blurInkFill(source, points, 0.5, 'circle'));
   }, 15_000);
 
-  it('blurs only authored Fill RGB while retaining its opacity encoding', () => {
+  it('smudges only authored Fill RGB while retaining its opacity encoding', () => {
     const plane = createInkPlaneShape('z', { x: 0, y: 0, z: 0 });
     const painted = paintInkFill(
-      paintInkFill(plane, [{ x: -0.1, y: 0, pressure: 1 }], '#ff004d', 0.2, 'square'),
-      [{ x: 0.1, y: 0, pressure: 1 }],
+      paintInkFill(plane, [center], '#ff004d', 0.25, 'square'),
+      [{ x: -0.1, y: 0, pressure: 1 }],
       '#29adff',
-      0.2,
+      0.05,
       'square',
     );
-    const before = pixelAt(painted);
-    const blurred = blurInkFill(painted, [center], 0.03, 'circle');
-    const after = pixelAt(blurred);
+    const before = pixelAt(painted, 6, 0);
+    const blurred = blurInkFill(painted, [{ x: -0.1, y: 0, pressure: 1 }, { x: 0.1, y: 0, pressure: 1 }], 0.05, 'circle');
+    const after = pixelAt(blurred, 6, 0);
 
-    expect(after[0]).toBeGreaterThan(before[0]!);
+    expect(after[2]).toBeGreaterThan(before[2]!);
     expect(after[3]).toBe(before[3]);
   });
 

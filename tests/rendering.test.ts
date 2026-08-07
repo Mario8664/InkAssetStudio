@@ -516,16 +516,16 @@ describe('Reference rendering', () => {
     disposeObjectTree(root);
   });
 
-  it('uploads incremental Blur RGBA runs without recompiling Fill GPU resources', () => {
+  it('uploads incremental Smudge RGBA runs without recompiling Fill GPU resources', () => {
     const center = { surface: 'side' as const, u: 0, v: 0, pressure: 1 };
     const red = paintInkFill(createInkCylinderShape(), [center], '#ff004d', 0.3, 'square');
-    const source = paintInkFill(red, [center], '#29adff', 0.04, 'circle');
+    const source = paintInkFill(red, [{ ...center, u: -0.025 }], '#29adff', 0.04, 'circle');
     const root = createInkShapeRenderRoot(compileInkShape(source), source, createInkFillLightingState());
     const mesh = root.getObjectByName('InkFillSurface') as Mesh;
     const texture = mesh.userData.inkFillTexture;
     const geometry = mesh.geometry;
     const material = mesh.material;
-    const work = createInkFillBlurWork(source, [center], 0.2, 'circle')!;
+    const work = createInkFillBlurWork(source, [{ ...center, u: -0.025 }, { ...center, u: 0.025 }], 0.2, 'circle')!;
     const patches = [];
     let blurred = source;
     while (!work.complete) {

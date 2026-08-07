@@ -56,7 +56,10 @@ const STABILIZER_FOLLOW_AT_MAX_SPEED = 0.9;
 const STABILIZER_MAX_SPEED_PIXELS_PER_MILLISECOND = 0.85;
 const STABILIZER_REFERENCE_INTERVAL_MILLISECONDS = 1000 / 60;
 const FINAL_SAMPLE_MIN_SCREEN_DISTANCE_PIXELS = 0.5;
-const FILL_BLUR_TARGET_TEXEL_BUDGET = 96;
+// A Smudge operation is one pickup capture or one target write, not a full
+// two-dimensional Gaussian kernel. This budget keeps large Pencil dabs live
+// while retaining a bounded frame workload.
+const FILL_SMUDGE_TARGET_OPERATION_BUDGET = 4_096;
 
 export type InkEditorControllerOptions = {
   renderer: WorkspaceRenderer;
@@ -353,7 +356,7 @@ export class InkEditorController {
   }
 
   private flushBlurLivePreview(session: StudioEditorSession): void {
-    let remainingBudget = FILL_BLUR_TARGET_TEXEL_BUDGET;
+    let remainingBudget = FILL_SMUDGE_TARGET_OPERATION_BUDGET;
     for (const segment of this.pendingInk) {
       const key = workingShapeKey(segment.referenceId, segment.shapeId);
       let working = this.workingShapes.get(key) ?? { referenceId: segment.referenceId, shape: segment.shape };
@@ -364,14 +367,15 @@ export class InkEditorController {
         segment.processedPointCount = segment.points.length;
         if (work) appendInkFillBlurWorkPoints(work, points, session.fillBrushSize);
         else work = createInkFillBlurWork(working.shape, points, session.fillBrushSize, session.fillBrushShape) ?? undefined;
-        this.workingShapes.set(key, working);
         if (work) this.blurWorks.set(key, work);
       }
       if (!work || remainingBudget <= 0) continue;
       const progress = processInkFillBlurWork(work, remainingBudget);
       remainingBudget -= progress.processedTargetCount;
-      working = { referenceId: segment.referenceId, shape: progress.shape };
-      this.workingShapes.set(key, working);
+      if (progress.changed || this.workingShapes.has(key)) {
+        working = { referenceId: segment.referenceId, shape: progress.shape };
+        this.workingShapes.set(key, working);
+      }
       const patches = consumeInkFillBlurRgbaPatches(work);
       if (patches.length > 0) this.options.renderer.previewInkFillBlur(segment.referenceId, progress.shape, patches);
       if (progress.complete) this.blurWorks.delete(key);
@@ -407,6 +411,7 @@ export class InkEditorController {
 
   private commitInk(session: StudioEditorSession): boolean {
     if (this.pendingInk.length === 0) return false;
+    if (session.drawTool === 'fill-blur' && this.workingShapes.size === 0) return false;
     const label = getInkHistoryLabel(session.drawTool);
     return this.options.store.transact(label, (document) => {
       let next = document;
