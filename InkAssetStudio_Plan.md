@@ -252,6 +252,7 @@ Apple Pencil 输入使用 Pointer Events。实现必须优先采集可用的合�
 ## 9. 性能、资源与可靠性要求
 
 - 指针拖动期间仅维护临时 Ribbon 或 Fill 工作副本；松手后才形成一次作者源写入和一条 Undo/Redo 记录。
+- Fill Blur 使用项目内的 transient 增量工作批次：每帧最多处理固定数量的目标 texel，使用稳定的预批次 Fill 源、预计算模糊核和每批的 surface/block 索引；Pencil 抬起后继续在后续帧完成剩余工作，再写入一次作者源与 Undo/Redo。Blur 预览只上传变更的连续 RGBA 行段，不重编译完整 Fill、不重建 Shape Helper，也不刷新仅依赖 alpha 的 Ink 硬阴影深度。
 - Ink 编译在常驻 Worker 中完成；页面首次打开或 Group 增删 Shape 时才初始化该 Group 的作者源与轻量 Shape hash。一次笔画提交只跨线程发送受影响的作者 Shape，并只回传该 Shape 的派生缓存；未变化 Shape 的 Ribbon/Fill 数组必须留在主文档并复用。
 - Shape Position/Rotation 使用已有 Mesh Transform 更新；Cuboid size、Sphere radius、Cylinder radius/height 与 Frustum top size/bottom size/height 都是固有尺寸，保存在作者 Shape 数据中，不作为通用 Transform Scale。尺寸变化只更新当前 Shape 的内容、重采样必要的有限 Fill 图表并刷新辅助面和硬阴影，不重建整个场景。Sphere/Cylinder 的 `surfaceOutline` 只维护已有的视角相关 Ribbon，配置或相机变化不重编译作者描边。
 - 只要输入不变，普通相机导航、UI 变化和灯光颜色/强度变化不得触发全场景重编译或硬阴影深度重建。

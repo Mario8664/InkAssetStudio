@@ -34,6 +34,7 @@ import {
   type CompiledInkRibbon,
   type CompiledInkShape,
   type InkCuboidFace,
+  type InkFillRgbaPatch,
   type InkFillSurfaceId,
   type InkFillWaterAlphaPatch,
   type InkGroupData,
@@ -495,6 +496,64 @@ export function updateInkShapeFillAlphaPatches(
       operation.image.data[(firstPixel + index) * 4 + 3] = operation.alpha[index]!;
     }
     operation.texture.addUpdateRange(firstPixel * 4, operation.alpha.length * 4);
+  }
+  for (const texture of touchedTextures) texture.needsUpdate = true;
+  return true;
+}
+
+/** Uploads incremental Fill Blur RGB runs without rebuilding Fill resources. */
+export function updateInkShapeFillRgbaPatches(
+  root: Group,
+  patches: readonly InkFillRgbaPatch[],
+): boolean {
+  if (patches.length === 0) return true;
+  const content = findInkShapeContentRoot(root);
+  if (!content) return false;
+  const meshes = new Map<InkFillSurfaceId, Mesh>();
+  for (const child of content.children) if (child instanceof Mesh
+    && child.name === 'InkFillSurface'
+    && typeof child.userData.inkFillSurfaceId === 'string') {
+    meshes.set(child.userData.inkFillSurfaceId as InkFillSurfaceId, child);
+  }
+
+  type PatchOperation = Readonly<{
+    texture: DataTexture;
+    image: { data: Uint8Array; width: number; height: number };
+    textureX: number;
+    textureY: number;
+    rgba: Uint8Array;
+  }>;
+  const operations: PatchOperation[] = [];
+  for (const patch of patches) {
+    if (patch.rgba.length === 0) continue;
+    const pixelCount = patch.rgba.length / 4;
+    const mesh = meshes.get(patch.id);
+    const texture = mesh?.userData.inkFillTexture as DataTexture | undefined;
+    const layout = mesh?.userData.inkFillTexturePatchLayout as InkFillTexturePatchLayout | undefined;
+    const image = texture?.image as { data?: unknown; width?: unknown; height?: unknown } | undefined;
+    if (!Number.isInteger(pixelCount) || !texture || !layout || !(image?.data instanceof Uint8Array)
+      || typeof image.width !== 'number' || typeof image.height !== 'number'
+      || !Number.isInteger(patch.x) || !Number.isInteger(patch.y)
+      || patch.x < layout.minX || patch.x + pixelCount > layout.minX + layout.width
+      || patch.y < layout.minY || patch.y >= layout.minY + layout.height) return false;
+    const textureX = layout.textureOffsetX + patch.x - layout.minX;
+    const textureY = layout.textureOffsetY + patch.y - layout.minY;
+    if (textureX < 0 || textureX + pixelCount > image.width
+      || textureY < 0 || textureY >= image.height) return false;
+    operations.push({
+      texture,
+      image: image as { data: Uint8Array; width: number; height: number },
+      textureX,
+      textureY,
+      rgba: patch.rgba,
+    });
+  }
+
+  const touchedTextures = new Set(operations.map((operation) => operation.texture));
+  for (const operation of operations) {
+    const firstPixel = operation.textureY * operation.image.width + operation.textureX;
+    operation.image.data.set(operation.rgba, firstPixel * 4);
+    operation.texture.addUpdateRange(firstPixel * 4, operation.rgba.length);
   }
   for (const texture of touchedTextures) texture.needsUpdate = true;
   return true;

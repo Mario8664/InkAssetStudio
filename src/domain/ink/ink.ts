@@ -48,6 +48,57 @@ export type InkFillWaterAlphaPatch = Readonly<{
   alpha: Uint8Array;
 }>;
 
+/** A contiguous RGBA run changed by the incremental Fill Blur preview. */
+export type InkFillRgbaPatch = Readonly<{
+  id: InkFillSurfaceId;
+  x: number;
+  y: number;
+  rgba: Uint8Array;
+}>;
+
+type InkFillBlurKernelSample = Readonly<{ x: number; y: number; weight: number }>;
+
+type InkFillBlurStamp = Readonly<{
+  center: InkFillPixelCoordinate;
+  radius: number;
+  blurRadius: number;
+}>;
+
+type InkFillBlurSurfaceAccess = {
+  readonly source: InkFillSurface;
+  readonly target: InkFillSurface;
+  readonly sourceBlocks: Map<string, InkFillBlock>;
+  readonly targetBlocks: Map<string, InkFillBlock>;
+};
+
+/**
+ * Transient, frame-budgeted Fill Blur work. This stays outside authored Ink
+ * data so a long Pencil gesture can yield between texture samples.
+ */
+export type InkFillBlurWork = {
+  readonly shape: InkShape;
+  readonly source: InkFillLayer;
+  readonly fill: InkFillLayer;
+  readonly brush: InkFillBrushShape;
+  readonly stamps: readonly InkFillBlurStamp[];
+  readonly surfaces: Map<InkFillSurfaceId, InkFillBlurSurfaceAccess>;
+  readonly copiedBlocks: Set<InkFillBlock>;
+  readonly dirtyRows: Map<InkFillSurfaceId, Map<number, Map<number, readonly [number, number, number, number]>>>;
+  stampIndex: number;
+  offsetX: number;
+  offsetY: number;
+  complete: boolean;
+};
+
+export type InkFillBlurProgress = Readonly<{
+  shape: InkShape;
+  complete: boolean;
+  processedTargetCount: number;
+  changed: boolean;
+}>;
+
+const inkFillBlurKernels = new Map<number, readonly InkFillBlurKernelSample[]>();
+
 /**
  * Transient per-gesture water state. It records each texel's pre-stroke
  * wetness and the strongest coverage reached by this one continuous water
@@ -766,8 +817,10 @@ export function blurInkFill(
   brush: InkFillBrushShape,
 ): InkShape {
   if (points.length === 0 || !Number.isFinite(size) || size <= 0) return shape;
-  const fill = blurInkFillLayer(shape, shape.fill, points, size, brush);
-  return { ...shape, fill };
+  const work = createInkFillBlurWork(shape, points, size, brush);
+  if (!work) return shape;
+  while (!work.complete) processInkFillBlurWork(work, Number.MAX_SAFE_INTEGER);
+  return { ...shape, fill: work.fill };
 }
 
 /** Paints Watercolor wetness into existing opaque Fill pixels with an outer feather. */
@@ -809,15 +862,118 @@ export function normalizeInkFillShape(shape: InkShape): InkShape {
   return { ...shape, fill };
 }
 
-function blurInkFillLayer(
+/** Creates one incremental Blur batch from a stable pre-batch Fill source. */
+export function createInkFillBlurWork(
   shape: InkShape,
-  source: InkFillLayer,
   points: readonly InkSurfacePoint[],
   size: number,
   brush: InkFillBrushShape,
-): InkFillLayer {
+): InkFillBlurWork | null {
+  if (points.length === 0 || !Number.isFinite(size) || size <= 0) return null;
+  const stamps = collectInkFillBlurStamps(shape, points, size);
+  if (stamps.length === 0) return null;
+  const source = shape.fill;
   const fill = cloneInkFillLayer(source);
-  const copiedBlocks = new Set<InkFillBlock>();
+  const targets = new Map(fill.surfaces.map((surface) => [surface.id, surface] as const));
+  const surfaces = new Map<InkFillSurfaceId, InkFillBlurSurfaceAccess>();
+  for (const sourceSurface of source.surfaces) {
+    const target = targets.get(sourceSurface.id);
+    if (!target) continue;
+    surfaces.set(sourceSurface.id, {
+      source: sourceSurface,
+      target,
+      sourceBlocks: new Map(sourceSurface.blocks.map((block) => [inkFillBlockKey(block.x, block.y), block] as const)),
+      targetBlocks: new Map(target.blocks.map((block) => [inkFillBlockKey(block.x, block.y), block] as const)),
+    });
+  }
+  const first = stamps[0]!;
+  const range = Math.ceil(first.radius);
+  return {
+    shape,
+    source,
+    fill,
+    brush,
+    stamps,
+    surfaces,
+    copiedBlocks: new Set(),
+    dirtyRows: new Map(),
+    stampIndex: 0,
+    offsetX: -range,
+    offsetY: -range,
+    complete: false,
+  };
+}
+
+/** Processes a bounded number of Blur target texels, yielding the partial Fill. */
+export function processInkFillBlurWork(work: InkFillBlurWork, maximumTargetCount: number): InkFillBlurProgress {
+  if (work.complete) return { shape: { ...work.shape, fill: work.fill }, complete: true, processedTargetCount: 0, changed: false };
+  const limit = Math.max(1, Math.floor(maximumTargetCount));
+  let processedTargetCount = 0;
+  let changed = false;
+  while (processedTargetCount < limit && work.stampIndex < work.stamps.length) {
+    const stamp = work.stamps[work.stampIndex]!;
+    const range = Math.ceil(stamp.radius);
+    if (work.offsetY > range) {
+      work.stampIndex += 1;
+      if (work.stampIndex >= work.stamps.length) break;
+      const nextRange = Math.ceil(work.stamps[work.stampIndex]!.radius);
+      work.offsetX = -nextRange;
+      work.offsetY = -nextRange;
+      continue;
+    }
+    const offsetX = work.offsetX;
+    const offsetY = work.offsetY;
+    work.offsetX += 1;
+    if (work.offsetX > range) {
+      work.offsetX = -range;
+      work.offsetY += 1;
+    }
+    processedTargetCount += 1;
+    const deltaX = offsetX + Math.floor(stamp.center.x) + 0.5 - stamp.center.x;
+    const deltaY = offsetY + Math.floor(stamp.center.y) + 0.5 - stamp.center.y;
+    if (work.brush === 'circle' && deltaX * deltaX + deltaY * deltaY > stamp.radius * stamp.radius) continue;
+    const target = offsetInkFillPixelCoordinate(work.shape, stamp.center, offsetX, offsetY);
+    if (!target) continue;
+    changed = blurInkFillTarget(work, target, stamp.blurRadius) || changed;
+  }
+  if (work.stampIndex >= work.stamps.length) {
+    work.complete = true;
+    normalizeInkFillLayer(work.fill);
+  }
+  return {
+    shape: { ...work.shape, fill: work.fill },
+    complete: work.complete,
+    processedTargetCount,
+    changed,
+  };
+}
+
+/** Returns changed RGBA texture runs since the previous incremental Blur preview. */
+export function consumeInkFillBlurRgbaPatches(work: InkFillBlurWork): InkFillRgbaPatch[] {
+  const patches: InkFillRgbaPatch[] = [];
+  for (const [id, rows] of work.dirtyRows) {
+    for (const [y, dirty] of rows) {
+      const pixels = [...dirty].sort((left, right) => left[0] - right[0]);
+      let start = 0;
+      while (start < pixels.length) {
+        let end = start + 1;
+        while (end < pixels.length && pixels[end]![0] === pixels[end - 1]![0] + 1) end += 1;
+        patches.push({
+          id,
+          x: pixels[start]![0],
+          y,
+          rgba: Uint8Array.from(pixels.slice(start, end).flatMap((entry) => entry[1])),
+        });
+        start = end;
+      }
+    }
+  }
+  work.dirtyRows.clear();
+  return patches;
+}
+
+function collectInkFillBlurStamps(shape: InkShape, points: readonly InkSurfacePoint[], size: number): InkFillBlurStamp[] {
+  const stamps: InkFillBlurStamp[] = [];
   let prior: (InkFillPixelCoordinate & { pressure: number }) | null = null;
   for (const point of points) {
     const pixelCoordinate = getInkFillPixelCoordinate(shape, point);
@@ -830,27 +986,123 @@ function blurInkFillLayer(
       : 1;
     for (let step = 1; step <= steps; step += 1) {
       const fraction = prior && prior.id === coordinate.id ? step / steps : 1;
-      const x = prior && prior.id === coordinate.id ? prior.x + (coordinate.x - prior.x) * fraction : coordinate.x;
-      const y = prior && prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * fraction : coordinate.y;
       const pressure = prior && prior.id === coordinate.id
         ? prior.pressure + (coordinate.pressure - prior.pressure) * fraction
         : coordinate.pressure;
-      stampInkFillBlur(
-        shape,
-        source,
-        fill,
-        { ...coordinate, x, y },
-        getInkFillStampRadius(size, pressure),
-        brush,
-        getInkFillBlurRadius(size, pressure),
-        copiedBlocks,
-      );
+      stamps.push({
+        center: {
+          id: coordinate.id,
+          x: prior && prior.id === coordinate.id ? prior.x + (coordinate.x - prior.x) * fraction : coordinate.x,
+          y: prior && prior.id === coordinate.id ? prior.y + (coordinate.y - prior.y) * fraction : coordinate.y,
+          ...(coordinate.width !== undefined ? { width: coordinate.width } : {}),
+          ...(coordinate.height !== undefined ? { height: coordinate.height } : {}),
+        },
+        radius: getInkFillStampRadius(size, pressure),
+        blurRadius: getInkFillBlurRadius(size, pressure),
+      });
     }
     prior = coordinate;
   }
-  normalizeInkFillLayer(fill);
-  return fill;
+  return stamps;
 }
+
+function blurInkFillTarget(work: InkFillBlurWork, targetCoordinate: InkFillPixelCoordinate, blurRadius: number): boolean {
+  const targetAccess = work.surfaces.get(targetCoordinate.id);
+  if (!targetAccess) return false;
+  const targetPixel = getInkFillBlurPixel(targetAccess, false, targetCoordinate.x, targetCoordinate.y);
+  if (!targetPixel || (targetPixel.rgba[targetPixel.offset + 3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) return false;
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  let weightTotal = 0;
+  for (const sample of getInkFillBlurKernel(blurRadius)) {
+    const coordinate = offsetInkFillPixelCoordinate(work.shape, targetCoordinate, sample.x, sample.y);
+    if (!coordinate) continue;
+    const sourceAccess = work.surfaces.get(coordinate.id);
+    const sourcePixel = sourceAccess && getInkFillBlurPixel(sourceAccess, true, coordinate.x, coordinate.y);
+    if (!sourcePixel || (sourcePixel.rgba[sourcePixel.offset + 3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) continue;
+    red += (sourcePixel.rgba[sourcePixel.offset] ?? 0) * sample.weight;
+    green += (sourcePixel.rgba[sourcePixel.offset + 1] ?? 0) * sample.weight;
+    blue += (sourcePixel.rgba[sourcePixel.offset + 2] ?? 0) * sample.weight;
+    weightTotal += sample.weight;
+  }
+  if (weightTotal <= 0) return false;
+  const rgba: readonly [number, number, number, number] = [
+    Math.round(red / weightTotal),
+    Math.round(green / weightTotal),
+    Math.round(blue / weightTotal),
+    targetPixel.rgba[targetPixel.offset + 3] ?? INK_FILL_DRY_ALPHA,
+  ];
+  if (targetPixel.rgba[targetPixel.offset] === rgba[0]
+    && targetPixel.rgba[targetPixel.offset + 1] === rgba[1]
+    && targetPixel.rgba[targetPixel.offset + 2] === rgba[2]) return false;
+  if (!writeInkFillBlurPixel(work, targetCoordinate.id, targetCoordinate.x, targetCoordinate.y, rgba)) return false;
+  let rows = work.dirtyRows.get(targetCoordinate.id);
+  if (!rows) {
+    rows = new Map();
+    work.dirtyRows.set(targetCoordinate.id, rows);
+  }
+  let row = rows.get(Math.floor(targetCoordinate.y));
+  if (!row) {
+    row = new Map();
+    rows.set(Math.floor(targetCoordinate.y), row);
+  }
+  row.set(Math.floor(targetCoordinate.x), rgba);
+  return true;
+}
+
+function getInkFillBlurKernel(radius: number): readonly InkFillBlurKernelSample[] {
+  const cached = inkFillBlurKernels.get(radius);
+  if (cached) return cached;
+  const kernel: InkFillBlurKernelSample[] = [];
+  for (let y = -radius; y <= radius; y += 1) for (let x = -radius; x <= radius; x += 1) {
+    const distanceSquared = x * x + y * y;
+    if (distanceSquared > radius * radius) continue;
+    kernel.push({ x, y, weight: Math.exp(-distanceSquared / Math.max(1, radius * radius * 0.5)) });
+  }
+  inkFillBlurKernels.set(radius, kernel);
+  return kernel;
+}
+
+function getInkFillBlurPixel(
+  access: InkFillBlurSurfaceAccess,
+  source: boolean,
+  x: number,
+  y: number,
+): { rgba: number[]; offset: number } | null {
+  const block = (source ? access.sourceBlocks : access.targetBlocks).get(inkFillBlockKey(floorDivide(x, INK_FILL_BLOCK_SIZE), floorDivide(y, INK_FILL_BLOCK_SIZE)));
+  if (!block) return null;
+  return { rgba: block.rgba, offset: (modulo(y, INK_FILL_BLOCK_SIZE) * INK_FILL_BLOCK_SIZE + modulo(x, INK_FILL_BLOCK_SIZE)) * 4 };
+}
+
+function writeInkFillBlurPixel(
+  work: InkFillBlurWork,
+  id: InkFillSurfaceId,
+  x: number,
+  y: number,
+  rgba: readonly [number, number, number, number],
+): boolean {
+  const access = work.surfaces.get(id);
+  const key = inkFillBlockKey(floorDivide(x, INK_FILL_BLOCK_SIZE), floorDivide(y, INK_FILL_BLOCK_SIZE));
+  let block = access?.targetBlocks.get(key);
+  if (!access || !block) return false;
+  if (!work.copiedBlocks.has(block)) {
+    const index = access.target.blocks.indexOf(block);
+    if (index < 0) return false;
+    block = { x: block.x, y: block.y, rgba: [...block.rgba] };
+    access.target.blocks[index] = block;
+    access.targetBlocks.set(key, block);
+    work.copiedBlocks.add(block);
+  }
+  const offset = (modulo(y, INK_FILL_BLOCK_SIZE) * INK_FILL_BLOCK_SIZE + modulo(x, INK_FILL_BLOCK_SIZE)) * 4;
+  block.rgba[offset] = rgba[0];
+  block.rgba[offset + 1] = rgba[1];
+  block.rgba[offset + 2] = rgba[2];
+  block.rgba[offset + 3] = rgba[3];
+  return true;
+}
+
+function inkFillBlockKey(x: number, y: number): string { return `${x},${y}`; }
 
 type InkFillWaterBlockEntry = {
   readonly index: number;
@@ -1390,61 +1642,6 @@ function offsetInkFillPixelCoordinate(shape: InkShape, origin: InkFillPixelCoord
   for (let step = 0; step < Math.abs(offsetX); step += 1) coordinate = coordinate && getInkFillNeighbour(shape, coordinate, stepX, 0);
   for (let step = 0; step < Math.abs(offsetY); step += 1) coordinate = coordinate && getInkFillNeighbour(shape, coordinate, 0, stepY);
   return coordinate;
-}
-
-/** Blurs only authored opaque pixels and follows the existing chart-neighbour mapping. */
-function stampInkFillBlur(
-  shape: InkShape,
-  source: InkFillLayer,
-  target: InkFillLayer,
-  center: InkFillPixelCoordinate,
-  radius: number,
-  brush: InkFillBrushShape,
-  blurRadius: number,
-  copiedBlocks: Set<InkFillBlock>,
-): void {
-  const range = Math.ceil(radius);
-  for (let offsetY = -range; offsetY <= range; offsetY += 1) for (let offsetX = -range; offsetX <= range; offsetX += 1) {
-    const deltaX = offsetX + Math.floor(center.x) + 0.5 - center.x;
-    const deltaY = offsetY + Math.floor(center.y) + 0.5 - center.y;
-    if (brush === 'circle' && deltaX * deltaX + deltaY * deltaY > radius * radius) continue;
-    const targetCoordinate = offsetInkFillPixelCoordinate(shape, center, offsetX, offsetY);
-    if (!targetCoordinate) continue;
-    const targetSurface = target.surfaces.find((surface) => surface.id === targetCoordinate.id);
-    if (!targetSurface) continue;
-    const targetX = Math.floor(targetCoordinate.x);
-    const targetY = Math.floor(targetCoordinate.y);
-    const current = readInkFillPixel(targetSurface, targetX, targetY);
-    if ((current[3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) continue;
-    let red = 0;
-    let green = 0;
-    let blue = 0;
-    let weightTotal = 0;
-    for (let sampleOffsetY = -blurRadius; sampleOffsetY <= blurRadius; sampleOffsetY += 1) {
-      for (let sampleOffsetX = -blurRadius; sampleOffsetX <= blurRadius; sampleOffsetX += 1) {
-        const distance = Math.hypot(sampleOffsetX, sampleOffsetY);
-        if (distance > blurRadius + 0.001) continue;
-        const coordinate = offsetInkFillPixelCoordinate(shape, targetCoordinate, sampleOffsetX, sampleOffsetY);
-        if (!coordinate) continue;
-        const sampleSurface = source.surfaces.find((surface) => surface.id === coordinate.id);
-        if (!sampleSurface) continue;
-        const sample = readInkFillPixel(sampleSurface, Math.floor(coordinate.x), Math.floor(coordinate.y));
-        if ((sample[3] ?? 0) < INK_FILL_COVERAGE_ALPHA_MIN) continue;
-        const weight = Math.exp(-(distance * distance) / Math.max(1, blurRadius * blurRadius * 0.5));
-        red += (sample[0] ?? 0) * weight;
-        green += (sample[1] ?? 0) * weight;
-        blue += (sample[2] ?? 0) * weight;
-        weightTotal += weight;
-      }
-    }
-    if (weightTotal <= 0) continue;
-    writeInkFillPixel(targetSurface, targetX, targetY, [
-      Math.round(red / weightTotal),
-      Math.round(green / weightTotal),
-      Math.round(blue / weightTotal),
-      current[3] ?? INK_FILL_DRY_ALPHA,
-    ], copiedBlocks);
-  }
 }
 
 /** Adjusts wetness without creating coverage in transparent texels. */

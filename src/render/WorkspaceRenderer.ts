@@ -39,6 +39,7 @@ import {
   type CompiledInkShape,
   INK_FILL_COVERAGE_ALPHA_MIN,
   type InkCuboidFace,
+  type InkFillRgbaPatch,
   type InkFillWaterAlphaPatch,
   type InkGroupData,
   type InkShape,
@@ -67,6 +68,7 @@ import {
   type InkRenderAppearanceState,
   updateInkSurfaceOutlines,
   updateInkShapeFillAlphaPatches,
+  updateInkShapeFillRgbaPatches,
   updateInkShapeFillSurfaces,
   updateInkShapeRibbon,
 } from './InkGroupRenderer';
@@ -616,6 +618,20 @@ export class WorkspaceRenderer {
   ): void {
     const root = this.inkEntries.get(referenceId)?.shapes.get(shape.id);
     if (!root || !updateInkShapeFillAlphaPatches(root, patches)) {
+      this.previewInkFill(referenceId, shape);
+      return;
+    }
+    this.requestRender();
+  }
+
+  /** Uploads a partial Fill Blur preview without recompiling Fill or invalidating Ink shadow depth. */
+  previewInkFillBlur(
+    referenceId: string,
+    shape: InkShape,
+    patches: readonly InkFillRgbaPatch[],
+  ): void {
+    const root = this.inkEntries.get(referenceId)?.shapes.get(shape.id);
+    if (!root || !updateInkShapeFillRgbaPatches(root, patches)) {
       this.previewInkFill(referenceId, shape);
       return;
     }

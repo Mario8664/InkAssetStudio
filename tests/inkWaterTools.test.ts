@@ -3,7 +3,9 @@ import {
   INK_FILL_COVERAGE_ALPHA_MIN,
   blurInkFill,
   bucketFillInkShape,
+  consumeInkFillBlurRgbaPatches,
   compileInkFill,
+  createInkFillBlurWork,
   consumeInkFillWaterAlphaPatches,
   createInkFillWaterStrokeState,
   createInkCuboidShape,
@@ -11,6 +13,7 @@ import {
   eraseInkFillWater,
   paintInkFill,
   paintInkFillWater,
+  processInkFillBlurWork,
   type InkShape,
 } from '../src/domain/ink/ink';
 
@@ -80,6 +83,31 @@ describe('Ink Fill water tools', () => {
     const fullPressureBlur = blurInkFill(source, [{ x: 0, y: 0, pressure: 1 }], 0.2, 'circle');
 
     expect(changedRgbPixelCount(source, lowPressureBlur)).toBeLessThan(changedRgbPixelCount(source, fullPressureBlur));
+  });
+
+  it('processes a large continuous Blur gesture within a fixed per-frame texel budget', () => {
+    const redFill = paintInkFill(createInkPlaneShape('z', { x: 0, y: 0, z: 0 }), [center], '#ff004d', 1, 'square');
+    const source = paintInkFill(redFill, [center], '#29adff', 0.08, 'circle');
+    const points = [
+      { x: -0.2, y: 0, pressure: 1 },
+      { x: 0, y: 0, pressure: 1 },
+      { x: 0.2, y: 0, pressure: 1 },
+    ];
+    const work = createInkFillBlurWork(source, points, 1, 'circle')!;
+    const patches = [];
+    let result = source;
+    let frameCount = 0;
+    while (!work.complete) {
+      const progress = processInkFillBlurWork(work, 96);
+      expect(progress.processedTargetCount).toBeLessThanOrEqual(96);
+      result = progress.shape;
+      patches.push(...consumeInkFillBlurRgbaPatches(work));
+      frameCount += 1;
+    }
+
+    expect(frameCount).toBeGreaterThan(1);
+    expect(patches.some((patch) => patch.rgba.length > 0)).toBe(true);
+    expect(result).toEqual(blurInkFill(source, points, 1, 'circle'));
   });
 
   it('blurs only authored Fill RGB while retaining its opacity encoding', () => {

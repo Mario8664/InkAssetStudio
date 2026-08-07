@@ -140,6 +140,11 @@ try {
   await page.getByRole('button', { name: 'Fill Paint' }).click();
   await dragPencil(0.495, 0.412, 0.507, 0.438);
   await page.waitForTimeout(350);
+  await page.getByRole('button', { name: 'Blur' }).click();
+  await page.getByLabel('Fill brush size').fill('0.4');
+  await page.getByLabel('Fill brush size').press('Enter');
+  await dragPencil(0.495, 0.412, 0.507, 0.438);
+  await page.waitForTimeout(1800);
 
   await pressure.click();
   if (!(await pressure.textContent())?.includes('On')) throw new Error('Pressure On toggle did not update.');

@@ -2,7 +2,9 @@ import { Vector3 } from 'three';
 import {
   blurInkFill,
   bucketFillInkShape,
+  consumeInkFillBlurRgbaPatches,
   consumeInkFillWaterAlphaPatches,
+  createInkFillBlurWork,
   createInkFillWaterStrokeState,
   createInkOutlineStroke,
   eraseInkFillWater,
@@ -13,10 +15,12 @@ import {
   normalizeInkFillShape,
   paintInkFill,
   paintInkFillWater,
+  processInkFillBlurWork,
   sampleInkFillColor,
   type InkCuboidStrokePoint,
   type InkCylinderStrokePoint,
   type InkFillWaterStrokeState,
+  type InkFillBlurWork,
   type InkOutlineStroke,
   type InkShape,
   type InkSurfacePoint,
@@ -51,6 +55,7 @@ const STABILIZER_FOLLOW_AT_MAX_SPEED = 0.9;
 const STABILIZER_MAX_SPEED_PIXELS_PER_MILLISECOND = 0.85;
 const STABILIZER_REFERENCE_INTERVAL_MILLISECONDS = 1000 / 60;
 const FINAL_SAMPLE_MIN_SCREEN_DISTANCE_PIXELS = 0.5;
+const FILL_BLUR_TARGET_TEXEL_BUDGET = 96;
 
 export type InkEditorControllerOptions = {
   renderer: WorkspaceRenderer;
@@ -68,6 +73,8 @@ export class InkEditorController {
   private readonly workingShapes = new Map<string, WorkingShape>();
   /** One drag keeps only the strongest wet/dry contribution per Fill texel. */
   private waterStrokeState: InkFillWaterStrokeState | null = null;
+  private readonly blurWorks = new Map<string, InkFillBlurWork>();
+  private blurPointerReleased = false;
   private usesRawPointerUpdates = false;
   private receivedRawPointerUpdate = false;
   private previewFrame: number | null = null;
@@ -180,8 +187,14 @@ export class InkEditorController {
   private readonly handlePointerUp = (event: PointerEvent): void => {
     if (!isApplePencilPointer(event) || event.pointerId !== this.pointerId) return;
     this.appendEventSamples(event, false, true);
-    this.flushLivePreview();
     const session = this.options.getSession();
+    if (session.drawTool === 'fill-blur') {
+      this.blurPointerReleased = true;
+      this.flushLivePreview();
+      event.preventDefault();
+      return;
+    }
+    this.flushLivePreview();
     const committed = this.commitInk(session);
     if (committed && session.drawTool === 'outline') this.options.renderer.retainStrokePreviewsUntilCompiled();
     this.endGesture(false);
@@ -204,6 +217,8 @@ export class InkEditorController {
     this.pointerId = event.pointerId;
     this.pendingInk = [];
     this.workingShapes.clear();
+    this.blurWorks.clear();
+    this.blurPointerReleased = false;
     this.waterStrokeState = isWaterAdjustmentTool(this.options.getSession().drawTool)
       ? createInkFillWaterStrokeState()
       : null;
@@ -304,6 +319,10 @@ export class InkEditorController {
     this.previewFrame = null;
     const session = this.options.getSession();
     if (session.drawTool !== 'fill-brush' && session.drawTool !== 'fill-eraser' && session.drawTool !== 'fill-blur' && !isWaterAdjustmentTool(session.drawTool) && session.drawTool !== 'outline-eraser') return;
+    if (session.drawTool === 'fill-blur') {
+      this.flushBlurLivePreview(session);
+      return;
+    }
     const waterPreviews = new Map<string, WorkingShape>();
     for (const segment of this.pendingInk) {
       if (segment.processedPointCount >= segment.points.length) continue;
@@ -328,6 +347,41 @@ export class InkEditorController {
         consumeInkFillWaterAlphaPatches(this.waterStrokeState, preview.shape.id),
       );
     }
+  }
+
+  private flushBlurLivePreview(session: StudioEditorSession): void {
+    let remainingBudget = FILL_BLUR_TARGET_TEXEL_BUDGET;
+    for (const segment of this.pendingInk) {
+      const key = workingShapeKey(segment.referenceId, segment.shapeId);
+      let working = this.workingShapes.get(key) ?? { referenceId: segment.referenceId, shape: segment.shape };
+      let work = this.blurWorks.get(key);
+      if (!work && segment.processedPointCount < segment.points.length) {
+        const firstNew = segment.processedPointCount;
+        const points = segment.points.slice(Math.max(0, firstNew - 1));
+        segment.processedPointCount = segment.points.length;
+        work = createInkFillBlurWork(working.shape, points, session.fillBrushSize, session.fillBrushShape) ?? undefined;
+        this.workingShapes.set(key, working);
+        if (work) this.blurWorks.set(key, work);
+      }
+      if (!work || remainingBudget <= 0) continue;
+      const progress = processInkFillBlurWork(work, remainingBudget);
+      remainingBudget -= progress.processedTargetCount;
+      working = { referenceId: segment.referenceId, shape: progress.shape };
+      this.workingShapes.set(key, working);
+      const patches = consumeInkFillBlurRgbaPatches(work);
+      if (patches.length > 0) this.options.renderer.previewInkFillBlur(segment.referenceId, progress.shape, patches);
+      if (progress.complete) this.blurWorks.delete(key);
+    }
+    if (this.blurPointerReleased && !this.hasPendingBlurWork()) {
+      this.commitInk(session);
+      this.endGesture(false);
+      return;
+    }
+    if (this.hasPendingBlurWork()) this.scheduleLivePreview();
+  }
+
+  private hasPendingBlurWork(): boolean {
+    return this.blurWorks.size > 0 || this.pendingInk.some((segment) => segment.processedPointCount < segment.points.length);
   }
 
   private updateCursor(event: PointerEvent): void {
@@ -397,6 +451,8 @@ export class InkEditorController {
     }
     this.pendingInk = [];
     this.workingShapes.clear();
+    this.blurWorks.clear();
+    this.blurPointerReleased = false;
     this.waterStrokeState = null;
     this.usesRawPointerUpdates = false;
     this.receivedRawPointerUpdate = false;

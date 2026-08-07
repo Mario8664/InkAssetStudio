@@ -25,6 +25,7 @@ import {
 } from 'three';
 import {
   bucketFillInkShape,
+  consumeInkFillBlurRgbaPatches,
   compileInkFill,
   compileInkShape,
   consumeInkFillWaterAlphaPatches,
@@ -35,12 +36,14 @@ import {
   createInkFrustumShape,
   createInkGroupData,
   createInkFillWaterStrokeState,
+  createInkFillBlurWork,
   createInkOutlineStroke,
   createInkPlaneShape,
   createInkSphereGeometry,
   createInkSphereShape,
   paintInkFill,
   paintInkFillWater,
+  processInkFillBlurWork,
   sampleInkFillColor,
   withCompiledInkGroup,
 } from '../src/domain/ink/ink';
@@ -74,6 +77,7 @@ import {
   setInkHardShadowOwnerId,
   updateInkSurfaceOutlines,
   updateInkShapeFillAlphaPatches,
+  updateInkShapeFillRgbaPatches,
   updateInkShapeFillSurfaces,
 } from '../src/render/InkGroupRenderer';
 import { hasRendererMaterial, InkHardShadowMap } from '../src/render/InkHardShadowMap';
@@ -508,6 +512,48 @@ describe('Reference rendering', () => {
     }
     expect(sameCompiledInkFillCoverage(compileInkFill(dry), compileInkFill(wet))).toBe(true);
     expect(sameCompiledInkFillCoverage(compileInkFill(dry), [])).toBe(false);
+
+    disposeObjectTree(root);
+  });
+
+  it('uploads incremental Blur RGBA runs without recompiling Fill GPU resources', () => {
+    const center = { surface: 'side' as const, u: 0, v: 0, pressure: 1 };
+    const red = paintInkFill(createInkCylinderShape(), [center], '#ff004d', 0.3, 'square');
+    const source = paintInkFill(red, [center], '#29adff', 0.04, 'circle');
+    const root = createInkShapeRenderRoot(compileInkShape(source), source, createInkFillLightingState());
+    const mesh = root.getObjectByName('InkFillSurface') as Mesh;
+    const texture = mesh.userData.inkFillTexture;
+    const geometry = mesh.geometry;
+    const material = mesh.material;
+    const work = createInkFillBlurWork(source, [center], 0.2, 'circle')!;
+    const patches = [];
+    let blurred = source;
+    while (!work.complete) {
+      const progress = processInkFillBlurWork(work, 32);
+      blurred = progress.shape;
+      patches.push(...consumeInkFillBlurRgbaPatches(work));
+    }
+
+    expect(patches.length).toBeGreaterThan(0);
+    expect(updateInkShapeFillRgbaPatches(root, patches)).toBe(true);
+    expect(mesh.userData.inkFillTexture).toBe(texture);
+    expect(mesh.geometry).toBe(geometry);
+    expect(mesh.material).toBe(material);
+    const compiled = compileInkFill(blurred).find((surface) => surface.id === 'side')!;
+    const layout = mesh.userData.inkFillTexturePatchLayout as {
+      minX: number;
+      minY: number;
+      textureOffsetX: number;
+      textureOffsetY: number;
+    };
+    for (const patch of patches) for (let index = 0; index < patch.rgba.length / 4; index += 1) {
+      const sourceOffset = ((patch.y - compiled.minY) * compiled.width + patch.x + index - compiled.minX) * 4;
+      const textureOffset = (
+        (layout.textureOffsetY + patch.y - layout.minY) * texture.image.width
+        + layout.textureOffsetX + patch.x + index - layout.minX
+      ) * 4;
+      expect(Array.from(texture.image.data.slice(textureOffset, textureOffset + 4))).toEqual(compiled.rgba.slice(sourceOffset, sourceOffset + 4));
+    }
 
     disposeObjectTree(root);
   });
