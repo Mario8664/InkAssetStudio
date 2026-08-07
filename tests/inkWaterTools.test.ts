@@ -171,6 +171,21 @@ describe('Ink Fill water tools', () => {
     expect(after[3]).toBeLessThan(before[3]!);
   });
 
+  it('preserves water alpha when Fill Paint or Bucket Fill recolours a texel, but clears it when erased', () => {
+    const dry = createPaintedPlane();
+    const wet = paintInkFillWater(dry, [center], 0.02, 0, 'square', 0.5);
+    const wetAlpha = pixelAt(wet)[3]!;
+
+    const repainted = paintInkFill(wet, [center], '#ff004d', 0.02, 'square');
+    expect(pixelAt(repainted)).toEqual([255, 0, 77, wetAlpha]);
+
+    const bucketed = bucketFillInkShape(repainted, center, '#29adff');
+    expect(pixelAt(bucketed)).toEqual([41, 173, 255, wetAlpha]);
+
+    const erased = paintInkFill(bucketed, [center], '#29adff', 0.02, 'square', true);
+    expect(pixelAt(erased)[3]).toBe(0);
+  });
+
   it('uses the strongest contribution for duplicate samples in one drag, then accumulates later strokes', () => {
     const dry = createPaintedPlane();
     const single = paintInkFillWater(dry, [center], 0.02, 0, 'square', 0.5, false, createInkFillWaterStrokeState());

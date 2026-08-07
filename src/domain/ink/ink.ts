@@ -774,6 +774,7 @@ type InkFillPixelCoordinate = {
 /**
  * Applies sampled colour stamps directly to sparse editable texture blocks.
  * The samples are deliberately transient input; no brush path is serialized.
+ * Repainting changes RGB but preserves any existing Water alpha.
  */
 export function paintInkFill(
   shape: InkShape,
@@ -1363,7 +1364,7 @@ export function bucketFillInkShape(shape: InkShape, point: InkSurfacePoint, colo
   const startY = clampInteger(Math.floor(start.y), bounds.minY, bounds.maxY - 1);
   const replacement = toInkFillRgba(color);
   const target = readInkFillPixel(startSurface, startX, startY);
-  if (sameInkFillRgba(target, replacement)) return shape;
+  if (sameInkFillRgba(target, getInkFillPaintedRgba(target, replacement))) return shape;
   if (!contiguous) return replaceAllMatchingInkFillPixels(shape, fill, start, target, replacement, copiedBlocks);
   if (barrierBySurface.get(start.id)!.has(`${startX},${startY}`)) return shape;
 
@@ -1391,7 +1392,8 @@ export function bucketFillInkShape(shape: InkShape, point: InkSurfacePoint, colo
   if (changed.length === 0) return shape;
   for (const pixel of changed) {
     const surface = ensureInkFillSurface(fill, pixel.id, pixel.width, pixel.height);
-    writeInkFillPixel(surface, pixel.x, pixel.y, replacement, copiedBlocks);
+    const current = readInkFillPixel(surface, pixel.x, pixel.y);
+    writeInkFillPixel(surface, pixel.x, pixel.y, getInkFillPaintedRgba(current, replacement), copiedBlocks);
   }
   normalizeInkFillLayer(fill);
   return { ...shape, fill };
@@ -1424,7 +1426,7 @@ function replaceAllMatchingInkFillPixels(
   for (const scope of scopes) for (let y = scope.minY; y < scope.maxY; y += 1) for (let x = scope.minX; x < scope.maxX; x += 1) {
     const rgba = scope.surface ? readInkFillPixel(scope.surface, x, y) : [0, 0, 0, 0];
     if (!sameInkFillRgba(rgba, target)) continue;
-    writeInkFillPixel(ensureInkFillSurface(fill, scope.id), x, y, replacement, copiedBlocks);
+    writeInkFillPixel(ensureInkFillSurface(fill, scope.id), x, y, getInkFillPaintedRgba(rgba, replacement), copiedBlocks);
     changed = true;
   }
   if (!changed) return shape;
@@ -1748,7 +1750,8 @@ function stampInkFill(
       const deltaX = x + 0.5 - centerX;
       const deltaY = y + 0.5 - centerY;
       if (brush === 'circle' && deltaX * deltaX + deltaY * deltaY > radius * radius) continue;
-      writeInkFillPixel(surface, x, y, rgba, copiedBlocks);
+      const current = readInkFillPixel(surface, x, y);
+      writeInkFillPixel(surface, x, y, getInkFillPaintedRgba(current, rgba), copiedBlocks);
     }
   }
 }
@@ -2009,6 +2012,20 @@ function hasInkFillBlockColor(block: InkFillBlock): boolean {
 
 function sameInkFillRgba(left: readonly number[], right: readonly number[]): boolean {
   return left[0] === right[0] && left[1] === right[1] && left[2] === right[2] && left[3] === right[3];
+}
+
+/**
+ * Fill Paint changes pigment without reinterpreting Water's alpha encoding.
+ * New coverage starts dry; Fill Eraser deliberately clears pigment and water.
+ */
+function getInkFillPaintedRgba(current: readonly number[], paint: readonly number[]): number[] {
+  if ((paint[3] ?? 0) === 0) return [0, 0, 0, 0];
+  return [
+    paint[0] ?? 0,
+    paint[1] ?? 0,
+    paint[2] ?? 0,
+    (current[3] ?? 0) === 0 ? INK_FILL_DRY_ALPHA : current[3] ?? 0,
+  ];
 }
 
 function toInkFillRgba(color: string): number[] {

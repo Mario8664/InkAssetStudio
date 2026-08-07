@@ -47,7 +47,7 @@ Painting 的水彩分支已快进合入并推送到 Painting `main`；Painting �
 - Plane 辅助面按 Outline 与稀疏 Fill 内容动态扩展并保留最小 `1×1` 范围；Cuboid/Frustum 显示六面世界单位网格，Sphere 显示每面 `4×4` 的球化六面体网格，Cylinder 依据三角化圆柱表面显示网格。辅助面及其网格仅属于编辑器视口，不进入作者源或导出文件。
 - Outline、Outline Eraser、Fill Paint、Fill Eraser、Blur、Water、Water Eraser、Bucket Fill、Fill Picker 全部以居中的 Emoji 触控按钮选择，并保留说明提示与无障碍名称。参数使用独立可换行区域；Blur/Water/Water Eraser 不显示颜色或色板控件。
 - Outline 保留带压力的可编辑表面点，并编译为世界宽度 Ribbon。
-- Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。`alpha < 128` 为透明；`255` 为干燥不透明；`128..254` 保存 Watercolor 湿度并仍按不透明 Fill 处理。Water/Water Eraser 只对已有覆盖调整 alpha，保持 RGB 不变；同一手势去重、不同手势叠加。
+- Fill 保留每个表面图表上的稀疏 16×16 RGBA 块，不保存可重放的 Fill 笔迹。`alpha < 128` 为透明；`255` 为干燥不透明；`128..254` 保存 Watercolor 湿度并仍按不透明 Fill 处理。Fill Paint 与 Bucket Fill 只将 `alpha = 0` 的 texel 置为干燥 `255`，已有非零 alpha 原样保留；它们可改 RGB，但不得覆写 Water 湿度。Fill Eraser 将 RGBA 置零。Water/Water Eraser 只对已有覆盖调整 alpha，保持 RGB 不变；同一手势去重、不同手势叠加。
 - Water/Water Eraser 的盖章热路径按 Surface/稀疏块建立索引，并以数值坐标保存手势去重状态；实时预览只收集本帧变化的连续 alpha 行段并局部上传既有 `DataTexture`，不再逐帧完整编译 Fill、扫描整张纹理、重建 Shape Helper 或刷新硬阴影。
 - Fill Blur 保留工具名称但改为方向性拾色拖抹（Smudge）：首次 Pencil dab 只拾取当前局部颜料；每次移动从前一 dab 的同形状 footprint 读取 RGB，再以固定比例拖入当前 dab。单个 stamp 先捕获全部 source/target texel，再按 Pencil 顺序写入，避免新写颜色回读或旧后台任务覆盖当前笔势；每个目标 texel只有一次 pickup 读取和一次写入，不再枚举 Gaussian 模糊核。Fill coverage 与 Water alpha 保持不变，两个 footprint 均使用既有 chart neighbour 映射跨 seam。每帧以 `4 ms` 或 `4096` 操作为上限、每次至多 `256` 操作推进，实时预览只上传本帧变更的连续 RGBA 行段；队列耗尽时保持同一 pickup 状态等待下一批 Pencil 样本，Pencil 抬起后才完成、归一化并写入一条作者源/Undo 事务。正常的 `lostpointercapture` 不得取消该已抬笔批次，Pencil 尚未抬起时的异常 capture 丢失仍会取消手势；不逐帧完整编译 Fill、重建 Shape Helper 或刷新 Ink 硬阴影深度。
 - Fill Blur 的 footprint 坐标表按既有 X 后 Y 邻接语义复用横向前缀，不为每个目标 texel 从 dab 中心逐像素重走图表；RGBA patch 直接填充 `Uint8Array`，同一 Fill 纹理的重叠或相邻范围合并为更少的 GPU 上传。
@@ -104,7 +104,7 @@ npm.cmd run build
 当前结果：
 
 - Vue/TypeScript 类型检查通过。
-- 10 个 Vitest 文件、99 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
+- 10 个 Vitest 文件、100 项测试通过，另有 1 组 Service Worker 内容版本/缓存归属/导航回退脚本测试通过。
 - 测试覆盖 Shape Surface/参考网格颜色、透明度、深度语义、动态 Plane 范围和 Sphere/Cylinder/Frustum 网格，以及固定浅蓝 Terrain 放置材质、分块精确更新和射线三角形到 Tile 映射、X/Y/Z 工作面 Brush/Rectangle 路径、Half-Lambert ShaderChunk 注入、非纯黑描边下限、参考地形/地块边缘/无限网格/坐标轴四个显示开关及旧 Session 迁移、World/Local Transform Session、临时排除绘制 Shape、Painting Ink Appearance 精确默认值/迁移/深拷贝/范围归一化、Source/Watercolor 双材质与 Fill/Ribbon 分层、MRT capture、三层非时域扩散、原始硬阴影深度及 Source 单中心/Watercolor 连续边界、多个 Group、五种 Shape 的 Outline/Fill 编译、Fill Brush/Fill Eraser/Fill Blur 压感半径缩放与 Water/Water Eraser 压感强度缩放、连续大笔刷 Blur 的时间片预算、队列耗尽后的继续追加、局部 RGBA 上传与 GPU 资源复用、自适应高 DPI 物理像素预算与交互锁定、有限 Shape 尺寸重采样、球体与圆柱体相机相关的世界单位 Surface Outline、Fill alpha 裁切和资源释放、Shape GPU 资源复用、所有有限 Shape 的向外绕序、辅助对象隔离、异常后的完整状态恢复、场景背景隔离、v1-only 工作文件拒绝、source-only 派生缓存重建、Pencil/Touch 输入边界、raw/coalesced 采样回退、真实抬笔终点、压感延续、损坏 Session 恢复、Outline 路径擦除、Worker 派生缓存交接、Undo/Redo 和连续输入合并。
 - Vite 生产构建和 Service Worker 生成通过。
 

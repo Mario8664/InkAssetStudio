@@ -33,7 +33,7 @@ Studio 不是图片画板、Procreate 导入器、远程桌面，也不是完整
 - Sphere 与 Cylinder 提供 Painting 当前的 `surfaceOutline` Shape 配置：可切换启用并设置 `0.001～1` 世界单位宽度，默认值与普通 Outline 宽度同为 `0.035`。它们以视角相关的解析 Ribbon 表达 Sphere 外轮廓或 Cylinder 两条侧面母线，并按 Fill alpha 裁切；没有不透明 Fill 时不显示。Cuboid、Frustum 与 Plane 不提供该配置。曲面描边不进入作者描边编译缓存，关闭时不保留 Mesh 或 GPU 资源。
 - Move 与 Rotate 手柄支持 Unity 风格的 World/Local 坐标空间切换；该选择只属于 Editor Session。Shape 列表在删除按钮左侧提供眼睛按钮，可将指定 Shape 临时排除出绘制、吸色与 Shape 拾取，但不隐藏其已提交 Ink 渲染结果，也不写入作者源、导出、Undo/Redo 或内容 dirty。
 - 提供完整 Ink 工具：描边绘制、描边擦除、填色绘制、填色擦除、局部混色模糊、Water 标记、Water 擦除、Bucket Fill、吸色、颜色调整、可编辑色板、笔刷尺寸、直线辅助、Group/Shape 选择、Undo/Redo。Water 与 Water 擦除没有颜色控制；其 Pencil 光标显示实线核心与准确对应羽化外沿的虚线边界。
-- Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。有限 Shape 的紧凑运行时 Fill 纹理在内部裁剪边使用透明 guard texel，在物理图表边使用 `ClampToEdge` 的真实边缘 texel；可见 Fill、Ink 专属硬阴影和曲面描边只按采样 alpha 裁弃，不得以图表 UV 范围数值裁弃。`alpha < 128` 为透明；`255` 为干燥不透明 Fill；`128..254` 保持不透明并保存 Watercolor 湿度。Water 只调整已有不透明像素的 alpha，不修改 RGB 或创建覆盖；同一连续手势每个 texel 只保留最大贡献，独立后续笔画可继续叠加。
+- Fill 仍是每个 Shape 表面图表上的可编辑稀疏 RGBA 块，不把绘制轨迹当作 Fill 的权威数据。有限 Shape 的紧凑运行时 Fill 纹理在内部裁剪边使用透明 guard texel，在物理图表边使用 `ClampToEdge` 的真实边缘 texel；可见 Fill、Ink 专属硬阴影和曲面描边只按采样 alpha 裁弃，不得以图表 UV 范围数值裁弃。`alpha < 128` 为透明；`255` 为干燥不透明 Fill；`128..254` 保持不透明并保存 Watercolor 湿度。Fill Paint 与 Bucket Fill 写入 RGB，并且只把 `alpha = 0` 的 texel 置为干燥 `255`；已有非零 alpha 必须原样保留，不得覆盖 Water 湿度。Fill Eraser 明确将 RGBA 置零。Water 只调整已有不透明像素的 alpha，不修改 RGB 或创建覆盖；同一连续手势每个 texel 只保留最大贡献，独立后续笔画可继续叠加。
 - 描边仍是带压力点的可编辑表面坐标序列，并编译为世界宽度 Ribbon。
 
 ### 3.2 压感开关
